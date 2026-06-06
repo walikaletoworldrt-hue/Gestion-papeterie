@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Walikale to World Tech Adapt Hub</title>
+  <desc id="desc">Logo Walikale to World Tech Adapt Hub avec globe, trajectoire technologique et signature.</desc>
+  <defs>
+    <linearGradient id="swooshBlue" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#04162f" />
+      <stop offset="45%" stop-color="#0a3f9f" />
+      <stop offset="100%" stop-color="#1ec1ff" />
+    </linearGradient>
+    <linearGradient id="bubbleBlue" x1="20%" y1="10%" x2="80%" y2="85%">
+      <stop offset="0%" stop-color="#03122a" />
+      <stop offset="65%" stop-color="#08398d" />
+      <stop offset="100%" stop-color="#17b7ff" />
+    </linearGradient>
+    <linearGradient id="scriptBlue" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#1883e6" />
+      <stop offset="100%" stop-color="#0d6fe0" />
+    </linearGradient>
+    <filter id="techGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="7" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="bubbleGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="18" result="blur" />
+      <feColorMatrix
+        in="blur"
+        type="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 .55 0"
+      />
+    </filter>
+  </defs>
+
+  <rect width="1200" height="760" fill="#ffffff" />
+
+  <g transform="translate(125 165)" fill="none" stroke="#111b29" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="128" cy="122" r="126" stroke-width="6" />
+    <path d="M74 27c18 13 35 18 39 35 4 18-15 32-28 31-21-1-33 16-47 30-10 9-22 18-23 37-2 23-19 24-25 37m84-164c15-15 33-28 54-30 22-2 18 21 25 29 12 15 41 8 46 29 4 18-17 24-29 31-16 9-19 28-35 29-17 0-21-20-39-17-22 4-44-2-53 20m148 17c23 7 41 23 49 47 10 31-7 52-14 77-7 24-28 46-54 58-30 13-59 6-84-11-31-20-52-48-88-61-27-9-55-11-76-31-18-17-28-44-21-66m86 126c9 18 17 43 36 53m43-244c6 33 7 66 0 99m-74-78c24 6 44 20 63 38m-80 46c18 4 33 13 45 28" stroke-width="5" />
+  </g>
+
+  <path
+    d="M320 508c-54-31-100-71-116-111-15-39 7-83 64-132 67-58 165-116 283-175 171-84 324-123 455-113 87 6 155 34 182 88 19 36 20 78 10 111-18 55-52 97-85 128-36 34-53 53-60 88-7 35-17 53-42 56-34 4-56-27-78-90-17-49-32-77-51-85-20-7-41 14-71 68-37 69-66 109-92 128-27 20-61 26-102 19-56-10-101-43-134-96-22-35-46-82-72-141-16-37-28-54-38-55-11-2-21 14-35 63-20 73-50 125-89 154-33 26-85 48-149 65z"
+    fill="#04111f"
+  />
+
+  <path
+    d="M317 494c72-113 174-198 302-254 149-65 329-99 483-84 84 8 148 34 182 81 30 40 34 87 19 139-14 49-45 92-78 122-28 25-56 46-67 84-6 19-18 31-37 34-22 2-40-18-60-70-18-47-35-74-59-82-25-8-49 15-77 71-36 70-62 112-92 134-26 19-59 27-101 21-50-7-95-38-130-91-21-31-43-75-69-133-15-34-30-56-47-59-17-4-31 15-45 61-20 66-50 113-91 146-36 28-82 51-133 67z"
+    fill="none"
+    stroke="url(#swooshBlue)"
+    stroke-width="18"
+    stroke-linecap="round"
+  />
+
+  <ellipse cx="826" cy="291" rx="163" ry="126" transform="rotate(-16 826 291)" fill="#2cc8ff" opacity=".28" filter="url(#bubbleGlow)" />
+
+  <path
+    d="M662 247c81-39 167-72 252-82 49-6 87-2 121 14 25 11 43 31 49 60 8 40-9 82-31 117-19 30-43 58-58 91-12 24-29 43-57 48-33 6-57-10-78-51-18-34-34-50-50-51-18-2-35 15-53 52-20 42-41 68-67 78-33 13-68 4-100-24-32-28-47-66-50-110-3-50 21-97 59-142 20-24 41-47 63-70z"
+    fill="url(#bubbleBlue)"
+  />
+
+  <path
+    d="M729 309c14-33 42-54 78-58 49-6 92 26 104 74m-30-105c11-26 36-43 65-43 41 0 76 33 78 74 0 13-2 25-6 36m-68-74v170m33-155v117m33-92v139m-95-1h121"
+    fill="none"
+    stroke="#8fe4ff"
+    stroke-width="6"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    opacity=".95"
+  />
+
+  <g fill="#9eeaff" filter="url(#techGlow)">
+    <circle cx="688" cy="242" r="7" />
+    <circle cx="732" cy="225" r="8" />
+    <circle cx="775" cy="215" r="7" />
+    <circle cx="822" cy="207" r="8" />
+    <circle cx="872" cy="203" r="8" />
+    <circle cx="924" cy="206" r="7" />
+    <circle cx="968" cy="224" r="7" />
+    <circle cx="1002" cy="251" r="8" />
+    <circle cx="1031" cy="293" r="7" />
+    <circle cx="995" cy="345" r="7" />
+    <circle cx="944" cy="372" r="7" />
+    <circle cx="889" cy="384" r="7" />
+    <circle cx="812" cy="430" r="7" />
+    <circle cx="760" cy="440" r="7" />
+  </g>
+
+  <g stroke="#20bfff" stroke-width="4" stroke-linecap="round" opacity=".9">
+    <path d="M686 244h339" />
+    <path d="M701 271h301" />
+    <path d="M744 409c50-19 96-29 138-30 43-1 83 8 131 31" fill="none" />
+    <path d="M789 211c9 47 11 94 6 144" fill="none" />
+    <path d="M878 179c3 77 2 153-4 228" fill="none" />
+    <path d="M945 210c-10 60-12 118-6 174" fill="none" />
+  </g>
+
+  <g fill="#ffffff" font-family="Segoe UI, Arial, sans-serif" font-weight="700">
+    <text x="824" y="357" font-size="86">&lt;/&gt;</text>
+    <text x="836" y="419" font-size="48" opacity=".96">1010110</text>
+  </g>
+
+  <g transform="translate(949 470)" fill="none" stroke="#111b29" stroke-width="11" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M0 0h84v72H0z" />
+    <path d="M39 26h96v82H39z" />
+    <path d="M82 107v30m-33 0h66m61-18h50v40h-50z" />
+    <path d="M200 159v23m-22 0h44" />
+  </g>
+
+  <g fill="url(#scriptBlue)">
+    <text x="160" y="652" font-size="118" font-family="Brush Script MT, Segoe Script, cursive" font-weight="700">
+      Walikale to World
+    </text>
+  </g>
+
+  <text x="470" y="731" font-size="82" font-family="Segoe UI, Arial, sans-serif" font-style="italic" font-weight="700" fill="#111b29">
+    Tech Adapt Hub
+  </text>
+</svg>

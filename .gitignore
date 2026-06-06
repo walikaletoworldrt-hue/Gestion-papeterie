@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-electron/
+release/
+release-fix/
+release-fix-2/
+release-fix-3/
+.env.local
+.env
+*.tsbuildinfo

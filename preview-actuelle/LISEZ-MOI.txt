@@ -1,0 +1,11 @@
+VERSION ACTUELLE - WALIKALE PAPETERIE
+
+Cette version permet de voir l'etat actuel de l'application sans generer de fichier .exe.
+
+Lancement :
+1. Double-cliquez sur "Lancer-Walikale-Papeterie.bat"
+
+Notes :
+- Cette version utilise Electron avec les dependances deja installees dans le projet.
+- Les factures, le logo, les ventes, les clients et l'export PDF sont deja integres.
+- Si Windows affiche un avertissement PowerShell ou terminal, laissez simplement l'application se lancer.
