@@ -7,13 +7,18 @@ import type {
   Client,
   ClientDraft,
   DashboardMetrics,
+  ExpenseDraft,
+  ExpenseItem,
   InvoiceSeriesInfo,
   Product,
   ProductDraft,
   SaleDetail,
   SaleItemDraft,
+  SaleServiceItemDraft,
   SaleDraft,
   SaleRecord,
+  Service,
+  ServiceDraft,
   SyncConflictPreview,
   SyncStatus,
   StockRow,
@@ -26,7 +31,9 @@ import type {
 const tabs: { id: TabId; label: string }[] = [
   { id: "dashboard", label: "Tableau de bord" },
   { id: "products", label: "Produits" },
+  { id: "services", label: "Services" },
   { id: "clients", label: "Clients" },
+  { id: "expenses", label: "Depenses" },
   { id: "initial-stock", label: "Stock initial" },
   { id: "replenishments", label: "Reapprovisionnement" },
   { id: "sales", label: "Ventes" },
@@ -51,6 +58,15 @@ const emptySaleDraft: SaleDraft = {
   clientId: null,
   paymentMethod: "Especes",
   items: [],
+  serviceItems: [],
+};
+
+const emptyServiceDraft: ServiceDraft = {
+  name: "",
+  category: "",
+  unitPrice: 0,
+  description: "",
+  active: true,
 };
 
 const emptyClientDraft: ClientDraft = {
@@ -68,8 +84,17 @@ const emptyUserDraft: UserDraft = {
   password: "",
 };
 
+const emptyExpenseDraft: ExpenseDraft = {
+  detail: "",
+  nature: "",
+  amount: 0,
+  date: new Date().toISOString().slice(0, 10),
+  approvedBy: "",
+  purpose: "",
+};
+
 const userRoles: UserRole[] = ["Administrateur", "Super admin", "Employe"];
-type ModalId = "product" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment";
+type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport";
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -91,20 +116,50 @@ type PasswordModalState = {
   requireCurrentPassword: boolean;
 };
 
+type ExpenseReportState = {
+  totalSalesAmount: number;
+  totalExpensesAmount: number;
+  netBalance: number;
+  productLines: Array<{
+    productId: number;
+    productName: string;
+    category: string;
+    quantity: number;
+    amount: number;
+  }>;
+  serviceLines: Array<{
+    category: string;
+    quantity: number;
+    amount: number;
+  }>;
+};
+
 type SyncConflictState = {
   preview: SyncConflictPreview;
 } | null;
 
 type ReplenishmentDraft = {
   productId: number;
-  quantity: number;
+  quantity: number | "";
   purchasePrice: number;
   sellingPrice: number;
   supplier: string;
 };
 
+type SalesTrendPreset = "7d" | "30d" | "90d" | "month" | "year" | "custom";
+type SalesTrendGrouping = "day" | "week" | "month" | "year";
+type SalesTrendPoint = {
+  key: string;
+  label: string;
+  amount: number;
+  count: number;
+  start: Date;
+};
+type SalesPeriodPreset = "all" | "today" | "7d" | "30d" | "90d" | "month" | "year" | "custom";
+
 function formatCurrency(value: number) {
-  return `${value.toFixed(2)} FC`;
+  const safeValue = Number.isFinite(value) ? value : 0;
+  return `${safeValue % 1 === 0 ? safeValue.toFixed(0) : safeValue.toFixed(2)} FC`;
 }
 
 function formatDateTime(value: string) {
@@ -116,6 +171,189 @@ function formatDateTime(value: string) {
 
 function normalizeText(value: string) {
   return value.toLowerCase().trim();
+}
+
+function parseSaleDate(value: string) {
+  const normalized = value.trim();
+  const frenchMatch = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (frenchMatch) {
+    const [, day, month, year] = frenchMatch;
+    return new Date(Number(year), Number(month) - 1, Number(day));
+  }
+
+  const isoMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return new Date(Number(year), Number(month) - 1, Number(day));
+  }
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function startOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function endOfDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+}
+
+function addDays(date: Date, days: number) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+}
+
+function startOfWeek(date: Date) {
+  const normalized = startOfDay(date);
+  const day = normalized.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  return addDays(normalized, diff);
+}
+
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function startOfYear(date: Date) {
+  return new Date(date.getFullYear(), 0, 1);
+}
+
+function toInputDateValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getTrendLabel(date: Date, grouping: SalesTrendGrouping) {
+  if (grouping === "day") {
+    return date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+  }
+
+  if (grouping === "week") {
+    return `Sem. ${date.toLocaleDateString("fr-FR", { day: "2-digit", month: "short" })}`;
+  }
+
+  if (grouping === "month") {
+    return date.toLocaleDateString("fr-FR", { month: "short", year: "numeric" });
+  }
+
+  return String(date.getFullYear());
+}
+
+function extractHistorySubject(details: string) {
+  const text = details.trim();
+  const patterns = [
+    /^Creation utilisateur\s+(.+)$/i,
+    /^Creation client\s+(.+)$/i,
+    /^Creation produit\s+(.+)$/i,
+    /^Mise a jour produit\s+(.+)$/i,
+    /^Mot de passe mis a jour pour\s+(.+)$/i,
+    /^Changement de role vers\s+(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return text;
+}
+
+function formatHistoryAction(entry: ActivityHistoryItem) {
+  const details = entry.details.trim();
+  const target = entry.target.toLowerCase();
+
+  if (/mot de passe mis a jour/i.test(details)) {
+    return "Mot de passe reinitialise";
+  }
+
+  if (/reinitialisation d'acces utilisateur/i.test(details)) {
+    return "Acces utilisateur reinitialise";
+  }
+
+  if (/creation utilisateur/i.test(details)) {
+    return "Utilisateur cree";
+  }
+
+  if (/creation client/i.test(details)) {
+    return "Client cree";
+  }
+
+  if (/creation produit/i.test(details)) {
+    return "Produit cree";
+  }
+
+  if (/mise a jour produit/i.test(details)) {
+    return "Produit modifie";
+  }
+
+  if (/suppression produit/i.test(details)) {
+    return "Produit supprime";
+  }
+
+  if (/suppression utilisateur/i.test(details)) {
+    return "Utilisateur supprime";
+  }
+
+  if (/changement de role/i.test(details)) {
+    return "Role utilisateur modifie";
+  }
+
+  if (/vente\s+/i.test(details) || target.includes("vente")) {
+    return entry.action === "Suppression" ? "Vente supprimee" : "Vente enregistree";
+  }
+
+  if (target.includes("reapprovisionnement") || /reapprovisionnement/i.test(details)) {
+    return "Reapprovisionnement ajoute";
+  }
+
+  if (target.includes("stock initial")) {
+    return "Stock initial ajoute";
+  }
+
+  if (/nouvelle serie de facturation/i.test(details)) {
+    return "Serie de facturation modifiee";
+  }
+
+  if (/reinitialisation du cycle de stock apres inventaire/i.test(details)) {
+    return "Inventaire reinitialise";
+  }
+
+  if (target.includes("expense") || target.includes("depense") || /depense engagee/i.test(details)) {
+    return "Depense engagee";
+  }
+
+  return entry.action;
+}
+
+function formatHistoryDetails(entry: ActivityHistoryItem) {
+  const details = entry.details.trim();
+
+  if (/mot de passe mis a jour pour/i.test(details)) {
+    return extractHistorySubject(details);
+  }
+
+  if (/creation utilisateur/i.test(details)) {
+    const subject = extractHistorySubject(details);
+    return subject && subject !== details ? `${subject}${entry.target ? ` - ${entry.target.replace(/^Utilisateur\s*/i, "").trim()}` : ""}` : details;
+  }
+
+  if (/creation client/i.test(details) || /creation produit/i.test(details) || /mise a jour produit/i.test(details)) {
+    return extractHistorySubject(details);
+  }
+
+  if (/changement de role vers/i.test(details)) {
+    return `${entry.target} - ${details.replace(/^Changement de role vers\s+/i, "Role: ").trim()}`;
+  }
+
+  if (/vente\s+/i.test(details)) {
+    return details;
+  }
+
+  return details;
 }
 
 function downloadCsv(filename: string, content: string) {
@@ -147,12 +385,19 @@ function createSaleLine(productId = 0): SaleItemDraft {
   };
 }
 
+function createSaleServiceLine(serviceId = 0): SaleServiceItemDraft {
+  return {
+    serviceId,
+    quantity: 1,
+  };
+}
+
 function createEmptyReplenishmentDraft(products: Product[]): ReplenishmentDraft {
   const firstProduct = products[0];
 
   return {
     productId: firstProduct?.id ?? 0,
-    quantity: 1,
+    quantity: "",
     purchasePrice: firstProduct?.purchasePrice ?? 0,
     sellingPrice: firstProduct?.sellingPrice ?? 0,
     supplier: firstProduct?.supplier ?? "",
@@ -166,14 +411,16 @@ function Modal({
   children,
   onClose,
   size = "default",
+  backdropClassName = "",
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   size?: "default" | "large";
+  backdropClassName?: string;
 }) {
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+    <div className={`modal-backdrop ${backdropClassName}`.trim()} role="presentation" onClick={onClose}>
       <div
         className={`modal-card ${size === "large" ? "large" : ""}`}
         role="dialog"
@@ -214,7 +461,9 @@ function EmptyState({
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>("replenishments");
   const [products, setProducts] = useState<Product[]>([]);
+  const [services, setServices] = useState<Service[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [currentStock, setCurrentStock] = useState<StockRow[]>([]);
@@ -233,10 +482,16 @@ export default function App() {
     totalProducts: 0,
     dailySales: 18,
     suppliers: 0,
+    totalSalesAmount: 0,
+    totalExpenses: 0,
+    netSalesAmount: 0,
   });
   const [draft, setDraft] = useState<ProductDraft>(emptyDraft);
+  const [serviceDraft, setServiceDraft] = useState<ServiceDraft>(emptyServiceDraft);
   const [clientDraft, setClientDraft] = useState<ClientDraft>(emptyClientDraft);
   const [userDraft, setUserDraft] = useState<UserDraft>(emptyUserDraft);
+  const [expenseDraft, setExpenseDraft] = useState<ExpenseDraft>(emptyExpenseDraft);
+  const [expenseReport, setExpenseReport] = useState<ExpenseReportState | null>(null);
   const [saleDraft, setSaleDraft] = useState<SaleDraft>(emptySaleDraft);
   const [replenishmentDraft, setReplenishmentDraft] = useState<ReplenishmentDraft>(createEmptyReplenishmentDraft([]));
   const [saleDateDraft, setSaleDateDraft] = useState(() => new Date().toISOString().slice(0, 10));
@@ -252,17 +507,28 @@ export default function App() {
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [productSearch, setProductSearch] = useState("");
+  const [serviceSearch, setServiceSearch] = useState("");
   const [productSortKey, setProductSortKey] = useState<ProductSortKey>("name");
   const [productSortDirection, setProductSortDirection] = useState<"asc" | "desc">("asc");
   const [globalSearch, setGlobalSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
   const [saleSearch, setSaleSearch] = useState("");
+  const [salesPeriodPreset, setSalesPeriodPreset] = useState<SalesPeriodPreset>("all");
+  const [salesPeriodStart, setSalesPeriodStart] = useState(() => toInputDateValue(addDays(new Date(), -29)));
+  const [salesPeriodEnd, setSalesPeriodEnd] = useState(() => toInputDateValue(new Date()));
+  const [salesTrendPreset, setSalesTrendPreset] = useState<SalesTrendPreset>("30d");
+  const [salesTrendGrouping, setSalesTrendGrouping] = useState<SalesTrendGrouping>("day");
+  const [salesTrendStart, setSalesTrendStart] = useState(() => toInputDateValue(addDays(new Date(), -29)));
+  const [salesTrendEnd, setSalesTrendEnd] = useState(() => toInputDateValue(new Date()));
   const [stockSearch, setStockSearch] = useState("");
   const [stockCategoryFilter, setStockCategoryFilter] = useState("Tous");
   const [stockStatusFilter, setStockStatusFilter] = useState("Tous");
   const [userSearch, setUserSearch] = useState("");
+  const [expenseSearch, setExpenseSearch] = useState("");
   const [historySearch, setHistorySearch] = useState("");
+  const [supplyHistorySearch, setSupplyHistorySearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [startupIssue, setStartupIssue] = useState("");
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [loginIdentifier, setLoginIdentifier] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -277,10 +543,12 @@ export default function App() {
   const [passwordError, setPasswordError] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [syncConflictState, setSyncConflictState] = useState<SyncConflictState>(null);
+  const [expenseReportBusy, setExpenseReportBusy] = useState(false);
   const isSuperAdmin = currentUser?.role === "Super admin";
   const isAdministrator = currentUser?.role === "Administrateur";
   const canManageUsers = isSuperAdmin;
   const canManageInventory = isSuperAdmin || isAdministrator;
+  const canManageExpenses = isSuperAdmin || isAdministrator;
   const canCreateClients = Boolean(currentUser);
   const canCreateSales = Boolean(currentUser);
   const visibleTabs = tabs.filter((tab) => {
@@ -289,18 +557,29 @@ export default function App() {
     }
 
     if (isAdministrator) {
-      return tab.id !== "utilisateurs";
+      return !["utilisateurs", "history"].includes(tab.id);
     }
 
-    return !["initial-stock", "replenishments", "utilisateurs"].includes(tab.id);
+    return !["initial-stock", "replenishments", "utilisateurs", "history"].includes(tab.id);
   });
+
+  useEffect(() => {
+    const activeTabVisible = visibleTabs.some((tab) => tab.id === activeTab);
+    if (!activeTabVisible && visibleTabs.length > 0) {
+      setActiveTab(visibleTabs[0].id);
+    }
+  }, [activeTab, visibleTabs]);
 
   async function loadData() {
     setLoading(true);
-    const nextSyncStatus = await repository.getSyncStatus();
-    const [nextProducts, nextClients, nextUsers, nextSales, nextHistory, nextActivityHistory, nextMetrics, nextCurrentStock, nextInvoiceSeriesInfo] = await Promise.all([
+    setStartupIssue("");
+
+    const settled = await Promise.allSettled([
+      repository.getSyncStatus(),
       repository.listProducts(),
+      repository.listServices(),
       repository.listClients(),
+      repository.listExpenses(),
       repository.listUsers(),
       repository.listSales(),
       repository.getSupplyHistory(),
@@ -310,8 +589,33 @@ export default function App() {
       repository.getInvoiceSeriesInfo(),
     ]);
 
+    const errors = settled
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
+
+    const nextSyncStatus =
+      settled[0].status === "fulfilled"
+        ? settled[0].value
+        : { available: Boolean(window.desktopApi), online: true, lastSyncedAt: null, pendingChanges: 0 };
+    const nextProducts = settled[1].status === "fulfilled" ? settled[1].value : [];
+    const nextServices = settled[2].status === "fulfilled" ? settled[2].value : [];
+    const nextClients = settled[3].status === "fulfilled" ? settled[3].value : [];
+    const nextExpenses = settled[4].status === "fulfilled" ? settled[4].value : [];
+    const nextUsers = settled[5].status === "fulfilled" ? settled[5].value : [];
+    const nextSales = settled[6].status === "fulfilled" ? settled[6].value : [];
+    const nextHistory = settled[7].status === "fulfilled" ? settled[7].value : [];
+    const nextActivityHistory = settled[8].status === "fulfilled" ? settled[8].value : [];
+    const nextMetrics =
+      settled[9].status === "fulfilled"
+        ? settled[9].value
+        : { totalStock: 0, totalProducts: 0, dailySales: 0, suppliers: 0, totalSalesAmount: 0, totalExpenses: 0, netSalesAmount: 0 };
+    const nextCurrentStock = settled[10].status === "fulfilled" ? settled[10].value : [];
+    const nextInvoiceSeriesInfo = settled[11].status === "fulfilled" ? settled[11].value : null;
+
     setProducts(nextProducts);
+    setServices(nextServices);
     setClients(nextClients);
+    setExpenses(nextExpenses);
     setUsers(nextUsers);
     setSales(nextSales);
     setSupplyHistory(nextHistory);
@@ -329,8 +633,25 @@ export default function App() {
               ...item,
               productId: item.productId || nextProducts[0]?.id || 0,
             }))
-          : [createSaleLine(nextProducts[0]?.id || 0)],
+          : nextProducts.length > 0
+            ? [createSaleLine(nextProducts[0]?.id || 0)]
+            : [],
+      serviceItems:
+        current.serviceItems.length > 0
+          ? current.serviceItems.map((item) => ({
+              ...item,
+              serviceId: item.serviceId || nextServices[0]?.id || 0,
+            }))
+          : [],
     }));
+
+    if (errors.length > 0) {
+      console.error("Chargement initial incomplet:", errors);
+      const message = errors[0] ?? "Une erreur est survenue pendant le chargement de l'application.";
+      setStartupIssue(message);
+      showToast("error", `Chargement incomplet: ${message}`);
+    }
+
     setLoading(false);
   }
 
@@ -342,6 +663,32 @@ export default function App() {
 
     void loadData();
   }, [currentUser]);
+
+  useEffect(() => {
+    async function refreshSyncIndicator() {
+      try {
+        const nextStatus = await repository.getSyncStatus();
+        setSyncStatus(nextStatus);
+      } catch {
+        setSyncStatus((current) => ({
+          ...current,
+          online: typeof navigator !== "undefined" ? navigator.onLine : current.online,
+        }));
+      }
+    }
+
+    function handleConnectivityChange() {
+      void refreshSyncIndicator();
+    }
+
+    window.addEventListener("online", handleConnectivityChange);
+    window.addEventListener("offline", handleConnectivityChange);
+
+    return () => {
+      window.removeEventListener("online", handleConnectivityChange);
+      window.removeEventListener("offline", handleConnectivityChange);
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeModal) {
@@ -417,6 +764,9 @@ export default function App() {
     setSaleError("");
     setInvoiceMessage("");
     setReplenishmentDraft(createEmptyReplenishmentDraft(products));
+    setServiceDraft(emptyServiceDraft);
+    setExpenseDraft(emptyExpenseDraft);
+    setExpenseReport(null);
     setSyncConflictState(null);
     setPasswordModalState(null);
     setPasswordDraft({
@@ -442,9 +792,11 @@ export default function App() {
   function handleGlobalSearchChange(value: string) {
     setGlobalSearch(value);
     setProductSearch(value);
+    setServiceSearch(value);
     setClientSearch(value);
     setSaleSearch(value);
     setStockSearch(value);
+    setExpenseSearch(value);
     setUserSearch(value);
     setHistorySearch(value);
   }
@@ -546,6 +898,16 @@ export default function App() {
     setActiveModal("product");
   }
 
+  function openServiceModal() {
+    if (!canManageInventory) {
+      showAccessDenied("Votre profil ne permet pas d'enregistrer un service.");
+      return;
+    }
+
+    setServiceDraft(emptyServiceDraft);
+    setActiveModal("service");
+  }
+
   function openClientModal() {
     if (!canCreateClients) {
       showAccessDenied("Veuillez vous connecter pour ajouter un client.");
@@ -569,7 +931,8 @@ export default function App() {
     setSaleDraft((current) => ({
       ...current,
       clientId: current.clientId ?? clients[0]?.id ?? null,
-      items: current.items.length > 0 ? current.items : [createSaleLine(products[0]?.id ?? 0)],
+      items: current.items.length > 0 ? current.items : products.length > 0 ? [createSaleLine(products[0]?.id ?? 0)] : [],
+      serviceItems: current.serviceItems.length > 0 ? current.serviceItems : [],
     }));
     setActiveModal("sale");
   }
@@ -599,12 +962,82 @@ export default function App() {
     const selectedProduct = product ?? products[0];
     setReplenishmentDraft({
       productId: selectedProduct.id,
-      quantity: 1,
+      quantity: "",
       purchasePrice: selectedProduct.purchasePrice,
       sellingPrice: selectedProduct.sellingPrice,
       supplier: selectedProduct.supplier,
     });
     setActiveModal("replenishment");
+  }
+
+  function openExpenseModal() {
+    if (!canManageExpenses) {
+      showAccessDenied("Votre profil ne permet pas d'enregistrer une depense.");
+      return;
+    }
+
+    setExpenseDraft({
+      ...emptyExpenseDraft,
+      approvedBy: currentUser?.fullName ?? "",
+      date: new Date().toISOString().slice(0, 10),
+    });
+    setActiveModal("expense");
+  }
+
+  async function openExpenseReportModal() {
+    try {
+      setExpenseReportBusy(true);
+      const saleDetails = await Promise.all(sales.map((sale) => repository.getSaleDetail(sale.id)));
+      const productTotals = new Map<number, { productId: number; productName: string; category: string; quantity: number; amount: number }>();
+      const serviceTotals = new Map<string, { category: string; quantity: number; amount: number }>();
+
+      saleDetails.filter((detail): detail is SaleDetail => Boolean(detail)).forEach((detail) => {
+        detail.items.forEach((item) => {
+          if (item.lineType === "service") {
+            const category = item.productName.trim() || item.category?.trim() || "Service";
+            const existingService = serviceTotals.get(category);
+            serviceTotals.set(category, {
+              category,
+              quantity: (existingService?.quantity ?? 0) + item.quantity,
+              amount: (existingService?.amount ?? 0) + item.lineTotal,
+            });
+          } else {
+            const product = products.find((entry) => entry.id === item.productId);
+            const category = product?.category?.trim() || item.category?.trim() || "Autre";
+            const productKey = item.productId ?? 0;
+            const existingProduct = productTotals.get(productKey);
+            productTotals.set(productKey, {
+              productId: productKey,
+              productName: item.productName,
+              category,
+              quantity: (existingProduct?.quantity ?? 0) + item.quantity,
+              amount: (existingProduct?.amount ?? 0) + item.lineTotal,
+            });
+          }
+        });
+      });
+
+      const totalSalesAmount = sales.reduce((sum, sale) => sum + sale.amount, 0);
+      const totalExpensesAmount = expenses.reduce((sum, item) => sum + item.amount, 0);
+
+      setExpenseReport({
+        totalSalesAmount,
+        totalExpensesAmount,
+        netBalance: totalSalesAmount - totalExpensesAmount,
+        productLines: [...productTotals.values()].sort((left, right) => right.amount - left.amount),
+        serviceLines: [...serviceTotals.values()].sort((left, right) => right.amount - left.amount),
+      });
+      setActiveModal("expenseReport");
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible de generer le rapport complet.");
+    } finally {
+      setExpenseReportBusy(false);
+    }
+  }
+
+  function openSupplyHistoryModal() {
+    setSupplyHistorySearch("");
+    setActiveModal("supplyHistory");
   }
 
   function openPasswordModal(user: AppUser, requireCurrentPassword: boolean) {
@@ -714,6 +1147,25 @@ export default function App() {
     showToast("success", "Client enregistre avec succes.");
   }
 
+  async function handleServiceSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!canManageInventory) {
+      showToast("error", "Votre profil ne permet pas d'enregistrer un service.");
+      return;
+    }
+
+    try {
+      const nextServices = await repository.saveService(serviceDraft);
+      setServices(nextServices);
+      setServiceDraft(emptyServiceDraft);
+      setActiveModal(null);
+      showToast("success", "Service enregistre avec succes.");
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'enregistrer ce service.");
+    }
+  }
+
   async function handleReplenishmentSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -729,7 +1181,9 @@ export default function App() {
       return;
     }
 
-    if (replenishmentDraft.quantity <= 0) {
+    const replenishmentQuantity = Number(replenishmentDraft.quantity);
+
+    if (!replenishmentQuantity || replenishmentQuantity <= 0) {
       showToast("error", "La quantite d'approvisionnement doit etre superieure a zero.");
       return;
     }
@@ -740,7 +1194,7 @@ export default function App() {
       category: selectedProduct.category,
       purchasePrice: Number(replenishmentDraft.purchasePrice),
       sellingPrice: Number(replenishmentDraft.sellingPrice),
-      quantity: Number(replenishmentDraft.quantity),
+      quantity: replenishmentQuantity,
       unit: selectedProduct.unit,
       alertThreshold: selectedProduct.alertThreshold,
       supplier: replenishmentDraft.supplier.trim() || selectedProduct.supplier,
@@ -749,6 +1203,28 @@ export default function App() {
     await loadData();
     closeModal();
     showToast("success", "Approvisionnement enregistre avec succes.");
+  }
+
+  async function handleExpenseSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!canManageExpenses) {
+      showAccessDenied("Votre profil ne permet pas d'enregistrer une depense.");
+      return;
+    }
+
+    await repository.saveExpense({
+      detail: expenseDraft.detail.trim(),
+      nature: expenseDraft.nature.trim(),
+      amount: Number(expenseDraft.amount),
+      date: expenseDraft.date,
+      approvedBy: expenseDraft.approvedBy.trim(),
+      purpose: expenseDraft.purpose.trim(),
+    });
+
+    await loadData();
+    closeModal();
+    showToast("success", "Depense enregistree avec succes.");
   }
 
   async function handleSaleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -775,12 +1251,17 @@ export default function App() {
           productId: Number(item.productId),
           quantity: Number(item.quantity),
         })),
+        serviceItems: saleDraft.serviceItems.map((item) => ({
+          serviceId: Number(item.serviceId),
+          quantity: Number(item.quantity),
+        })),
       });
 
       setSaleDraft({
         clientId: clients[0]?.id ?? null,
         paymentMethod: "Especes",
-        items: [createSaleLine(products[0]?.id ?? 0)],
+        items: products.length > 0 ? [createSaleLine(products[0]?.id ?? 0)] : [],
+        serviceItems: [],
       });
       await loadData();
       closeModal();
@@ -973,6 +1454,27 @@ export default function App() {
     });
   }
 
+  function updateSaleServiceLine(index: number, patch: Partial<SaleServiceItemDraft>) {
+    setSaleDraft((current) => ({
+      ...current,
+      serviceItems: current.serviceItems.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item)),
+    }));
+  }
+
+  function addSaleServiceLine() {
+    setSaleDraft((current) => ({
+      ...current,
+      serviceItems: [...current.serviceItems, createSaleServiceLine(services[0]?.id ?? 0)],
+    }));
+  }
+
+  function removeSaleServiceLine(index: number) {
+    setSaleDraft((current) => ({
+      ...current,
+      serviceItems: current.serviceItems.filter((_, itemIndex) => itemIndex !== index),
+    }));
+  }
+
   const salePreviewTotal = saleDraft.items.reduce((sum, line) => {
     const product = products.find((item) => item.id === line.productId);
     if (!product) {
@@ -980,10 +1482,15 @@ export default function App() {
     }
 
     return sum + product.sellingPrice * line.quantity;
+  }, 0) + saleDraft.serviceItems.reduce((sum, line) => {
+    const service = services.find((item) => item.id === line.serviceId);
+    return sum + (service?.unitPrice ?? 0) * line.quantity;
   }, 0);
   const selectedSaleClient = clients.find((client) => client.id === saleDraft.clientId) ?? null;
   const saleClientCode = selectedSaleClient ? `CL-${String(selectedSaleClient.id).padStart(4, "0")}` : "";
-  const saleUnitsTotal = saleDraft.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
+  const saleUnitsTotal =
+    saleDraft.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0) +
+    saleDraft.serviceItems.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
   const requestedProductQuantities = saleDraft.items.reduce((map, line) => {
     map.set(line.productId, (map.get(line.productId) ?? 0) + Number(line.quantity || 0));
     return map;
@@ -1014,6 +1521,15 @@ export default function App() {
   const productCategoriesCount = new Set(filteredProducts.map((item) => item.category)).size;
   const lowStockProductsCount = filteredProducts.filter((item) => item.quantity <= item.alertThreshold).length;
   const totalProductStockValue = filteredProducts.reduce((sum, item) => sum + item.quantity * item.purchasePrice, 0);
+  const filteredServices = services.filter((item) => {
+    const query = normalizeText(serviceSearch);
+    if (!query) return true;
+    return [item.name, item.category, item.description, item.active ? "actif" : "inactif"].some((value) =>
+      normalizeText(String(value)).includes(query)
+    );
+  });
+  const activeServicesCount = filteredServices.filter((item) => item.active).length;
+  const serviceCategoriesCount = new Set(filteredServices.map((item) => item.category)).size;
   const replenishedProductNames = new Set(
     supplyHistory
       .filter((entry) => entry.movementType === "reapprovisionnement")
@@ -1030,16 +1546,151 @@ export default function App() {
   const clientsWithEmailCount = filteredClients.filter((item) => item.email.trim().length > 0).length;
   const clientsWithPhoneCount = filteredClients.filter((item) => item.phone.trim().length > 0).length;
 
+  const salesPeriodToday = startOfDay(new Date());
+  let salesPeriodRangeStart: Date | null = null;
+  let salesPeriodRangeEnd: Date | null = null;
+
+  if (salesPeriodPreset === "today") {
+    salesPeriodRangeStart = salesPeriodToday;
+    salesPeriodRangeEnd = endOfDay(salesPeriodToday);
+  } else if (salesPeriodPreset === "7d") {
+    salesPeriodRangeStart = addDays(salesPeriodToday, -6);
+    salesPeriodRangeEnd = endOfDay(salesPeriodToday);
+  } else if (salesPeriodPreset === "30d") {
+    salesPeriodRangeStart = addDays(salesPeriodToday, -29);
+    salesPeriodRangeEnd = endOfDay(salesPeriodToday);
+  } else if (salesPeriodPreset === "90d") {
+    salesPeriodRangeStart = addDays(salesPeriodToday, -89);
+    salesPeriodRangeEnd = endOfDay(salesPeriodToday);
+  } else if (salesPeriodPreset === "month") {
+    salesPeriodRangeStart = startOfMonth(salesPeriodToday);
+    salesPeriodRangeEnd = endOfDay(salesPeriodToday);
+  } else if (salesPeriodPreset === "year") {
+    salesPeriodRangeStart = startOfYear(salesPeriodToday);
+    salesPeriodRangeEnd = endOfDay(salesPeriodToday);
+  } else if (salesPeriodPreset === "custom") {
+    const customStart = parseSaleDate(salesPeriodStart);
+    const customEnd = parseSaleDate(salesPeriodEnd);
+    salesPeriodRangeStart = customStart ? startOfDay(customStart) : null;
+    salesPeriodRangeEnd = customEnd ? endOfDay(customEnd) : null;
+  }
+
+  if (salesPeriodRangeStart && salesPeriodRangeEnd && salesPeriodRangeStart.getTime() > salesPeriodRangeEnd.getTime()) {
+    const swappedStart = startOfDay(salesPeriodRangeEnd);
+    salesPeriodRangeEnd = endOfDay(salesPeriodRangeStart);
+    salesPeriodRangeStart = swappedStart;
+  }
+
   const filteredSales = sales.filter((item) => {
     const query = normalizeText(saleSearch);
-    if (!query) return true;
-    return [item.reference, item.clientName, item.paymentMethod, item.date, item.status].some((value) =>
-      normalizeText(String(value)).includes(query)
-    );
+    const matchesQuery =
+      !query ||
+      [item.reference, item.clientName, item.paymentMethod, item.date, item.status].some((value) =>
+        normalizeText(String(value)).includes(query)
+      );
+
+    const saleDate = parseSaleDate(item.date);
+    const matchesPeriod =
+      !salesPeriodRangeStart ||
+      !salesPeriodRangeEnd ||
+      (saleDate !== null &&
+        saleDate.getTime() >= salesPeriodRangeStart.getTime() &&
+        saleDate.getTime() <= salesPeriodRangeEnd.getTime());
+
+    return matchesQuery && matchesPeriod;
   });
   const totalSalesAmount = filteredSales.reduce((sum, sale) => sum + sale.amount, 0);
   const totalSalesLines = filteredSales.reduce((sum, sale) => sum + sale.itemsCount, 0);
   const totalCounterSales = filteredSales.filter((sale) => sale.clientName === "Client comptoir").length;
+  const salesPeriodExpensesTotal = expenses
+    .filter((item) => {
+      if (!salesPeriodRangeStart || !salesPeriodRangeEnd) {
+        return true;
+      }
+
+      const expenseDate = parseSaleDate(item.date);
+      return (
+        expenseDate !== null &&
+        expenseDate.getTime() >= salesPeriodRangeStart.getTime() &&
+        expenseDate.getTime() <= salesPeriodRangeEnd.getTime()
+      );
+    })
+    .reduce((sum, item) => sum + item.amount, 0);
+  const salesPeriodNetAmount = totalSalesAmount - salesPeriodExpensesTotal;
+
+  const salesTrendToday = startOfDay(new Date());
+  let salesTrendRangeStart = addDays(salesTrendToday, -29);
+  let salesTrendRangeEnd = endOfDay(salesTrendToday);
+
+  if (salesTrendPreset === "7d") {
+    salesTrendRangeStart = addDays(salesTrendToday, -6);
+  } else if (salesTrendPreset === "30d") {
+    salesTrendRangeStart = addDays(salesTrendToday, -29);
+  } else if (salesTrendPreset === "90d") {
+    salesTrendRangeStart = addDays(salesTrendToday, -89);
+  } else if (salesTrendPreset === "month") {
+    salesTrendRangeStart = startOfMonth(salesTrendToday);
+  } else if (salesTrendPreset === "year") {
+    salesTrendRangeStart = startOfYear(salesTrendToday);
+  } else {
+    const customStart = parseSaleDate(salesTrendStart);
+    const customEnd = parseSaleDate(salesTrendEnd);
+    salesTrendRangeStart = customStart ? startOfDay(customStart) : addDays(salesTrendToday, -29);
+    salesTrendRangeEnd = customEnd ? endOfDay(customEnd) : endOfDay(salesTrendToday);
+  }
+
+  if (salesTrendRangeStart.getTime() > salesTrendRangeEnd.getTime()) {
+    const swappedStart = startOfDay(salesTrendRangeEnd);
+    salesTrendRangeEnd = endOfDay(salesTrendRangeStart);
+    salesTrendRangeStart = swappedStart;
+  }
+
+  const salesTrendGroups = new Map<string, SalesTrendPoint>();
+  for (const sale of sales) {
+    const saleDate = parseSaleDate(sale.date);
+    if (!saleDate) {
+      continue;
+    }
+
+    const saleTime = saleDate.getTime();
+    if (saleTime < salesTrendRangeStart.getTime() || saleTime > salesTrendRangeEnd.getTime()) {
+      continue;
+    }
+
+    let bucketStart = startOfDay(saleDate);
+    if (salesTrendGrouping === "week") {
+      bucketStart = startOfWeek(saleDate);
+    } else if (salesTrendGrouping === "month") {
+      bucketStart = startOfMonth(saleDate);
+    } else if (salesTrendGrouping === "year") {
+      bucketStart = startOfYear(saleDate);
+    }
+
+    const key = `${salesTrendGrouping}-${toInputDateValue(bucketStart)}`;
+    const existing = salesTrendGroups.get(key);
+    if (existing) {
+      existing.amount += sale.amount;
+      existing.count += 1;
+    } else {
+      salesTrendGroups.set(key, {
+        key,
+        label: getTrendLabel(bucketStart, salesTrendGrouping),
+        amount: sale.amount,
+        count: 1,
+        start: bucketStart,
+      });
+    }
+  }
+
+  const salesTrendData = Array.from(salesTrendGroups.values()).sort((left, right) => left.start.getTime() - right.start.getTime());
+  const salesTrendMaxAmount = salesTrendData.reduce((max, item) => Math.max(max, item.amount), 0);
+  const salesTrendTotalAmount = salesTrendData.reduce((sum, item) => sum + item.amount, 0);
+  const salesTrendSalesCount = salesTrendData.reduce((sum, item) => sum + item.count, 0);
+  const salesTrendAverageTicket = salesTrendSalesCount > 0 ? salesTrendTotalAmount / salesTrendSalesCount : 0;
+  const salesTrendPeak = salesTrendData.reduce<SalesTrendPoint | null>(
+    (current, item) => (!current || item.amount > current.amount ? item : current),
+    null
+  );
 
   const stockRows = currentStock.map((item) => {
     const product = products.find((entry) => entry.id === item.productId);
@@ -1062,7 +1713,10 @@ export default function App() {
       replenishments,
       salesUnits,
       averagePurchasePrice: product?.purchasePrice ?? 0,
+      sellingPrice: product?.sellingPrice ?? 0,
       stockValue: item.currentStock * (product?.purchasePrice ?? 0),
+      potentialRevenue: item.currentStock * (product?.sellingPrice ?? 0),
+      potentialMargin: item.currentStock * ((product?.sellingPrice ?? 0) - (product?.purchasePrice ?? 0)),
       unit: product?.unit ?? "piece",
       status,
     };
@@ -1083,6 +1737,11 @@ export default function App() {
   const stockHealthyCount = filteredStockRows.filter((item) => item.currentStock > item.alertThreshold).length;
   const stockUnitsTotal = filteredStockRows.reduce((sum, item) => sum + item.currentStock, 0);
   const stockValueTotal = filteredStockRows.reduce((sum, item) => sum + item.stockValue, 0);
+  const stockPotentialRevenueTotal = filteredStockRows.reduce((sum, item) => sum + item.potentialRevenue, 0);
+  const stockPotentialMarginTotal = filteredStockRows.reduce((sum, item) => sum + item.potentialMargin, 0);
+  const replenishmentSpendTotal = supplyHistory
+    .filter((entry) => entry.movementType === "reapprovisionnement")
+    .reduce((sum, entry) => sum + entry.amount, 0);
 
   function handleExportStockCsv() {
     const rows = [
@@ -1093,8 +1752,7 @@ export default function App() {
         "Reappro.",
         "Ventes",
         "Stock actuel",
-        "P.A. moyen",
-        "Valeur du stock",
+        ...(isSuperAdmin ? ["P.A. moyen", "Valeur du stock"] : []),
         "Unite",
         "Seuil",
         "Statut",
@@ -1107,8 +1765,7 @@ export default function App() {
           item.replenishments,
           item.salesUnits,
           item.currentStock,
-          item.averagePurchasePrice.toFixed(2),
-          item.stockValue.toFixed(2),
+          ...(isSuperAdmin ? [item.averagePurchasePrice.toFixed(2), item.stockValue.toFixed(2)] : []),
           item.unit,
           item.alertThreshold,
           item.status,
@@ -1195,11 +1852,38 @@ export default function App() {
     }
   }
 
+  function handleSyncButtonClick() {
+    if (!window.desktopApi) {
+      showToast("error", "La synchronisation locale vers Supabase est reservee a l'application desktop.");
+      return;
+    }
+
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      showToast("info", "Mode hors ligne actif. Vous pouvez continuer a travailler localement puis synchroniser des que la connexion revient.");
+      return;
+    }
+
+    if (!repository.hasSupabaseConfig) {
+      showToast("error", "Supabase n'est pas configure sur cette version de l'application. Ajoutez la configuration puis regenerez l'executable.");
+      return;
+    }
+
+    void handleSyncNow();
+  }
+
   const filteredUsers = users.filter((item) => {
     const query = normalizeText(userSearch);
     if (!query) return true;
     return [item.fullName, item.username, item.email, item.role].some((value) => normalizeText(value).includes(query));
   });
+  const filteredExpenses = expenses.filter((item) => {
+    const query = normalizeText(expenseSearch);
+    if (!query) return true;
+    return [item.detail, item.nature, item.requestedBy, item.approvedBy, item.purpose, item.date, String(item.amount)].some((value) =>
+      normalizeText(String(value)).includes(query)
+    );
+  });
+  const expensesTotal = filteredExpenses.reduce((sum, item) => sum + item.amount, 0);
   const adminUsersCount = filteredUsers.filter((item) => item.role !== "Employe").length;
   const activeUsersCount = filteredUsers.filter((item) => item.active).length;
 
@@ -1210,8 +1894,32 @@ export default function App() {
       normalizeText(String(value)).includes(query)
     );
   });
+  const formattedHistory = filteredHistory.map((entry) => ({
+    ...entry,
+    formattedAction: formatHistoryAction(entry),
+    formattedDetails: formatHistoryDetails(entry),
+  }));
+  const replenishmentHistoryEntries = supplyHistory.filter((item) => item.movementType === "reapprovisionnement");
+  const filteredReplenishmentHistory = replenishmentHistoryEntries.filter((item) => {
+    const query = normalizeText(supplyHistorySearch);
+    if (!query) return true;
+    return [item.product, item.supplier, item.date, String(item.quantity), String(item.amount)].some((value) =>
+      normalizeText(String(value)).includes(query)
+    );
+  });
+  const replenishmentHistoryUnits = filteredReplenishmentHistory.reduce((sum, item) => sum + item.quantity, 0);
+  const replenishmentHistoryAmount = filteredReplenishmentHistory.reduce((sum, item) => sum + item.amount, 0);
   const dashboardLowStockCount = currentStock.filter((item) => item.currentStock <= item.alertThreshold).length;
   const dashboardCounterSalesCount = sales.filter((sale) => sale.clientName === "Client comptoir").length;
+  const expenseReportTopProduct = expenseReport?.productLines[0] ?? null;
+  const expenseReportTopCategory = expenseReport?.serviceLines[0] ?? null;
+  const expenseReportGeneratedAt = new Date().toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
   if (loading && users.length === 0) {
     return (
@@ -1223,6 +1931,7 @@ export default function App() {
           <p className="login-kicker">Ouverture en cours</p>
           <h1>Gestion papeterie Walikale to world</h1>
           <p className="login-copy">Preparation de votre espace de travail...</p>
+          {startupIssue ? <p className="error-text startup-error">{startupIssue}</p> : null}
         </div>
       </div>
     );
@@ -1269,6 +1978,7 @@ export default function App() {
             </label>
 
             {loginError ? <p className="error-text">{loginError}</p> : null}
+            {startupIssue ? <p className="error-text startup-error">{startupIssue}</p> : null}
 
             <button
               className="primary-btn login-submit-btn"
@@ -1344,8 +2054,44 @@ export default function App() {
     }
   }
 
+  async function handlePrintReceipt() {
+    if (!selectedSaleDetail) {
+      return;
+    }
+
+    try {
+      const success = await repository.printSaleReceipt(selectedSaleDetail.id);
+      const message = success
+        ? "La fenetre du ticket 80 mm a ete ouverte pour impression XPrinter."
+        : "Impossible d'imprimer ce ticket 80 mm.";
+      setInvoiceMessage(message);
+      showToast(success ? "success" : "error", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible d'imprimer ce ticket 80 mm.";
+      setInvoiceMessage(message);
+      showToast("error", message);
+    }
+  }
+
+  async function handleExportReceiptPdf() {
+    if (!selectedSaleDetail) {
+      return;
+    }
+
+    try {
+      const result = await repository.exportSaleReceiptPdf(selectedSaleDetail.id);
+      const message = result ? `Ticket PDF exporte: ${result}` : "Export du ticket PDF annule ou impossible.";
+      setInvoiceMessage(message);
+      showToast(result ? "success" : "info", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible d'exporter ce ticket 80 mm en PDF.";
+      setInvoiceMessage(message);
+      showToast("error", message);
+    }
+  }
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${activeModal === "expenseReport" ? "printing-expense-report" : ""}`.trim()}>
       <header className="topbar">
         <div className="topbar-main">
           <div className="brand">
@@ -1372,7 +2118,7 @@ export default function App() {
 
           <div className="topbar-actions">
             <span className={`status-chip ${syncStatus.online && repository.hasSupabaseConfig ? "online" : ""}`}>
-              {syncStatus.online && repository.hasSupabaseConfig ? "En ligne" : "Hors ligne"}
+              {!repository.hasSupabaseConfig ? "Sync non configuree" : syncStatus.online ? "En ligne" : "Hors ligne"}
             </span>
             <button className="topbar-action-btn" type="button" disabled>
               {syncStatus.cloudHasChanges
@@ -1384,8 +2130,8 @@ export default function App() {
             <button
               className="topbar-action-btn"
               type="button"
-              onClick={() => void handleSyncNow()}
-              disabled={syncBusy || !window.desktopApi || !repository.hasSupabaseConfig}
+              onClick={handleSyncButtonClick}
+              disabled={syncBusy}
             >
               {syncBusy ? "Synchronisation..." : "Synchroniser"}
             </button>
@@ -1439,6 +2185,18 @@ export default function App() {
                 <article className="metric-card">
                   <span>Ventes du jour</span>
                   <strong>{metrics.dailySales}</strong>
+                </article>
+                <article className="metric-card">
+                  <span>Montant vendu</span>
+                  <strong>{formatCurrency(metrics.totalSalesAmount ?? 0)}</strong>
+                </article>
+                <article className="metric-card warning">
+                  <span>Depenses engagees</span>
+                  <strong>{formatCurrency(metrics.totalExpenses ?? 0)}</strong>
+                </article>
+                <article className="metric-card success">
+                  <span>Solde net</span>
+                  <strong>{formatCurrency(metrics.netSalesAmount ?? 0)}</strong>
                 </article>
                 <article className="metric-card">
                   <span>Fournisseurs</span>
@@ -1502,6 +2260,92 @@ export default function App() {
                     Ouvrir stock
                   </button>
                 </div>
+              </article>
+              <article className="panel-card sales-trends-card">
+                <div className="panel-header">
+                  <h2>Tendance des ventes</h2>
+                </div>
+                <div className="sales-trends-toolbar">
+                  <label>
+                    <span>Periode</span>
+                    <select value={salesTrendPreset} onChange={(event) => setSalesTrendPreset(event.target.value as SalesTrendPreset)}>
+                      <option value="7d">7 derniers jours</option>
+                      <option value="30d">30 derniers jours</option>
+                      <option value="90d">90 derniers jours</option>
+                      <option value="month">Mois en cours</option>
+                      <option value="year">Annee en cours</option>
+                      <option value="custom">Personnalisee</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Regroupement</span>
+                    <select
+                      value={salesTrendGrouping}
+                      onChange={(event) => setSalesTrendGrouping(event.target.value as SalesTrendGrouping)}
+                    >
+                      <option value="day">Jour</option>
+                      <option value="week">Semaine</option>
+                      <option value="month">Mois</option>
+                      <option value="year">Annee</option>
+                    </select>
+                  </label>
+                  {salesTrendPreset === "custom" ? (
+                    <>
+                      <label>
+                        <span>Du</span>
+                        <input type="date" value={salesTrendStart} onChange={(event) => setSalesTrendStart(event.target.value)} />
+                      </label>
+                      <label>
+                        <span>Au</span>
+                        <input type="date" value={salesTrendEnd} onChange={(event) => setSalesTrendEnd(event.target.value)} />
+                      </label>
+                    </>
+                  ) : null}
+                </div>
+
+                <div className="sales-summary compact-summary sales-trends-summary">
+                  <div className="sales-indicator neutral">
+                    <span>Montant sur la periode</span>
+                    <strong>{formatCurrency(salesTrendTotalAmount)}</strong>
+                  </div>
+                  <div className="sales-indicator success">
+                    <span>Nombre de ventes</span>
+                    <strong>{salesTrendSalesCount}</strong>
+                  </div>
+                  <div className="sales-indicator neutral">
+                    <span>Panier moyen</span>
+                    <strong>{formatCurrency(salesTrendAverageTicket)}</strong>
+                  </div>
+                  <div className="sales-indicator warning">
+                    <span>Meilleure periode</span>
+                    <strong>{salesTrendPeak ? `${salesTrendPeak.label} - ${formatCurrency(salesTrendPeak.amount)}` : "Aucune vente"}</strong>
+                  </div>
+                </div>
+
+                {salesTrendData.length === 0 ? (
+                  <EmptyState
+                    title="Aucune vente sur cette periode"
+                    description="Change la periode ou enregistre de nouvelles ventes pour afficher le graphique."
+                  />
+                ) : (
+                  <div className="bar-chart" aria-label="Graphique des ventes par periode">
+                    {salesTrendData.map((item) => {
+                      const height = salesTrendMaxAmount > 0 ? Math.max((item.amount / salesTrendMaxAmount) * 100, 12) : 12;
+                      return (
+                        <div className="bar-wrap" key={item.key}>
+                          <strong>{formatCurrency(item.amount)}</strong>
+                          <div
+                            className="bar"
+                            style={{ height: `${height}%` }}
+                            title={`${item.label}: ${formatCurrency(item.amount)} pour ${item.count} vente(s)`}
+                          />
+                          <span>{item.label}</span>
+                          <small>{item.count} vente(s)</small>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </article>
             </section>
           </>
@@ -1641,6 +2485,81 @@ export default function App() {
           </section>
         )}
 
+        {activeTab === "services" && (
+          <section className="panel-card">
+            <div className="panel-header">
+              <h2>Services</h2>
+              <div className="panel-header-actions">
+                {canManageInventory ? (
+                  <button className="primary-btn" type="button" onClick={openServiceModal}>
+                    Nouveau service
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="products-summary">
+              <div className="products-indicator neutral">
+                <span>Services affiches</span>
+                <strong>{filteredServices.length}</strong>
+              </div>
+              <div className="products-indicator success">
+                <span>Services actifs</span>
+                <strong>{activeServicesCount}</strong>
+              </div>
+              <div className="products-indicator neutral">
+                <span>Categories</span>
+                <strong>{serviceCategoriesCount}</strong>
+              </div>
+            </div>
+            <div className="section-tools">
+              <input
+                className="table-search-input"
+                placeholder="Rechercher par nom, categorie, description ou etat"
+                value={serviceSearch}
+                onChange={(event) => setServiceSearch(event.target.value)}
+              />
+              <span className="section-count">{filteredServices.length} resultat(s)</span>
+            </div>
+            {services.length === 0 ? (
+              <EmptyState
+                title="Aucun service enregistre"
+                description="Ajoutez ici les prestations comme saisie, impression, scan ou maintenance."
+              />
+            ) : filteredServices.length === 0 ? (
+              <EmptyState title="Aucun service trouve" description="Aucun service ne correspond a votre recherche." />
+            ) : (
+              <div className="table-wrap products-table-wrap">
+                <table className="products-table">
+                  <thead>
+                    <tr>
+                      <th>Service</th>
+                      <th>Categorie</th>
+                      <th>Prix unitaire</th>
+                      <th>Description</th>
+                      <th>Etat</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredServices.map((item) => (
+                      <tr key={item.id}>
+                        <td className="products-code-cell">{item.name}</td>
+                        <td>{item.category}</td>
+                        <td className="products-price-cell">{formatCurrency(item.unitPrice)}</td>
+                        <td>{item.description || "-"}</td>
+                        <td>
+                          <span className={`products-threshold-badge ${item.active ? "success" : "warning"}`}>
+                            {item.active ? "Actif" : "Inactif"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
         {activeTab === "clients" && (
           <section className="panel-card">
             <div className="panel-header">
@@ -1701,6 +2620,84 @@ export default function App() {
                         <td>{client.phone || "-"}</td>
                         <td>{client.address}</td>
                         <td className="clients-email-cell">{client.email || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "expenses" && (
+          <section className="panel-card">
+            <div className="panel-header">
+              <h2>Depenses engagees</h2>
+              <div className="panel-header-actions">
+                {canManageExpenses ? (
+                  <button className="primary-btn" type="button" onClick={openExpenseModal}>
+                    Nouvelle depense
+                  </button>
+                ) : null}
+                <button className="ghost-btn" type="button" onClick={() => void openExpenseReportModal()} disabled={expenseReportBusy}>
+                  {expenseReportBusy ? "Generation..." : "Generer le rapport complet"}
+                </button>
+              </div>
+            </div>
+            <div className="sales-summary compact-summary">
+              <div className="sales-indicator warning">
+                <span>Total des depenses</span>
+                <strong>{formatCurrency(expensesTotal)}</strong>
+              </div>
+              <div className="sales-indicator neutral">
+                <span>Nombre d'ecritures</span>
+                <strong>{filteredExpenses.length}</strong>
+              </div>
+              <div className="sales-indicator success">
+                <span>Impact sur le vendu</span>
+                <strong>{formatCurrency((metrics.netSalesAmount ?? 0))}</strong>
+              </div>
+            </div>
+            <div className="section-tools">
+              <input
+                className="table-search-input"
+                placeholder="Rechercher par nature, detail, usage, approbateur ou utilisateur"
+                value={expenseSearch}
+                onChange={(event) => setExpenseSearch(event.target.value)}
+              />
+              <span className="section-count">{filteredExpenses.length} resultat(s)</span>
+            </div>
+            {expenses.length === 0 ? (
+              <EmptyState
+                title="Aucune depense enregistree"
+                description="Enregistrez ici les depenses engagees pour suivre leur impact sur le resultat des ventes."
+              />
+            ) : filteredExpenses.length === 0 ? (
+              <EmptyState title="Aucune depense trouvee" description="Aucune depense ne correspond a votre recherche." />
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Nature</th>
+                      <th>Detail</th>
+                      <th>Montant</th>
+                      <th>Utilisateur</th>
+                      <th>Approuve par</th>
+                      <th>Usage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredExpenses.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.date}</td>
+                        <td>{item.nature}</td>
+                        <td>{item.detail}</td>
+                        <td>{formatCurrency(item.amount)}</td>
+                        <td>{item.requestedBy}</td>
+                        <td>{item.approvedBy}</td>
+                        <td>{item.purpose}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1790,6 +2787,9 @@ export default function App() {
                     Nouvel approvisionnement
                   </button>
                 ) : null}
+                <button className="ghost-btn" type="button" onClick={openSupplyHistoryModal}>
+                  Historique d'approvisionnement
+                </button>
                 <button className="ghost-btn" type="button">
                   Importer Excel
                 </button>
@@ -1901,11 +2901,19 @@ export default function App() {
                 <span>Montant total</span>
                 <strong>{formatCurrency(totalSalesAmount)}</strong>
               </div>
+              <div className="sales-indicator warning">
+                <span>Depenses engagees</span>
+                <strong>{formatCurrency(salesPeriodExpensesTotal)}</strong>
+              </div>
+              <div className="sales-indicator success">
+                <span>Montant net</span>
+                <strong>{formatCurrency(salesPeriodNetAmount)}</strong>
+              </div>
               <div className="sales-indicator neutral">
                 <span>Lignes vendues</span>
                 <strong>{totalSalesLines}</strong>
               </div>
-              <div className="sales-indicator warning">
+              <div className="sales-indicator neutral">
                 <span>Clients comptoir</span>
                 <strong>{totalCounterSales}</strong>
               </div>
@@ -1923,6 +2931,24 @@ export default function App() {
                 value={saleSearch}
                 onChange={(event) => setSaleSearch(event.target.value)}
               />
+              <div className="stock-filters sales-filters">
+                <select value={salesPeriodPreset} onChange={(event) => setSalesPeriodPreset(event.target.value as SalesPeriodPreset)}>
+                  <option value="all">Toutes les periodes</option>
+                  <option value="today">Aujourd'hui</option>
+                  <option value="7d">7 derniers jours</option>
+                  <option value="30d">30 derniers jours</option>
+                  <option value="90d">90 derniers jours</option>
+                  <option value="month">Mois en cours</option>
+                  <option value="year">Annee en cours</option>
+                  <option value="custom">Periode personnalisee</option>
+                </select>
+                {salesPeriodPreset === "custom" ? (
+                  <>
+                    <input type="date" value={salesPeriodStart} onChange={(event) => setSalesPeriodStart(event.target.value)} />
+                    <input type="date" value={salesPeriodEnd} onChange={(event) => setSalesPeriodEnd(event.target.value)} />
+                  </>
+                ) : null}
+              </div>
               <span className="section-count">{filteredSales.length} resultat(s)</span>
             </div>
             {saleError ? <p className="error-text">{saleError}</p> : null}
@@ -2006,10 +3032,30 @@ export default function App() {
                 <span>Articles suivis</span>
                 <strong>{filteredStockRows.length}</strong>
               </div>
-              <div className="stock-indicator neutral">
-                <span>Valeur totale du stock</span>
-                <strong>{formatCurrency(stockValueTotal)}</strong>
-              </div>
+              {isSuperAdmin ? (
+                <div className="stock-indicator neutral">
+                  <span>Valeur totale du stock (achat)</span>
+                  <strong>{formatCurrency(stockValueTotal)}</strong>
+                </div>
+              ) : null}
+              {isSuperAdmin ? (
+                <div className="stock-indicator warning">
+                  <span>Total depense en approvisionnement</span>
+                  <strong>{formatCurrency(replenishmentSpendTotal)}</strong>
+                </div>
+              ) : null}
+              {isSuperAdmin ? (
+                <div className="stock-indicator neutral">
+                  <span>Vente potentielle du stock</span>
+                  <strong>{formatCurrency(stockPotentialRevenueTotal)}</strong>
+                </div>
+              ) : null}
+              {isSuperAdmin ? (
+                <div className="stock-indicator success">
+                  <span>Gain potentiel apres vente</span>
+                  <strong>{formatCurrency(stockPotentialMarginTotal)}</strong>
+                </div>
+              ) : null}
               <div className="stock-indicator success">
                 <span>Stock correct</span>
                 <strong>{stockHealthyCount}</strong>
@@ -2070,8 +3116,8 @@ export default function App() {
                     <th>Ventes</th>
                     <th>Entrees</th>
                     <th>Stock actuel</th>
-                    <th>P.A. moyen</th>
-                    <th>Valeur du stock</th>
+                    {isSuperAdmin ? <th>P.A. moyen</th> : null}
+                    {isSuperAdmin ? <th>Valeur stock (achat)</th> : null}
                     <th>Unite</th>
                     <th>Seuil</th>
                     <th>Alerte</th>
@@ -2089,8 +3135,8 @@ export default function App() {
                       <td>-{item.salesUnits}</td>
                       <td>+{item.quantityIn}</td>
                       <td className="stock-current-cell">{item.currentStock}</td>
-                      <td>{formatCurrency(item.averagePurchasePrice)}</td>
-                      <td className="stock-value-cell">{formatCurrency(item.stockValue)}</td>
+                      {isSuperAdmin ? <td>{formatCurrency(item.averagePurchasePrice)}</td> : null}
+                      {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(item.stockValue)}</td> : null}
                       <td>{item.unit}</td>
                       <td>{item.alertThreshold}</td>
                       <td>
@@ -2103,9 +3149,9 @@ export default function App() {
                   <tr className="stock-total-row">
                     <td colSpan={6}>Total du stock actuel</td>
                     <td className="stock-current-cell">{stockUnitsTotal}</td>
-                    <td>-</td>
-                    <td className="stock-value-cell">{formatCurrency(stockValueTotal)}</td>
-                    <td colSpan={3}></td>
+                    {isSuperAdmin ? <td>-</td> : null}
+                    {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(stockValueTotal)}</td> : null}
+                    <td colSpan={isSuperAdmin ? 3 : 4}></td>
                   </tr>
                 </tbody>
               </table>
@@ -2114,7 +3160,7 @@ export default function App() {
           </section>
         )}
 
-        {activeTab === "utilisateurs" && (
+        {activeTab === "utilisateurs" && isSuperAdmin && (
           <section className="panel-card">
             <div className="users-header">
               <div className="users-header-main">
@@ -2232,7 +3278,7 @@ export default function App() {
           </section>
         )}
 
-        {activeTab === "history" && (
+        {activeTab === "history" && isSuperAdmin && (
           <section className="panel-card">
             <div className="panel-header">
               <h2>Historique</h2>
@@ -2240,39 +3286,37 @@ export default function App() {
             <div className="section-tools">
               <input
                 className="table-search-input"
-                placeholder="Rechercher par action, element, detail, utilisateur ou date"
+                placeholder="Rechercher par date, utilisateur, action ou details"
                 value={historySearch}
                 onChange={(event) => setHistorySearch(event.target.value)}
               />
-              <span className="section-count">{filteredHistory.length} resultat(s)</span>
+              <span className="section-count">{formattedHistory.length} resultat(s)</span>
             </div>
             {activityHistory.length === 0 ? (
               <EmptyState
                 title="Aucun historique disponible"
                 description="Les actions importantes du systeme s'afficheront ici au fur et a mesure de l'activite."
               />
-            ) : filteredHistory.length === 0 ? (
+            ) : formattedHistory.length === 0 ? (
               <EmptyState title="Aucun element trouve" description="Aucune action ne correspond a votre recherche." />
             ) : (
             <div className="table-wrap">
               <table>
                 <thead>
                   <tr>
-                    <th>Date</th>
-                    <th>Action</th>
-                    <th>Element</th>
-                    <th>Details</th>
+                    <th>Date et heure</th>
                     <th>Utilisateur</th>
+                    <th>Action</th>
+                    <th>Details</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredHistory.map((entry) => (
+                  {formattedHistory.map((entry) => (
                     <tr key={entry.id}>
                       <td>{entry.date}</td>
-                      <td>{entry.action}</td>
-                      <td>{entry.target}</td>
-                      <td>{entry.details}</td>
                       <td>{entry.user}</td>
+                      <td>{entry.formattedAction}</td>
+                      <td>{entry.formattedDetails}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -2283,13 +3327,12 @@ export default function App() {
         )}
       </main>
 
-        {activeModal === "product" ? (
+      {activeModal === "product" ? (
         <Modal
           title={productModalMode === "edit" ? "Mettre a jour le produit" : "Nouveau produit"}
           onClose={closeModal}
-          size="large"
         >
-          <form className="modal-form supply-form supply-form-wide" onSubmit={handleSubmit}>
+          <form className="modal-form modal-form-stack" onSubmit={handleSubmit}>
             <label>
               Code
               <input
@@ -2424,6 +3467,324 @@ export default function App() {
         </Modal>
       ) : null}
 
+      {activeModal === "service" ? (
+        <Modal title="Nouveau service" onClose={closeModal}>
+          <form className="modal-form modal-form-stack" onSubmit={handleServiceSubmit}>
+            <label>
+              Nom du service
+              <input
+                value={serviceDraft.name}
+                onChange={(event) => setServiceDraft((current) => ({ ...current, name: event.target.value }))}
+                required
+              />
+            </label>
+            <label>
+              Categorie
+              <input
+                value={serviceDraft.category}
+                onChange={(event) => setServiceDraft((current) => ({ ...current, category: event.target.value }))}
+                placeholder="Ex: Impression, maintenance, numerisation..."
+                required
+              />
+            </label>
+            <label>
+              Prix unitaire
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={serviceDraft.unitPrice || ""}
+                onChange={(event) => setServiceDraft((current) => ({ ...current, unitPrice: Number(event.target.value) }))}
+                required
+              />
+            </label>
+            <label>
+              Description
+              <textarea
+                rows={3}
+                value={serviceDraft.description}
+                onChange={(event) => setServiceDraft((current) => ({ ...current, description: event.target.value }))}
+                placeholder="Description courte du service"
+              />
+            </label>
+            <label>
+              <span>Etat</span>
+              <select
+                value={serviceDraft.active === false ? "inactive" : "active"}
+                onChange={(event) => setServiceDraft((current) => ({ ...current, active: event.target.value === "active" }))}
+              >
+                <option value="active">Actif</option>
+                <option value="inactive">Inactif</option>
+              </select>
+            </label>
+            <div className="modal-actions">
+              <button className="ghost-btn muted" type="button" onClick={closeModal}>
+                Annuler
+              </button>
+              <button className="primary-btn" type="submit">
+                Enregistrer le service
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {activeModal === "expense" ? (
+        <Modal title="Nouvelle depense engagee" onClose={closeModal}>
+          <form className="modal-form modal-form-stack" onSubmit={handleExpenseSubmit}>
+            <label>
+              Nature de la depense
+              <input
+                value={expenseDraft.nature}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, nature: event.target.value }))}
+                placeholder="Ex: Transport, loyer, fournitures..."
+                required
+              />
+            </label>
+            <label>
+              Detail
+              <input
+                value={expenseDraft.detail}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, detail: event.target.value }))}
+                placeholder="Resume court de la depense"
+                required
+              />
+            </label>
+            <label>
+              Montant
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={expenseDraft.amount || ""}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, amount: Number(event.target.value) }))}
+                required
+              />
+            </label>
+            <label>
+              Date
+              <input
+                type="date"
+                value={expenseDraft.date}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, date: event.target.value }))}
+                required
+              />
+            </label>
+            <label>
+              Approuve par
+              <input
+                value={expenseDraft.approvedBy}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, approvedBy: event.target.value }))}
+                placeholder="Nom de la personne qui a approuve"
+                required
+              />
+            </label>
+            <label>
+              La depense sert a quoi ?
+              <textarea
+                rows={3}
+                value={expenseDraft.purpose}
+                onChange={(event) => setExpenseDraft((current) => ({ ...current, purpose: event.target.value }))}
+                placeholder="Usage ou objectif de la depense"
+                required
+              />
+            </label>
+            <div className="modal-actions">
+              <button className="ghost-btn muted" type="button" onClick={closeModal}>
+                Annuler
+              </button>
+              <button className="primary-btn" type="submit">
+                Enregistrer la depense
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {activeModal === "expenseReport" && expenseReport ? (
+        <Modal
+          title="Rapport complet des ventes et depenses"
+          onClose={closeModal}
+          size="large"
+          backdropClassName="printable-expense-backdrop"
+        >
+          <div className="confirm-stack expense-report-sheet">
+            <div className="expense-report-header">
+              <div>
+                <p className="expense-report-kicker">Rapport financier</p>
+                <h3>Rapport complet des ventes et depenses</h3>
+                <p className="expense-report-subtitle">
+                  Document de synthese pour lecture a l'ecran, impression papier ou export PDF.
+                </p>
+              </div>
+              <div className="expense-report-meta">
+                <span>Genere le {expenseReportGeneratedAt}</span>
+                <span>Par {currentUser?.fullName ?? "Utilisateur"}</span>
+              </div>
+            </div>
+
+            <div className="sales-summary compact-summary expense-report-summary">
+              <div className="sales-indicator success">
+                <span>Montant total vendu</span>
+                <strong>{formatCurrency(expenseReport.totalSalesAmount)}</strong>
+              </div>
+              <div className="sales-indicator warning">
+                <span>Total des depenses</span>
+                <strong>{formatCurrency(expenseReport.totalExpensesAmount)}</strong>
+              </div>
+              <div className="sales-indicator neutral">
+                <span>Solde apres depenses</span>
+                <strong>{formatCurrency(expenseReport.netBalance)}</strong>
+              </div>
+            </div>
+
+            <section className="expense-report-callout">
+              <h4>Lecture rapide</h4>
+              <p>
+                {expenseReport.netBalance >= 0
+                  ? `Les ventes couvrent actuellement les depenses avec un solde positif de ${formatCurrency(expenseReport.netBalance)}.`
+                  : `Les depenses depassent actuellement les ventes de ${formatCurrency(Math.abs(expenseReport.netBalance))}.`}
+              </p>
+              <div className="expense-report-highlights">
+                <div className="expense-report-highlight">
+                  <span>Produit le plus vendeur</span>
+                  <strong>{expenseReportTopProduct ? expenseReportTopProduct.productName : "Aucun produit"}</strong>
+                  <small>
+                    {expenseReportTopProduct
+                      ? `${expenseReportTopProduct.quantity} unite(s) - ${formatCurrency(expenseReportTopProduct.amount)}`
+                      : "Aucune vente detaillee"}
+                  </small>
+                </div>
+                <div className="expense-report-highlight">
+                  <span>Service dominant</span>
+                  <strong>{expenseReportTopCategory ? expenseReportTopCategory.category : "Aucun service"}</strong>
+                  <small>
+                    {expenseReportTopCategory
+                      ? `${expenseReportTopCategory.quantity} unite(s) - ${formatCurrency(expenseReportTopCategory.amount)}`
+                      : "Aucune repartition disponible"}
+                  </small>
+                </div>
+                <div className="expense-report-highlight">
+                  <span>Nombre de depenses</span>
+                  <strong>{expenses.length}</strong>
+                  <small>
+                    {expenses.length > 0
+                      ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenses.length)}`
+                      : "Aucune depense enregistree"}
+                  </small>
+                </div>
+              </div>
+            </section>
+
+            <section className="expense-report-section">
+              <div className="expense-report-section-header">
+                <div>
+                  <h4>Ventes par produit</h4>
+                  <p>Quels produits ont genere le plus de chiffre d'affaires.</p>
+                </div>
+              </div>
+              <div className="table-wrap modal-table-wrap">
+                <table className="expense-report-table">
+                  <thead>
+                    <tr>
+                      <th>Produit</th>
+                      <th>Categorie</th>
+                      <th>Quantite vendue</th>
+                      <th>Montant vendu</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenseReport.productLines.map((line) => (
+                      <tr key={line.productId}>
+                        <td>{line.productName}</td>
+                        <td>{line.category}</td>
+                        <td>{line.quantity}</td>
+                        <td>{formatCurrency(line.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="expense-report-section">
+              <div className="expense-report-section-header">
+                <div>
+                  <h4>Repartition par categorie</h4>
+                  <p>Vue detaillee des services et activites vendus.</p>
+                </div>
+              </div>
+              <div className="table-wrap modal-table-wrap">
+                <table className="expense-report-table">
+                  <thead>
+                    <tr>
+                      <th>Service / activite</th>
+                      <th>Quantite totale</th>
+                      <th>Total genere</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenseReport.serviceLines.map((line) => (
+                      <tr key={line.category}>
+                        <td>{line.category}</td>
+                        <td>{line.quantity}</td>
+                        <td>{formatCurrency(line.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="expense-report-section">
+              <div className="expense-report-section-header">
+                <div>
+                  <h4>Journal des depenses</h4>
+                  <p>Liste detaillee des depenses qui impactent le resultat.</p>
+                </div>
+              </div>
+              <div className="table-wrap modal-table-wrap">
+                <table className="expense-report-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Nature</th>
+                      <th>Detail</th>
+                      <th>Montant</th>
+                      <th>Utilisateur</th>
+                      <th>Approuve par</th>
+                      <th>Usage</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {expenses.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.date}</td>
+                        <td>{item.nature}</td>
+                        <td>{item.detail}</td>
+                        <td>{formatCurrency(item.amount)}</td>
+                        <td>{item.requestedBy}</td>
+                        <td>{item.approvedBy}</td>
+                        <td>{item.purpose}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <div className="modal-actions expense-report-actions">
+              <button className="ghost-btn" type="button" onClick={() => window.print()}>
+                Imprimer / PDF
+              </button>
+              <button className="ghost-btn muted" type="button" onClick={closeModal}>
+                Fermer
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
       {activeModal === "replenishment" ? (
         <Modal title="Nouvel approvisionnement" onClose={closeModal}>
           <form className="modal-form modal-form-stack" onSubmit={handleReplenishmentSubmit}>
@@ -2458,7 +3819,10 @@ export default function App() {
                 min="1"
                 value={replenishmentDraft.quantity}
                 onChange={(event) =>
-                  setReplenishmentDraft((current) => ({ ...current, quantity: Number(event.target.value) }))
+                  setReplenishmentDraft((current) => ({
+                    ...current,
+                    quantity: event.target.value === "" ? "" : Number(event.target.value),
+                  }))
                 }
                 required
               />
@@ -2561,6 +3925,7 @@ export default function App() {
 
             <div className="sales-modern-products">
               <p className="sales-modern-label">Produits achetes</p>
+              {products.length === 0 ? <p className="hero-copy">Aucun produit en stock. Tu peux tout de meme facturer uniquement des services.</p> : null}
               {saleDraft.items.map((line, index) => {
                 const selectedProduct = products.find((item) => item.id === line.productId);
                 const requestedQuantity = requestedProductQuantities.get(line.productId) ?? 0;
@@ -2604,8 +3969,54 @@ export default function App() {
                 );
               })}
 
-              <button className="sales-add-line-btn" type="button" onClick={addSaleLine}>
+              <button className="sales-add-line-btn" type="button" onClick={addSaleLine} disabled={products.length === 0}>
                 + Ajouter un produit
+              </button>
+            </div>
+
+            <div className="sales-modern-products">
+              <p className="sales-modern-label">Services effectues</p>
+              {saleDraft.serviceItems.length === 0 ? (
+                <p className="hero-copy">Ajoute ici les prestations comme saisie, impression, scan ou maintenance.</p>
+              ) : null}
+              {saleDraft.serviceItems.map((line, index) => {
+                const selectedService = services.find((item) => item.id === line.serviceId);
+
+                return (
+                  <div className="sales-line-card" key={`${line.serviceId}-${index}`}>
+                    <div className="sales-line-main">
+                      <select
+                        value={line.serviceId}
+                        onChange={(event) => updateSaleServiceLine(index, { serviceId: Number(event.target.value) })}
+                      >
+                        {services.filter((item) => item.active).map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        className="sales-qty-input"
+                        type="number"
+                        min="1"
+                        placeholder="Qte"
+                        value={line.quantity}
+                        onChange={(event) => updateSaleServiceLine(index, { quantity: Number(event.target.value) })}
+                      />
+                      <button className="icon-btn delete" type="button" title="Retirer le service" onClick={() => removeSaleServiceLine(index)}>
+                        Retirer
+                      </button>
+                    </div>
+                    <div className="sales-line-meta">
+                      <span>{formatCurrency(selectedService?.unitPrice ?? 0)}</span>
+                      <span>{selectedService?.category ?? "Service"}</span>
+                    </div>
+                  </div>
+                );
+              })}
+
+              <button className="sales-add-line-btn" type="button" onClick={addSaleServiceLine} disabled={services.filter((item) => item.active).length === 0}>
+                + Ajouter un service
               </button>
             </div>
 
@@ -2774,10 +4185,16 @@ export default function App() {
             </div>
             <div className="sales-actions-row invoice-actions-row">
               <button className="ghost-btn" type="button" onClick={() => void handlePrintInvoice()}>
-                Imprimer
+                Imprimer facture A4
               </button>
               <button className="primary-btn" type="button" onClick={() => void handleExportInvoicePdf()}>
-                Exporter PDF
+                Exporter PDF A4
+              </button>
+              <button className="ghost-btn success" type="button" onClick={() => void handlePrintReceipt()}>
+                Imprimer ticket 80 mm
+              </button>
+              <button className="ghost-btn" type="button" onClick={() => void handleExportReceiptPdf()}>
+                Exporter ticket PDF
               </button>
             </div>
             {invoiceMessage ? <p className="invoice-message">{invoiceMessage}</p> : null}
@@ -2802,6 +4219,72 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {activeModal === "supplyHistory" ? (
+        <Modal title="Historique d'approvisionnement" onClose={closeModal} size="large">
+          <div className="confirm-stack">
+            <div className="section-tools">
+              <input
+                className="table-search-input"
+                placeholder="Rechercher un produit, un fournisseur ou une date"
+                value={supplyHistorySearch}
+                onChange={(event) => setSupplyHistorySearch(event.target.value)}
+              />
+              <span className="section-count">{filteredReplenishmentHistory.length} mouvement(s)</span>
+            </div>
+            <div className="stock-summary compact-summary">
+              <article className="stock-stat-card">
+                <span className="stock-stat-title">Total approvisionne</span>
+                <strong>{replenishmentHistoryUnits}</strong>
+              </article>
+              <article className="stock-stat-card">
+                <span className="stock-stat-title">Valeur cumulee</span>
+                <strong>{formatCurrency(replenishmentHistoryAmount)}</strong>
+              </article>
+            </div>
+            {filteredReplenishmentHistory.length === 0 ? (
+              <EmptyState
+                title="Aucun approvisionnement trouve"
+                description="Aucun mouvement d'approvisionnement ne correspond a cette recherche."
+              />
+            ) : (
+              <div className="table-wrap modal-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Produit</th>
+                      <th>Quantite</th>
+                      <th>Prix d'achat</th>
+                      <th>Prix de vente</th>
+                      <th>Fournisseur</th>
+                      <th>Montant</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredReplenishmentHistory.map((item) => (
+                      <tr key={item.id}>
+                        <td>{item.date}</td>
+                        <td>{item.product}</td>
+                        <td>{item.quantity}</td>
+                        <td>{formatCurrency(item.purchasePrice)}</td>
+                        <td>{formatCurrency(item.sellingPrice)}</td>
+                        <td>{item.supplier}</td>
+                        <td>{formatCurrency(item.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="modal-actions">
+              <button className="ghost-btn muted" type="button" onClick={closeModal}>
+                Fermer
+              </button>
             </div>
           </div>
         </Modal>

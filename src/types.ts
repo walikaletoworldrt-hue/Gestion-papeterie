@@ -1,7 +1,9 @@
 export type TabId =
   | "dashboard"
   | "products"
+  | "services"
   | "clients"
+  | "expenses"
   | "initial-stock"
   | "replenishments"
   | "sales"
@@ -35,12 +37,33 @@ export type ProductDraft = {
   supplier: string;
 };
 
+export type Service = {
+  id: number;
+  name: string;
+  category: string;
+  unitPrice: number;
+  description: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ServiceDraft = {
+  name: string;
+  category: string;
+  unitPrice: number;
+  description: string;
+  active?: boolean;
+};
+
 export type SupplyHistoryItem = {
   id: number;
   date: string;
   product: string;
   quantity: number;
   supplier: string;
+  purchasePrice: number;
+  sellingPrice: number;
   amount: number;
   movementType: "stock_initial" | "reapprovisionnement" | "vente";
 };
@@ -54,21 +77,50 @@ export type ActivityHistoryItem = {
   user: string;
 };
 
+export type ExpenseItem = {
+  id: number;
+  detail: string;
+  nature: string;
+  amount: number;
+  date: string;
+  requestedBy: string;
+  approvedBy: string;
+  purpose: string;
+};
+
+export type ExpenseDraft = {
+  detail: string;
+  nature: string;
+  amount: number;
+  date: string;
+  approvedBy: string;
+  purpose: string;
+};
+
 export type DashboardMetrics = {
   totalStock: number;
   totalProducts: number;
   dailySales: number;
   suppliers: number;
+  totalSalesAmount?: number;
+  totalExpenses?: number;
+  netSalesAmount?: number;
 };
 
 export type SaleDraft = {
   clientId: number | null;
   paymentMethod: string;
   items: SaleItemDraft[];
+  serviceItems: SaleServiceItemDraft[];
 };
 
 export type SaleItemDraft = {
   productId: number;
+  quantity: number;
+};
+
+export type SaleServiceItemDraft = {
+  serviceId: number;
   quantity: number;
 };
 
@@ -84,8 +136,11 @@ export type SaleRecord = {
 };
 
 export type SaleDetailItem = {
-  productId: number;
+  lineType: "product" | "service";
+  productId?: number;
+  serviceId?: number;
   productName: string;
+  category?: string;
   quantity: number;
   unitPrice: number;
   lineTotal: number;
@@ -144,6 +199,15 @@ export type LoginDraft = {
   password: string;
 };
 
+export type CloudDesktopSessionDraft = {
+  authUserId: string;
+  fullName: string;
+  username: string;
+  email: string;
+  role: UserRole;
+  password: string;
+};
+
 export type PasswordChangeDraft = {
   userId: number;
   currentPassword?: string;
@@ -191,12 +255,16 @@ export type SyncConflictPreview = {
 };
 
 export type SyncSnapshot = {
+  users: Array<Record<string, unknown>>;
   products: Array<Record<string, unknown>>;
+  services: Array<Record<string, unknown>>;
   clients: Array<Record<string, unknown>>;
+  expenses: Array<Record<string, unknown>>;
   initialStocks: Array<Record<string, unknown>>;
   replenishments: Array<Record<string, unknown>>;
   sales: Array<Record<string, unknown>>;
   saleItems: Array<Record<string, unknown>>;
+  saleServiceItems: Array<Record<string, unknown>>;
   stockMovements: Array<Record<string, unknown>>;
   auditLogs: Array<Record<string, unknown>>;
   invoiceSequences: Array<Record<string, unknown>>;
@@ -208,19 +276,26 @@ export type DesktopApi = {
   listProducts: () => Promise<Product[]>;
   saveProduct: (draft: ProductDraft) => Promise<Product[]>;
   deleteProduct: (id: number) => Promise<Product[]>;
+  listServices: () => Promise<Service[]>;
+  saveService: (draft: ServiceDraft) => Promise<Service[]>;
   listSales: () => Promise<SaleRecord[]>;
   createSale: (draft: SaleDraft) => Promise<SaleRecord[]>;
   getSaleDetail: (saleId: number) => Promise<SaleDetail | null>;
   printSaleInvoice: (saleId: number) => Promise<boolean>;
   exportSalePdf: (saleId: number) => Promise<string | null>;
+  printSaleReceipt: (saleId: number) => Promise<boolean>;
+  exportSaleReceiptPdf: (saleId: number) => Promise<string | null>;
   getSupplyHistory: () => Promise<SupplyHistoryItem[]>;
   getActivityHistory: () => Promise<ActivityHistoryItem[]>;
+  listExpenses: () => Promise<ExpenseItem[]>;
+  saveExpense: (draft: ExpenseDraft) => Promise<ExpenseItem[]>;
   getDashboardMetrics: () => Promise<DashboardMetrics>;
   listClients: () => Promise<Client[]>;
   saveClient: (draft: ClientDraft) => Promise<Client[]>;
   listUsers: () => Promise<AppUser[]>;
   saveUser: (draft: UserDraft) => Promise<AppUser[]>;
   authenticateUser: (draft: LoginDraft) => Promise<AppUser | null>;
+  cacheCloudAuthenticatedUser: (draft: CloudDesktopSessionDraft) => Promise<AppUser>;
   restoreUserSession: (userId: number) => Promise<AppUser | null>;
   logoutUser: () => Promise<void>;
   changeUserPassword: (draft: PasswordChangeDraft) => Promise<AppUser[]>;

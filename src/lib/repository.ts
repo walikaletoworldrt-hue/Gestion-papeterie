@@ -1,3 +1,4 @@
+import { createClient } from "@supabase/supabase-js";
 import { hasSupabaseConfig, supabase } from "./supabase";
 import type {
   ActivityHistoryItem,
@@ -5,13 +6,18 @@ import type {
   Client,
   ClientDraft,
   DashboardMetrics,
+  ExpenseDraft,
+  ExpenseItem,
   InvoiceSeriesInfo,
   LoginDraft,
   PasswordChangeDraft,
   Product,
   ProductDraft,
+  Service,
+  ServiceDraft,
   SaleDetail,
   SaleItemDraft,
+  SaleServiceItemDraft,
   SaleDraft,
   SaleRecord,
   SyncConflictPreview,
@@ -56,6 +62,29 @@ const webSeedProducts: Product[] = [
   },
 ];
 
+const webSeedServices: Service[] = [
+  {
+    id: 1,
+    name: "Saisie de documents",
+    category: "Bureautique",
+    unitPrice: 2,
+    description: "Saisie et mise en forme de documents",
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  },
+  {
+    id: 2,
+    name: "Impression couleur",
+    category: "Impression",
+    unitPrice: 1,
+    description: "Impression couleur par page",
+    active: true,
+    createdAt: now,
+    updatedAt: now,
+  },
+];
+
 const webSeedHistory: SupplyHistoryItem[] = [
   {
     id: 1,
@@ -63,6 +92,8 @@ const webSeedHistory: SupplyHistoryItem[] = [
     product: "Classeur",
     quantity: 20,
     supplier: "Papeterie Kivu",
+    purchasePrice: 4.2,
+    sellingPrice: 6,
     amount: 84,
     movementType: "stock_initial",
   },
@@ -119,8 +150,10 @@ const webSeedSaleDetails: SaleDetail[] = [
     status: "Payee",
     items: [
       {
+        lineType: "product",
         productId: 1,
         productName: "Classeur",
+        category: "Classement",
         quantity: 4,
         unitPrice: 6,
         lineTotal: 24,
@@ -133,6 +166,8 @@ const webSeedClients: Client[] = [
   { id: 1, name: "Institut Amani", phone: "+243970000001", address: "Goma", email: "contact@amani.cd", createdAt: now },
   { id: 2, name: "Groupe Horizon", phone: "+243970000002", address: "Bukavu", email: "admin@horizon.cd", createdAt: now },
 ];
+
+const webSeedExpenses: ExpenseItem[] = [];
 
 const webSeedUsers: AppUser[] = [
   {
@@ -208,6 +243,17 @@ type SupabaseProductRow = {
   updated_at: string;
 };
 
+type SupabaseServiceRow = {
+  id: number;
+  name: string;
+  category: string;
+  unit_price: number;
+  description: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 type SupabaseClientRow = {
   id: number;
   name: string;
@@ -215,6 +261,18 @@ type SupabaseClientRow = {
   address: string | null;
   email: string | null;
   created_at: string;
+};
+
+type SupabaseExpenseRow = {
+  id: number;
+  detail: string;
+  nature: string;
+  amount: number;
+  expense_date: string;
+  approved_by: string;
+  purpose: string;
+  user_id: number | null;
+  user?: { full_name: string | null } | Array<{ full_name: string | null }> | null;
 };
 
 type SupabaseSaleRow = {
@@ -234,6 +292,15 @@ type SupabaseSaleItemRow = {
   unit_price: number;
   line_total: number;
   product?: { name: string | null } | Array<{ name: string | null }> | null;
+};
+
+type SupabaseSaleServiceItemRow = {
+  sale_id: number;
+  service_id: number;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+  service?: { name: string | null; category: string | null } | Array<{ name: string | null; category: string | null }> | null;
 };
 
 type SupabaseStockRow = {
@@ -268,6 +335,10 @@ type SupabaseAuditLogRow = {
   details: string | null;
   created_at: string;
   user_id: number | null;
+  actor_name: string | null;
+  actor_username: string | null;
+  source_device: string | null;
+  source_platform: string | null;
   user?: { full_name: string | null } | Array<{ full_name: string | null }> | null;
 };
 
@@ -362,6 +433,23 @@ function persistWebInvoiceSeries(info: InvoiceSeriesInfo) {
   localStorage.setItem("walikale-web-invoice-series", JSON.stringify(info));
 }
 
+function createIsolatedSupabaseClient() {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error("Supabase n'est pas configure sur cette application.");
+  }
+
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+}
+
 async function getCurrentSupabaseInventoryCycleId() {
   const client = getSupabaseClient();
   const cycleResult = await client
@@ -370,7 +458,7 @@ async function getCurrentSupabaseInventoryCycleId() {
     .order("id", { ascending: false })
     .limit(1)
     .maybeSingle();
-  let cycle = ensureData(cycleResult.data, cycleResult.error) as SupabaseInventoryCycleRow | null;
+  let cycle = ensureOptionalData(cycleResult.data, cycleResult.error) as SupabaseInventoryCycleRow | null;
 
   if (!cycle) {
     const insertResult = await client
@@ -388,11 +476,17 @@ async function getCurrentSupabaseInventoryCycleId() {
 
 function computeMetrics(products: Product[]): DashboardMetrics {
   const sales = loadJson("walikale-web-sales", webSeedSales);
+  const expenses = loadJson("walikale-web-expenses", webSeedExpenses);
+  const totalSalesAmount = sales.reduce((sum, item) => sum + item.amount, 0);
+  const totalExpenses = expenses.reduce((sum, item) => sum + item.amount, 0);
   return {
     totalStock: products.reduce((sum, item) => sum + item.quantity, 0),
     totalProducts: products.length,
     dailySales: sales.length,
     suppliers: new Set(products.map((item) => item.supplier)).size,
+    totalSalesAmount,
+    totalExpenses,
+    netSalesAmount: totalSalesAmount - totalExpenses,
   };
 }
 
@@ -429,8 +523,16 @@ function persistWeb(products: Product[], history: SupplyHistoryItem[], sales?: S
   }
 }
 
+function persistWebServices(services: Service[]) {
+  localStorage.setItem("walikale-web-services", JSON.stringify(services));
+}
+
 function persistWebActivityHistory(history: ActivityHistoryItem[]) {
   localStorage.setItem("walikale-web-activity-history", JSON.stringify(history));
+}
+
+function persistWebExpenses(expenses: ExpenseItem[]) {
+  localStorage.setItem("walikale-web-expenses", JSON.stringify(expenses));
 }
 
 function mergeSaleItems(items: SaleItemDraft[]) {
@@ -442,6 +544,19 @@ function mergeSaleItems(items: SaleItemDraft[]) {
 
   return Array.from(grouped.entries()).map(([productId, quantity]) => ({
     productId,
+    quantity,
+  }));
+}
+
+function mergeSaleServiceItems(items: SaleServiceItemDraft[]) {
+  const grouped = new Map<number, number>();
+
+  items.forEach((item) => {
+    grouped.set(item.serviceId, (grouped.get(item.serviceId) ?? 0) + item.quantity);
+  });
+
+  return Array.from(grouped.entries()).map(([serviceId, quantity]) => ({
+    serviceId,
     quantity,
   }));
 }
@@ -458,6 +573,55 @@ function getSupabaseClient() {
   return supabase;
 }
 
+function getWebSourceDeviceLabel() {
+  if (typeof navigator === "undefined") {
+    return "Navigateur web";
+  }
+
+  const platform = navigator.platform?.trim() || "web";
+  return `Navigateur ${platform}`;
+}
+
+async function insertSupabaseAuditLog(
+  client: ReturnType<typeof getSupabaseClient>,
+  entry: {
+    action: string;
+    target_table: string;
+    target_id?: number | null;
+    details?: string | null;
+  }
+) {
+  let actor: AppUser | null = null;
+
+  try {
+    actor = await getSupabaseSessionProfile();
+  } catch {
+    actor = null;
+  }
+
+  const result = await client.from("audit_logs").insert({
+    user_id: actor?.id ?? null,
+    action: entry.action,
+    target_table: entry.target_table,
+    target_id: entry.target_id ?? null,
+    details: entry.details ?? null,
+    actor_name: actor?.fullName ?? null,
+    actor_username: actor?.username ?? null,
+    source_device: getWebSourceDeviceLabel(),
+    source_platform: "web",
+  });
+
+  ensureData(result.data ?? [], result.error);
+}
+
+function formatAuditActorLabel(row: SupabaseAuditLogRow) {
+  const actorName = relationFirst(row.user)?.full_name ?? row.actor_name ?? "Utilisateur non precise";
+  const actorUsername = row.actor_username ? ` [${row.actor_username}]` : "";
+  const sourcePlatform = row.source_platform ? ` - ${row.source_platform}` : "";
+  const sourceDevice = row.source_device ? ` - ${row.source_device}` : "";
+  return `${actorName}${actorUsername}${sourcePlatform}${sourceDevice}`;
+}
+
 function ensureData<T>(data: T | null, error: { message?: string } | null | undefined) {
   if (error) {
     throw new Error(error.message || "Erreur Supabase.");
@@ -465,6 +629,14 @@ function ensureData<T>(data: T | null, error: { message?: string } | null | unde
 
   if (data === null) {
     throw new Error("Aucune donnee recue depuis Supabase.");
+  }
+
+  return data;
+}
+
+function ensureOptionalData<T>(data: T | null, error: { message?: string } | null | undefined) {
+  if (error) {
+    throw new Error(error.message || "Erreur Supabase.");
   }
 
   return data;
@@ -551,14 +723,73 @@ async function getCloudLastChangeAt() {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  const row = ensureData(result.data, result.error) as { created_at: string } | null;
+  const row = ensureOptionalData(result.data, result.error) as { created_at: string } | null;
   return row?.created_at ?? null;
+}
+
+function extractMissingSupabaseRelation(message: string) {
+  const schemaCacheMatch = message.match(/table 'public\.([^']+)'/i);
+  if (schemaCacheMatch?.[1]) {
+    return schemaCacheMatch[1];
+  }
+
+  const relationMatch = message.match(/relation ["']?public\.([^"'\s]+)["']?/i);
+  if (relationMatch?.[1]) {
+    return relationMatch[1];
+  }
+
+  return null;
+}
+
+function normalizeSupabaseSyncError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  const missingRelation = extractMissingSupabaseRelation(message);
+
+  if (missingRelation) {
+    return new Error(
+      `Le schema Supabase est incomplet. La table ou vue '${missingRelation}' est absente. Executez database/supabase-schema.sql puis database/supabase-auth-migration.sql dans Supabase, puis relancez la synchronisation.`
+    );
+  }
+
+  return error instanceof Error ? error : new Error(message);
+}
+
+async function assertSupabaseSyncSchema() {
+  const client = getSupabaseClient();
+  const checks: Array<{ relation: string; column: string }> = [
+    { relation: "users", column: "id" },
+    { relation: "products", column: "id" },
+    { relation: "services", column: "id" },
+    { relation: "clients", column: "id" },
+    { relation: "expenses", column: "id" },
+    { relation: "initial_stocks", column: "id" },
+    { relation: "replenishments", column: "id" },
+    { relation: "sales", column: "id" },
+    { relation: "sale_items", column: "id" },
+    { relation: "sale_service_items", column: "id" },
+    { relation: "stock_movements", column: "id" },
+    { relation: "audit_logs", column: "id" },
+    { relation: "invoice_sequences", column: "id" },
+    { relation: "inventory_cycles", column: "id" },
+    { relation: "current_stock_view", column: "product_id" },
+  ];
+
+  for (const check of checks) {
+    const result = await client.from(check.relation).select(check.column).limit(1);
+
+    if (result.error) {
+      throw normalizeSupabaseSyncError(result.error);
+    }
+  }
 }
 
 const syncBucketLabels: Record<string, string> = {
   products: "Produits",
+  services: "Services",
   clients: "Clients",
+  expenses: "Depenses",
   sales: "Ventes",
+  sale_service_items: "Services vendus",
   replenishments: "Reapprovisionnements",
   initial_stocks: "Stock initial",
   stock_movements: "Mouvements de stock",
@@ -612,36 +843,48 @@ function buildSyncBucketsFromAuditLogs(
 async function getCloudSnapshot(): Promise<SyncSnapshot> {
   const client = getSupabaseClient();
   const [
+    users,
     products,
+    services,
     clients,
+    expenses,
     initialStocks,
     replenishments,
     sales,
     saleItems,
+    saleServiceItems,
     stockMovements,
     auditLogs,
     invoiceSequences,
     inventoryCycles,
   ] = await Promise.all([
+    client.from("users").select("id, auth_user_id, full_name, username, email, password_hash, role, active, created_at, last_login_at").order("id", { ascending: true }),
     client.from("products").select("id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at").order("id", { ascending: true }),
+    client.from("services").select("id, name, category, unit_price, description, active, created_at, updated_at").order("id", { ascending: true }),
     client.from("clients").select("id, name, phone, address, email, created_at").order("id", { ascending: true }),
+    client.from("expenses").select("id, detail, nature, amount, expense_date, user_id, approved_by, purpose").order("id", { ascending: true }),
     client.from("initial_stocks").select("id, product_id, quantity, purchase_price, stock_date, cycle_id, user_id, note").order("id", { ascending: true }),
     client.from("replenishments").select("id, product_id, quantity, purchase_price, supplier, replenished_at, cycle_id, user_id, note").order("id", { ascending: true }),
     client.from("sales").select("id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id").order("id", { ascending: true }),
     client.from("sale_items").select("id, sale_id, product_id, quantity, unit_price, line_total").order("id", { ascending: true }),
+    client.from("sale_service_items").select("id, sale_id, service_id, quantity, unit_price, line_total").order("id", { ascending: true }),
     client.from("stock_movements").select("id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, user_id").order("id", { ascending: true }),
-    client.from("audit_logs").select("id, user_id, action, target_table, target_id, details, created_at").order("id", { ascending: true }),
+    client.from("audit_logs").select("id, user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at").order("id", { ascending: true }),
     client.from("invoice_sequences").select("id, current_year, series_index, next_number, updated_at").order("id", { ascending: true }),
     client.from("inventory_cycles").select("id, label, started_at, user_id").order("id", { ascending: true }),
   ]);
 
   return {
+    users: ensureData(users.data, users.error) as Array<Record<string, unknown>>,
     products: ensureData(products.data, products.error) as Array<Record<string, unknown>>,
+    services: ensureData(services.data, services.error) as Array<Record<string, unknown>>,
     clients: ensureData(clients.data, clients.error) as Array<Record<string, unknown>>,
+    expenses: ensureData(expenses.data, expenses.error) as Array<Record<string, unknown>>,
     initialStocks: ensureData(initialStocks.data, initialStocks.error) as Array<Record<string, unknown>>,
     replenishments: ensureData(replenishments.data, replenishments.error) as Array<Record<string, unknown>>,
     sales: ensureData(sales.data, sales.error) as Array<Record<string, unknown>>,
     saleItems: ensureData(saleItems.data, saleItems.error) as Array<Record<string, unknown>>,
+    saleServiceItems: ensureData(saleServiceItems.data, saleServiceItems.error) as Array<Record<string, unknown>>,
     stockMovements: ensureData(stockMovements.data, stockMovements.error) as Array<Record<string, unknown>>,
     auditLogs: ensureData(auditLogs.data, auditLogs.error) as Array<Record<string, unknown>>,
     invoiceSequences: ensureData(invoiceSequences.data, invoiceSequences.error) as Array<Record<string, unknown>>,
@@ -684,6 +927,98 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
   };
 }
 
+async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>) {
+  const client = getSupabaseClient();
+  const authClient = createIsolatedSupabaseClient();
+  const existingResult = await client
+    .from("users")
+    .select("id, auth_user_id, full_name, username, email, password_hash, role, active, created_at, last_login_at");
+  const existingUsers = ensureData(existingResult.data, existingResult.error) as Array<{
+    id: number;
+    auth_user_id: string | null;
+    full_name: string;
+    username: string;
+    email: string | null;
+    password_hash: string | null;
+    role: string;
+    active: boolean;
+    created_at: string;
+    last_login_at: string | null;
+  }>;
+
+  const existingByUsername = new Map(existingUsers.map((user) => [user.username.toLowerCase(), user]));
+  const existingByEmail = new Map(
+    existingUsers.filter((user) => user.email).map((user) => [String(user.email).toLowerCase(), user])
+  );
+
+  const payload = snapshotUsers.map((rawUser) => {
+    const username = String(rawUser.username ?? "").trim().toLowerCase();
+    const email = rawUser.email ? String(rawUser.email).trim().toLowerCase() : null;
+    const existingUser = (email ? existingByEmail.get(email) : undefined) ?? existingByUsername.get(username);
+
+    return {
+      auth_user_id: existingUser?.auth_user_id ?? null,
+      full_name: String(rawUser.full_name ?? ""),
+      username,
+      email,
+      password_hash: String(rawUser.password_hash ?? existingUser?.password_hash ?? "") || null,
+      role: String(rawUser.role ?? "Employe"),
+      active: Boolean(rawUser.active),
+      created_at: String(rawUser.created_at ?? new Date().toISOString()),
+      last_login_at: rawUser.last_login_at ? String(rawUser.last_login_at) : existingUser?.last_login_at ?? null,
+    };
+  });
+
+  if (payload.length === 0) {
+    return;
+  }
+
+  for (let index = 0; index < payload.length; index += 1) {
+    const currentPayload = payload[index];
+    const existingUser = (currentPayload.email ? existingByEmail.get(currentPayload.email) : undefined) ?? existingByUsername.get(currentPayload.username);
+    if (currentPayload.auth_user_id || !currentPayload.email) {
+      continue;
+    }
+
+    const rawUser = snapshotUsers[index];
+    const candidatePassword =
+      typeof rawUser.auth_sync_password === "string" ? rawUser.auth_sync_password.trim() : "";
+
+    if (!candidatePassword) {
+      throw new Error(
+        `Le compte web de ${currentPayload.email} ne peut pas etre cree automatiquement car son mot de passe initial n'est plus disponible. Reinitialisez d'abord son mot de passe localement, puis relancez la synchronisation.`
+      );
+    }
+
+    const signUpResult = await authClient.auth.signUp({
+      email: currentPayload.email,
+      password: candidatePassword,
+      options: {
+        data: {
+          full_name: currentPayload.full_name,
+          username: currentPayload.username,
+          role: currentPayload.role,
+        },
+      },
+    });
+
+    if (signUpResult.error) {
+      const message = signUpResult.error.message.toLowerCase();
+      if (!message.includes("already") && !message.includes("registered")) {
+        throw new Error(`Impossible de creer le compte web pour ${currentPayload.email}: ${signUpResult.error.message}`);
+      }
+    }
+
+    currentPayload.auth_user_id = signUpResult.data.user?.id ?? existingUser?.auth_user_id ?? null;
+  }
+
+  const upsertResult = await client.from("users").upsert(payload, {
+    onConflict: "username",
+    ignoreDuplicates: false,
+  });
+  ensureData(upsertResult.data ?? [], upsertResult.error);
+}
+
 function mapSupabaseUser(row: SupabaseUserRow): AppUser {
   return {
     id: row.id,
@@ -694,6 +1029,49 @@ function mapSupabaseUser(row: SupabaseUserRow): AppUser {
     active: row.active,
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at ?? row.created_at,
+  };
+}
+
+async function authenticateWithSupabase(draft: LoginDraft): Promise<{ profile: AppUser; authUserId: string } | null> {
+  const client = getSupabaseClient();
+  const identifier = draft.identifier.trim().toLowerCase();
+  const password = draft.password.trim();
+
+  if (!identifier || !password) {
+    return null;
+  }
+
+  let loginEmail = identifier;
+
+  if (!identifier.includes("@")) {
+    const lookupResult = await client.rpc("find_login_user", { p_identifier: identifier });
+    const lookupRows = ensureData(lookupResult.data, lookupResult.error) as Array<{ email: string | null; active: boolean }>;
+    const lookupUser = lookupRows[0];
+
+    if (!lookupUser?.email || !lookupUser.active) {
+      return null;
+    }
+
+    loginEmail = lookupUser.email.toLowerCase();
+  }
+
+  const signInResult = await client.auth.signInWithPassword({
+    email: loginEmail,
+    password,
+  });
+
+  if (signInResult.error || !signInResult.data.user?.id) {
+    return null;
+  }
+
+  const profile = await getSupabaseSessionProfile();
+  if (!profile) {
+    return null;
+  }
+
+  return {
+    profile,
+    authUserId: signInResult.data.user.id,
   };
 }
 
@@ -764,11 +1142,15 @@ export const repository = {
     let cloudHasChanges = false;
 
     if (supabase && (typeof navigator === "undefined" || navigator.onLine)) {
-      const cloudLastChangeAt = await getCloudLastChangeAt();
-      cloudHasChanges = Boolean(
-        cloudLastChangeAt &&
-          (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
-      );
+      try {
+        const cloudLastChangeAt = await getCloudLastChangeAt();
+        cloudHasChanges = Boolean(
+          cloudLastChangeAt &&
+            (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
+        );
+      } catch (error) {
+        console.error("Etat de synchronisation cloud indisponible:", normalizeSupabaseSyncError(error));
+      }
     }
 
     return {
@@ -780,102 +1162,124 @@ export const repository = {
   },
 
   async getSyncConflictPreview(): Promise<SyncConflictPreview> {
-    if (!window.desktopApi) {
-      throw new Error("Apercu de conflit reserve a l'application desktop.");
-    }
+    try {
+      if (!window.desktopApi) {
+        throw new Error("Apercu de conflit reserve a l'application desktop.");
+      }
 
-    if (!supabase) {
-      throw new Error("Supabase n'est pas configure sur cette application.");
-    }
+      if (!supabase) {
+        throw new Error("Supabase n'est pas configure sur cette application.");
+      }
 
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      throw new Error("Connexion internet indisponible pour analyser le conflit.");
-    }
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error("Connexion internet indisponible pour analyser le conflit.");
+      }
 
-    const localStatus = await window.desktopApi.getSyncStatus();
-    const cloudLastChangeAt = await getCloudLastChangeAt();
-    return getSyncConflictPreviewFromSupabaseAndDesktop(localStatus, cloudLastChangeAt);
+      await assertSupabaseSyncSchema();
+      const localStatus = await window.desktopApi.getSyncStatus();
+      const cloudLastChangeAt = await getCloudLastChangeAt();
+      return getSyncConflictPreviewFromSupabaseAndDesktop(localStatus, cloudLastChangeAt);
+    } catch (error) {
+      throw normalizeSupabaseSyncError(error);
+    }
   },
 
   async syncDesktopToCloud(forcePush = false): Promise<SyncStatus> {
-    if (!window.desktopApi) {
-      throw new Error("La synchronisation locale est reservee a l'application desktop.");
-    }
+    try {
+      if (!window.desktopApi) {
+        throw new Error("La synchronisation locale est reservee a l'application desktop.");
+      }
 
-    if (!supabase) {
-      throw new Error("Supabase n'est pas configure sur cette application.");
-    }
+      if (!supabase) {
+        throw new Error("Supabase n'est pas configure sur cette application.");
+      }
 
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      throw new Error("Aucune connexion internet disponible pour la synchronisation.");
-    }
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error("Aucune connexion internet disponible pour la synchronisation.");
+      }
 
-    const localStatus = await window.desktopApi.getSyncStatus();
-    const cloudLastChangeAt = await getCloudLastChangeAt();
-    const cloudHasChanges = Boolean(
-      cloudLastChangeAt &&
-        (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
-    );
+      await assertSupabaseSyncSchema();
+      const localStatus = await window.desktopApi.getSyncStatus();
+      const cloudLastChangeAt = await getCloudLastChangeAt();
+      const cloudHasChanges = Boolean(
+        cloudLastChangeAt &&
+          (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
+      );
 
-    if (!forcePush && localStatus.pendingChanges > 0 && cloudHasChanges) {
-      throw new Error("Conflit detecte : le cloud et ce poste ont tous les deux des changements non synchronises.");
-    }
+      if (!forcePush && localStatus.pendingChanges > 0 && cloudHasChanges) {
+        throw new Error("Conflit detecte : le cloud et ce poste ont tous les deux des changements non synchronises.");
+      }
 
-    if (!forcePush && localStatus.pendingChanges === 0 && cloudHasChanges) {
-      const cloudSnapshot = await getCloudSnapshot();
-      await window.desktopApi.importSyncSnapshot(cloudSnapshot);
-      await window.desktopApi.markSyncComplete(cloudLastChangeAt);
+      if (!forcePush && localStatus.pendingChanges === 0 && cloudHasChanges) {
+        const cloudSnapshot = await getCloudSnapshot();
+        await window.desktopApi.importSyncSnapshot(cloudSnapshot);
+        await window.desktopApi.markSyncComplete(cloudLastChangeAt);
+        return this.getSyncStatus();
+      }
+
+      const snapshot = await window.desktopApi.exportSyncSnapshot();
+      const syncSnapshot = snapshot as SyncSnapshot;
+
+      await deleteSupabaseRows("sale_items");
+      await deleteSupabaseRows("sale_service_items");
+      await deleteSupabaseRows("stock_movements");
+      await deleteSupabaseRows("sales");
+      await deleteSupabaseRows("replenishments");
+      await deleteSupabaseRows("initial_stocks");
+      await deleteSupabaseRows("audit_logs");
+      await deleteSupabaseRows("expenses");
+      await deleteSupabaseRows("services");
+      await deleteSupabaseRows("clients");
+      await deleteSupabaseRows("products");
+      await deleteSupabaseRows("inventory_cycles");
+      await deleteSupabaseRows("invoice_sequences");
+      await syncUsersToSupabase(syncSnapshot.users ?? []);
+
+      await insertSupabaseRows("products", syncSnapshot.products);
+      await insertSupabaseRows("services", syncSnapshot.services);
+      await insertSupabaseRows("clients", syncSnapshot.clients);
+      await insertSupabaseRows("expenses", syncSnapshot.expenses ?? []);
+      await insertSupabaseRows("inventory_cycles", syncSnapshot.inventoryCycles);
+      await insertSupabaseRows("invoice_sequences", syncSnapshot.invoiceSequences);
+      await insertSupabaseRows("initial_stocks", syncSnapshot.initialStocks);
+      await insertSupabaseRows("replenishments", syncSnapshot.replenishments);
+      await insertSupabaseRows("sales", syncSnapshot.sales);
+      await insertSupabaseRows("sale_items", syncSnapshot.saleItems);
+      await insertSupabaseRows("sale_service_items", syncSnapshot.saleServiceItems);
+      await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
+      await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
+
+      const syncedAt = new Date().toISOString();
+      await window.desktopApi.markSyncComplete(syncedAt);
       return this.getSyncStatus();
+    } catch (error) {
+      throw normalizeSupabaseSyncError(error);
     }
-
-    const snapshot = await window.desktopApi.exportSyncSnapshot();
-    const syncSnapshot = snapshot as SyncSnapshot;
-
-    await deleteSupabaseRows("sale_items");
-    await deleteSupabaseRows("stock_movements");
-    await deleteSupabaseRows("sales");
-    await deleteSupabaseRows("replenishments");
-    await deleteSupabaseRows("initial_stocks");
-    await deleteSupabaseRows("audit_logs");
-    await deleteSupabaseRows("clients");
-    await deleteSupabaseRows("products");
-    await deleteSupabaseRows("inventory_cycles");
-    await deleteSupabaseRows("invoice_sequences");
-
-    await insertSupabaseRows("products", syncSnapshot.products);
-    await insertSupabaseRows("clients", syncSnapshot.clients);
-    await insertSupabaseRows("inventory_cycles", syncSnapshot.inventoryCycles);
-    await insertSupabaseRows("invoice_sequences", syncSnapshot.invoiceSequences);
-    await insertSupabaseRows("initial_stocks", syncSnapshot.initialStocks);
-    await insertSupabaseRows("replenishments", syncSnapshot.replenishments);
-    await insertSupabaseRows("sales", syncSnapshot.sales);
-    await insertSupabaseRows("sale_items", syncSnapshot.saleItems);
-    await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
-    await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
-
-    const syncedAt = new Date().toISOString();
-    await window.desktopApi.markSyncComplete(syncedAt);
-    return this.getSyncStatus();
   },
 
   async pullCloudToDesktop(): Promise<SyncStatus> {
-    if (!window.desktopApi) {
-      throw new Error("La synchronisation cloud vers local est reservee a l'application desktop.");
-    }
+    try {
+      if (!window.desktopApi) {
+        throw new Error("La synchronisation cloud vers local est reservee a l'application desktop.");
+      }
 
-    if (!supabase) {
-      throw new Error("Supabase n'est pas configure sur cette application.");
-    }
+      if (!supabase) {
+        throw new Error("Supabase n'est pas configure sur cette application.");
+      }
 
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      throw new Error("Aucune connexion internet disponible pour recuperer les donnees du cloud.");
-    }
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error("Aucune connexion internet disponible pour recuperer les donnees du cloud.");
+      }
 
-    const cloudSnapshot = await getCloudSnapshot();
-    const cloudLastChangeAt = await getCloudLastChangeAt();
-    await window.desktopApi.importSyncSnapshot(cloudSnapshot);
-    await window.desktopApi.markSyncComplete(cloudLastChangeAt ?? new Date().toISOString());
-    return this.getSyncStatus();
+      await assertSupabaseSyncSchema();
+      const cloudSnapshot = await getCloudSnapshot();
+      const cloudLastChangeAt = await getCloudLastChangeAt();
+      await window.desktopApi.importSyncSnapshot(cloudSnapshot);
+      await window.desktopApi.markSyncComplete(cloudLastChangeAt ?? new Date().toISOString());
+      return this.getSyncStatus();
+    } catch (error) {
+      throw normalizeSupabaseSyncError(error);
+    }
   },
 
   async listProducts(): Promise<Product[]> {
@@ -930,6 +1334,9 @@ export const repository = {
         .ilike("name", trimmedName)
         .limit(1)
         .maybeSingle();
+      if (existingResult.error) {
+        throw new Error(existingResult.error.message || "Impossible de verifier le produit existant.");
+      }
       const existing = existingResult.data as { id: number; name: string } | null;
 
       if (existing) {
@@ -963,13 +1370,12 @@ export const repository = {
         });
         ensureData(stockMovementResult.data ?? [], stockMovementResult.error);
 
-        const auditResult = await client.from("audit_logs").insert({
+        await insertSupabaseAuditLog(client, {
           action: "update",
           target_table: "products",
           target_id: existing.id,
           details: `Mise a jour produit ${trimmedName}`,
         });
-        ensureData(auditResult.data ?? [], auditResult.error);
       } else {
         const insertResult = await client
           .from("products")
@@ -1001,13 +1407,12 @@ export const repository = {
         });
         ensureData(stockMovementResult.data ?? [], stockMovementResult.error);
 
-        const auditResult = await client.from("audit_logs").insert({
+        await insertSupabaseAuditLog(client, {
           action: "create",
           target_table: "products",
           target_id: insertedProduct.id,
           details: `Creation produit ${trimmedName}`,
         });
-        ensureData(auditResult.data ?? [], auditResult.error);
       }
 
       return this.listProducts();
@@ -1050,6 +1455,8 @@ export const repository = {
       product: draft.name,
       quantity: draft.quantity,
       supplier: draft.supplier,
+      purchasePrice: draft.purchasePrice,
+      sellingPrice: draft.sellingPrice,
       amount: draft.purchasePrice * draft.quantity,
       movementType: existing ? "reapprovisionnement" : "stock_initial",
     });
@@ -1074,13 +1481,12 @@ export const repository = {
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
-      const auditResult = await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "delete",
         target_table: "products",
         target_id: id,
         details: "Suppression produit",
       });
-      ensureData(auditResult.data ?? [], auditResult.error);
 
       const deleteResult = await client.from("products").delete().eq("id", id);
       ensureData(deleteResult.data ?? [], deleteResult.error);
@@ -1103,6 +1509,136 @@ export const repository = {
     return products;
   },
 
+  async listServices(): Promise<Service[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.listServices();
+    }
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const result = await client
+        .from("services")
+        .select("id, name, category, unit_price, description, active, created_at, updated_at")
+        .order("updated_at", { ascending: false });
+      const rows = ensureData(result.data, result.error) as SupabaseServiceRow[];
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        category: row.category,
+        unitPrice: Number(row.unit_price),
+        description: row.description,
+        active: row.active,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+    }
+
+    return loadJson("walikale-web-services", webSeedServices);
+  },
+
+  async saveService(draft: ServiceDraft): Promise<Service[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.saveService(draft);
+    }
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const normalizedName = draft.name.trim();
+      const normalizedCategory = draft.category.trim() || "Service general";
+      const normalizedDescription = draft.description.trim();
+      const unitPrice = Number(draft.unitPrice);
+
+      if (!normalizedName) {
+        throw new Error("Le nom du service est obligatoire.");
+      }
+
+      if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+        throw new Error("Le prix du service doit etre superieur a zero.");
+      }
+
+      const existingResult = await client.from("services").select("id").ilike("name", normalizedName).limit(1).maybeSingle();
+      const existing = ensureOptionalData(existingResult.data, existingResult.error) as { id: number } | null;
+
+      if (existing) {
+        const updateResult = await client
+          .from("services")
+          .update({
+            category: normalizedCategory,
+            unit_price: unitPrice,
+            description: normalizedDescription,
+            active: draft.active !== false,
+          })
+          .eq("id", existing.id);
+        ensureData(updateResult.data ?? [], updateResult.error);
+
+        await insertSupabaseAuditLog(client, {
+          action: "update",
+          target_table: "services",
+          target_id: existing.id,
+          details: `Mise a jour service ${normalizedName}`,
+        });
+      } else {
+        const insertResult = await client
+          .from("services")
+          .insert({
+            name: normalizedName,
+            category: normalizedCategory,
+            unit_price: unitPrice,
+            description: normalizedDescription,
+            active: draft.active !== false,
+          })
+          .select("id")
+          .single();
+        const inserted = ensureData(insertResult.data, insertResult.error) as { id: number };
+
+        await insertSupabaseAuditLog(client, {
+          action: "create",
+          target_table: "services",
+          target_id: inserted.id,
+          details: `Creation service ${normalizedName}`,
+        });
+      }
+
+      return this.listServices();
+    }
+
+    const services = loadJson("walikale-web-services", webSeedServices);
+    const normalizedName = draft.name.trim();
+    const existing = services.find((item) => item.name.toLowerCase() === normalizedName.toLowerCase());
+
+    if (existing) {
+      existing.category = draft.category.trim() || "Service general";
+      existing.unitPrice = Number(draft.unitPrice);
+      existing.description = draft.description.trim();
+      existing.active = draft.active !== false;
+      existing.updatedAt = new Date().toISOString();
+    } else {
+      services.unshift({
+        id: Date.now(),
+        name: normalizedName,
+        category: draft.category.trim() || "Service general",
+        unitPrice: Number(draft.unitPrice),
+        description: draft.description.trim(),
+        active: draft.active !== false,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+
+    persistWebServices(services);
+    const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
+    activityHistory.unshift({
+      id: Date.now(),
+      date: new Date().toLocaleString("fr-FR"),
+      action: existing ? "Mise a jour" : "Creation",
+      target: "Service",
+      details: `${existing ? "Mise a jour" : "Creation"} service ${normalizedName}`,
+      user: "Utilisateur web",
+    });
+    persistWebActivityHistory(activityHistory);
+    return services;
+  },
+
   async listSales(): Promise<SaleRecord[]> {
     if (window.desktopApi) {
       return window.desktopApi.listSales();
@@ -1114,14 +1650,21 @@ export const repository = {
         .from("sales")
         .select("id, reference, sold_at, total_amount, payment_method, client_id, client:clients(name)")
         .order("id", { ascending: false });
-      const itemsResult = await client.from("sale_items").select("sale_id");
+      const [itemsResult, serviceItemsResult] = await Promise.all([
+        client.from("sale_items").select("sale_id"),
+        client.from("sale_service_items").select("sale_id"),
+      ]);
 
       const salesRows = ensureData(salesResult.data, salesResult.error) as SupabaseSaleRow[];
       const itemsRows = ensureData(itemsResult.data, itemsResult.error) as Array<{ sale_id: number }>;
+      const serviceItemsRows = ensureData(serviceItemsResult.data, serviceItemsResult.error) as Array<{ sale_id: number }>;
       const itemsCountMap = itemsRows.reduce((map, row) => {
         map.set(row.sale_id, (map.get(row.sale_id) ?? 0) + 1);
         return map;
       }, new Map<number, number>());
+      serviceItemsRows.forEach((row) => {
+        itemsCountMap.set(row.sale_id, (itemsCountMap.get(row.sale_id) ?? 0) + 1);
+      });
 
       return salesRows.map((row) => ({
         id: row.id,
@@ -1150,7 +1693,7 @@ export const repository = {
         .select("id, reference, sold_at, total_amount, payment_method, client_id, client:clients(name)")
         .eq("id", saleId)
         .maybeSingle();
-      const sale = ensureData(saleResult.data, saleResult.error) as SupabaseSaleRow | null;
+      const sale = ensureOptionalData(saleResult.data, saleResult.error) as SupabaseSaleRow | null;
 
       if (!sale) {
         return null;
@@ -1161,7 +1704,13 @@ export const repository = {
         .select("sale_id, product_id, quantity, unit_price, line_total, product:products(name)")
         .eq("sale_id", saleId)
         .order("id", { ascending: true });
+      const serviceItemsResult = await client
+        .from("sale_service_items")
+        .select("sale_id, service_id, quantity, unit_price, line_total, service:services(name, category)")
+        .eq("sale_id", saleId)
+        .order("id", { ascending: true });
       const items = ensureData(itemsResult.data, itemsResult.error) as SupabaseSaleItemRow[];
+      const serviceItems = ensureData(serviceItemsResult.data, serviceItemsResult.error) as SupabaseSaleServiceItemRow[];
 
       return {
         id: sale.id,
@@ -1171,13 +1720,25 @@ export const repository = {
         amount: Number(sale.total_amount),
         paymentMethod: sale.payment_method,
         status: "Payee",
-        items: items.map((item) => ({
-          productId: item.product_id,
-          productName: relationFirst(item.product)?.name ?? "Produit",
-          quantity: item.quantity,
-          unitPrice: Number(item.unit_price),
-          lineTotal: Number(item.line_total),
-        })),
+        items: [
+          ...items.map((item) => ({
+            lineType: "product" as const,
+            productId: item.product_id,
+            productName: relationFirst(item.product)?.name ?? "Produit",
+            quantity: item.quantity,
+            unitPrice: Number(item.unit_price),
+            lineTotal: Number(item.line_total),
+          })),
+          ...serviceItems.map((item) => ({
+            lineType: "service" as const,
+            serviceId: item.service_id,
+            productName: relationFirst(item.service)?.name ?? "Service",
+            category: relationFirst(item.service)?.category ?? "Service",
+            quantity: item.quantity,
+            unitPrice: Number(item.unit_price),
+            lineTotal: Number(item.line_total),
+          })),
+        ],
       };
     }
 
@@ -1213,6 +1774,34 @@ export const repository = {
     return "Utilisez le dialogue d'impression du navigateur pour enregistrer en PDF.";
   },
 
+  async printSaleReceipt(saleId: number): Promise<boolean> {
+    if (window.desktopApi) {
+      return window.desktopApi.printSaleReceipt(saleId);
+    }
+
+    const detail = await this.getSaleDetail(saleId);
+    if (!detail) {
+      return false;
+    }
+
+    window.print();
+    return true;
+  },
+
+  async exportSaleReceiptPdf(saleId: number): Promise<string | null> {
+    if (window.desktopApi) {
+      return window.desktopApi.exportSaleReceiptPdf(saleId);
+    }
+
+    const detail = await this.getSaleDetail(saleId);
+    if (!detail) {
+      return null;
+    }
+
+    window.print();
+    return "Utilisez le dialogue d'impression du navigateur pour enregistrer le ticket en PDF.";
+  },
+
   async createSale(draft: SaleDraft): Promise<SaleRecord[]> {
     if (window.desktopApi) {
       return window.desktopApi.createSale(draft);
@@ -1222,30 +1811,32 @@ export const repository = {
       const client = getSupabaseClient();
       const cycleId = await getCurrentSupabaseInventoryCycleId();
 
-      if (draft.items.length === 0) {
-        throw new Error("Ajoutez au moins un produit a la facture.");
+      if (draft.items.length === 0 && draft.serviceItems.length === 0) {
+        throw new Error("Ajoutez au moins un produit ou un service a la facture.");
       }
 
       const mergedItems = mergeSaleItems(draft.items);
+      const mergedServiceItems = mergeSaleServiceItems(draft.serviceItems);
       const productIds = mergedItems.map((item) => item.productId);
-      const productsResult = await client
-        .from("products")
-        .select("id, name, selling_price, unit")
-        .in("id", productIds);
-      const stockResult = await client
-        .from("current_stock_view")
-        .select("product_id, current_stock")
-        .in("product_id", productIds);
+      const serviceIds = mergedServiceItems.map((item) => item.serviceId);
+      const [productsResult, stockResult, servicesResult] = await Promise.all([
+        productIds.length > 0
+          ? client.from("products").select("id, name, selling_price, unit").in("id", productIds)
+          : Promise.resolve({ data: [], error: null }),
+        productIds.length > 0
+          ? client.from("current_stock_view").select("product_id, current_stock").in("product_id", productIds)
+          : Promise.resolve({ data: [], error: null }),
+        serviceIds.length > 0
+          ? client.from("services").select("id, name, category, unit_price, active").in("id", serviceIds)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
 
-      const productRows = ensureData(productsResult.data, productsResult.error) as Array<{
-        id: number;
-        name: string;
-        selling_price: number;
-        unit: string;
-      }>;
+      const productRows = ensureData(productsResult.data, productsResult.error) as Array<{ id: number; name: string; selling_price: number; unit: string }>;
       const stockRows = ensureData(stockResult.data, stockResult.error) as Array<{ product_id: number; current_stock: number }>;
+      const serviceRows = ensureData(servicesResult.data, servicesResult.error) as Array<{ id: number; name: string; category: string; unit_price: number; active: boolean }>;
       const productMap = new Map(productRows.map((row) => [row.id, row]));
       const stockMap = new Map(stockRows.map((row) => [row.product_id, Number(row.current_stock)]));
+      const serviceMap = new Map(serviceRows.map((row) => [row.id, row]));
 
       let totalAmount = 0;
       const saleItemsPayload = mergedItems.map((item) => {
@@ -1269,7 +1860,28 @@ export const repository = {
           quantity: item.quantity,
           unit_price: unitPrice,
           line_total: lineTotal,
-          product_name: product.name,
+        };
+      });
+      const saleServiceItemsPayload = mergedServiceItems.map((item) => {
+        const service = serviceMap.get(item.serviceId);
+
+        if (!service) {
+          throw new Error("Un service de la facture est introuvable.");
+        }
+
+        if (!service.active) {
+          throw new Error(`Le service ${service.name} est inactif.`);
+        }
+
+        const unitPrice = Number(service.unit_price);
+        const lineTotal = unitPrice * item.quantity;
+        totalAmount += lineTotal;
+
+        return {
+          service_id: item.serviceId,
+          quantity: item.quantity,
+          unit_price: unitPrice,
+          line_total: lineTotal,
         };
       });
 
@@ -1279,7 +1891,7 @@ export const repository = {
         .select("current_year, series_index, next_number")
         .eq("id", 1)
         .maybeSingle();
-      let sequence = ensureData(sequenceResult.data, sequenceResult.error) as SupabaseInvoiceSequenceRow | null;
+      let sequence = ensureOptionalData(sequenceResult.data, sequenceResult.error) as SupabaseInvoiceSequenceRow | null;
 
       if (!sequence) {
         const insertSequenceResult = await client
@@ -1340,34 +1952,49 @@ export const repository = {
       );
       ensureData(saleItemsResult.data ?? [], saleItemsResult.error);
 
-      const movementsResult = await client.from("stock_movements").insert(
-        saleItemsPayload.map((item) => ({
-          product_id: item.product_id,
-          movement_type: "vente",
-          quantity: -item.quantity,
-          source_table: "sales",
-          source_id: insertedSale.id,
-          cycle_id: cycleId,
-        }))
-      );
-      ensureData(movementsResult.data ?? [], movementsResult.error);
+      if (saleServiceItemsPayload.length > 0) {
+        const saleServiceItemsResult = await client.from("sale_service_items").insert(
+          saleServiceItemsPayload.map((item) => ({
+            sale_id: insertedSale.id,
+            service_id: item.service_id,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            line_total: item.line_total,
+          }))
+        );
+        ensureData(saleServiceItemsResult.data ?? [], saleServiceItemsResult.error);
+      }
 
-      const auditResult = await client.from("audit_logs").insert({
+      if (saleItemsPayload.length > 0) {
+        const movementsResult = await client.from("stock_movements").insert(
+          saleItemsPayload.map((item) => ({
+            product_id: item.product_id,
+            movement_type: "vente",
+            quantity: -item.quantity,
+            source_table: "sales",
+            source_id: insertedSale.id,
+            cycle_id: cycleId,
+          }))
+        );
+        ensureData(movementsResult.data ?? [], movementsResult.error);
+      }
+
+      await insertSupabaseAuditLog(client, {
         action: "create",
         target_table: "sales",
         target_id: insertedSale.id,
-        details: `Vente ${reference} avec ${saleItemsPayload.length} ligne(s)`,
+        details: `Vente ${reference} avec ${saleItemsPayload.length + saleServiceItemsPayload.length} ligne(s)`,
       });
-      ensureData(auditResult.data ?? [], auditResult.error);
 
       return this.listSales();
     }
 
-    if (draft.items.length === 0) {
-      throw new Error("Ajoutez au moins un produit a la facture.");
+    if (draft.items.length === 0 && draft.serviceItems.length === 0) {
+      throw new Error("Ajoutez au moins un produit ou un service a la facture.");
     }
 
     const products = loadJson("walikale-web-products", webSeedProducts);
+    const services = loadJson("walikale-web-services", webSeedServices);
     const history = loadJson("walikale-web-history", webSeedHistory);
     const sales = loadJson("walikale-web-sales", webSeedSales);
     const saleDetails = loadJson("walikale-web-sale-details", webSeedSaleDetails);
@@ -1376,6 +2003,7 @@ export const repository = {
     const invoiceSeries = loadWebInvoiceSeries();
     const client = clients.find((item) => item.id === draft.clientId);
     const mergedItems = mergeSaleItems(draft.items);
+    const mergedServiceItems = mergeSaleServiceItems(draft.serviceItems);
     let amount = 0;
     const detailItems: SaleDetail["items"] = [];
 
@@ -1393,8 +2021,10 @@ export const repository = {
       const lineTotal = product.sellingPrice * line.quantity;
       amount += lineTotal;
       detailItems.push({
+        lineType: "product",
         productId: product.id,
         productName: product.name,
+        category: product.category,
         quantity: line.quantity,
         unitPrice: product.sellingPrice,
         lineTotal,
@@ -1406,8 +2036,33 @@ export const repository = {
         product: product.name,
         quantity: line.quantity,
         supplier: client?.name || "Client comptoir",
+        purchasePrice: product.purchasePrice,
+        sellingPrice: product.sellingPrice,
         amount: lineTotal,
         movementType: "vente",
+      });
+    });
+
+    mergedServiceItems.forEach((line) => {
+      const service = services.find((item) => item.id === line.serviceId);
+      if (!service) {
+        throw new Error("Un service de la facture est introuvable.");
+      }
+
+      if (!service.active) {
+        throw new Error(`Le service ${service.name} est inactif.`);
+      }
+
+      const lineTotal = service.unitPrice * line.quantity;
+      amount += lineTotal;
+      detailItems.push({
+        lineType: "service",
+        serviceId: service.id,
+        productName: service.name,
+        category: service.category,
+        quantity: line.quantity,
+        unitPrice: service.unitPrice,
+        lineTotal,
       });
     });
 
@@ -1422,7 +2077,7 @@ export const repository = {
       amount,
       paymentMethod: draft.paymentMethod,
       status: "Payee",
-      itemsCount: mergedItems.length,
+      itemsCount: mergedItems.length + mergedServiceItems.length,
     });
 
     saleDetails.unshift({
@@ -1437,6 +2092,7 @@ export const repository = {
     });
 
     persistWeb(products, history, sales, saleDetails);
+    persistWebServices(services);
     persistWebInvoiceSeries(buildInvoiceSeriesInfo(invoiceSeries.year, getInvoiceSeriesIndex(invoiceSeries.seriesLabel), invoiceSeries.nextNumber + 1));
     activityHistory.unshift({
       id: Date.now() + 2,
@@ -1488,6 +2144,8 @@ export const repository = {
           product: product?.name ?? "Produit",
           quantity: Math.abs(row.quantity),
           supplier: isSale ? saleClient?.name ?? "Client comptoir" : product?.supplier ?? "",
+          purchasePrice: Number(product?.purchase_price ?? 0),
+          sellingPrice: Number(product?.selling_price ?? 0),
           amount: Math.abs(row.quantity) * price,
           movementType: row.movement_type,
         };
@@ -1506,7 +2164,7 @@ export const repository = {
       const client = getSupabaseClient();
       const result = await client
         .from("audit_logs")
-        .select("id, action, target_table, target_id, details, created_at, user_id, user:users(full_name)")
+        .select("id, action, target_table, target_id, details, created_at, user_id, actor_name, actor_username, source_device, source_platform, user:users(full_name)")
         .order("created_at", { ascending: false })
         .limit(300);
       const rows = ensureData(result.data, result.error) as SupabaseAuditLogRow[];
@@ -1518,11 +2176,105 @@ export const repository = {
           row.action === "create" ? "Creation" : row.action === "update" ? "Mise a jour" : row.action === "delete" ? "Suppression" : row.action,
         target: row.target_id ? `${row.target_table} #${row.target_id}` : row.target_table,
         details: row.details ?? "",
-        user: relationFirst(row.user)?.full_name ?? "Utilisateur non precise",
+        user: formatAuditActorLabel(row),
       }));
     }
 
     return loadJson("walikale-web-activity-history", webSeedActivityHistory);
+  },
+
+  async listExpenses(): Promise<ExpenseItem[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.listExpenses();
+    }
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const result = await client
+        .from("expenses")
+        .select("id, detail, nature, amount, expense_date, approved_by, purpose, user_id, user:users(full_name)")
+        .order("expense_date", { ascending: false });
+      const rows = ensureData(result.data, result.error) as SupabaseExpenseRow[];
+
+      return rows.map((row) => ({
+        id: row.id,
+        detail: row.detail,
+        nature: row.nature,
+        amount: Number(row.amount),
+        date: formatFrenchDateTime(row.expense_date),
+        requestedBy: relationFirst(row.user)?.full_name ?? "Utilisateur non precise",
+        approvedBy: row.approved_by,
+        purpose: row.purpose,
+      }));
+    }
+
+    return loadJson("walikale-web-expenses", webSeedExpenses);
+  },
+
+  async saveExpense(draft: ExpenseDraft): Promise<ExpenseItem[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.saveExpense(draft);
+    }
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const currentProfile = await getSupabaseSessionProfile();
+
+      if (!currentProfile) {
+        throw new Error("Aucune session utilisateur active.");
+      }
+
+      const amount = Number(draft.amount);
+      if (!draft.detail.trim() || !draft.nature.trim() || !draft.approvedBy.trim() || !draft.purpose.trim()) {
+        throw new Error("Tous les champs de depense sont obligatoires.");
+      }
+      if (!Number.isFinite(amount) || amount <= 0) {
+        throw new Error("Le montant de la depense doit etre superieur a zero.");
+      }
+
+      const insertResult = await client.from("expenses").insert({
+        detail: draft.detail.trim(),
+        nature: draft.nature.trim(),
+        amount,
+        expense_date: draft.date?.trim() ? new Date(draft.date).toISOString() : new Date().toISOString(),
+        user_id: currentProfile.id,
+        approved_by: draft.approvedBy.trim(),
+        purpose: draft.purpose.trim(),
+      });
+      ensureData(insertResult.data ?? [], insertResult.error);
+
+      await insertSupabaseAuditLog(client, {
+        action: "create",
+        target_table: "expenses",
+        details: `Depense engagee ${draft.nature.trim()} - ${amount} FC - ${draft.purpose.trim()}`,
+      });
+
+      return this.listExpenses();
+    }
+
+    const expenses = loadJson("walikale-web-expenses", webSeedExpenses);
+    expenses.unshift({
+      id: Date.now(),
+      detail: draft.detail.trim(),
+      nature: draft.nature.trim(),
+      amount: Number(draft.amount),
+      date: formatFrenchDateTime(draft.date?.trim() ? new Date(draft.date).toISOString() : new Date().toISOString()),
+      requestedBy: "Utilisateur web",
+      approvedBy: draft.approvedBy.trim(),
+      purpose: draft.purpose.trim(),
+    });
+    persistWebExpenses(expenses);
+    const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
+    activityHistory.unshift({
+      id: Date.now() + 4,
+      date: new Date().toLocaleString("fr-FR"),
+      action: "Creation",
+      target: "Depense",
+      details: `Depense engagee ${draft.nature.trim()} - ${Number(draft.amount)} FC - ${draft.purpose.trim()}`,
+      user: "Utilisateur web",
+    });
+    persistWebActivityHistory(activityHistory);
+    return expenses;
   },
 
   async getDashboardMetrics(): Promise<DashboardMetrics> {
@@ -1531,12 +2283,17 @@ export const repository = {
     }
 
     if (isSupabaseEnabled()) {
-      const [products, sales] = await Promise.all([this.listProducts(), this.listSales()]);
+      const [products, sales, expenses] = await Promise.all([this.listProducts(), this.listSales(), this.listExpenses()]);
+      const totalSalesAmount = sales.reduce((sum, item) => sum + item.amount, 0);
+      const totalExpenses = expenses.reduce((sum, item) => sum + item.amount, 0);
       return {
         totalStock: products.reduce((sum, item) => sum + item.quantity, 0),
         totalProducts: products.length,
         dailySales: sales.length,
         suppliers: new Set(products.map((item) => item.supplier)).size,
+        totalSalesAmount,
+        totalExpenses,
+        netSalesAmount: totalSalesAmount - totalExpenses,
       };
     }
 
@@ -1576,12 +2333,11 @@ export const repository = {
       });
       ensureData(insertResult.data ?? [], insertResult.error);
 
-      const auditResult = await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "create",
         target_table: "clients",
         details: `Creation client ${draft.name.trim()}`,
       });
-      ensureData(auditResult.data ?? [], auditResult.error);
 
       return this.listClients();
     }
@@ -1698,7 +2454,7 @@ export const repository = {
         throw new Error(insertResult.error.message || "Le profil utilisateur n'a pas pu etre cree.");
       }
 
-      await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "create",
         target_table: "users",
         details: `Creation utilisateur ${normalizedEmail}`,
@@ -1759,42 +2515,33 @@ export const repository = {
 
   async authenticateUser(draft: LoginDraft): Promise<AppUser | null> {
     if (window.desktopApi) {
-      return window.desktopApi.authenticateUser(draft);
+      const localUser = await window.desktopApi.authenticateUser(draft);
+      if (localUser) {
+        return localUser;
+      }
+
+      if (!supabase || (typeof navigator !== "undefined" && !navigator.onLine)) {
+        return null;
+      }
+
+      const cloudSession = await authenticateWithSupabase(draft);
+      if (!cloudSession) {
+        return null;
+      }
+
+      return window.desktopApi.cacheCloudAuthenticatedUser({
+        authUserId: cloudSession.authUserId,
+        fullName: cloudSession.profile.fullName,
+        username: cloudSession.profile.username,
+        email: cloudSession.profile.email,
+        role: cloudSession.profile.role,
+        password: draft.password.trim(),
+      });
     }
 
     if (isSupabaseEnabled()) {
-      const client = getSupabaseClient();
-      const identifier = draft.identifier.trim().toLowerCase();
-      const password = draft.password.trim();
-
-      if (!identifier || !password) {
-        return null;
-      }
-
-      let loginEmail = identifier;
-
-      if (!identifier.includes("@")) {
-        const lookupResult = await client.rpc("find_login_user", { p_identifier: identifier });
-        const lookupRows = ensureData(lookupResult.data, lookupResult.error) as Array<{ email: string | null; active: boolean }>;
-        const lookupUser = lookupRows[0];
-
-        if (!lookupUser?.email || !lookupUser.active) {
-          return null;
-        }
-
-        loginEmail = lookupUser.email.toLowerCase();
-      }
-
-      const signInResult = await client.auth.signInWithPassword({
-        email: loginEmail,
-        password,
-      });
-
-      if (signInResult.error) {
-        return null;
-      }
-
-      return getSupabaseSessionProfile();
+      const cloudSession = await authenticateWithSupabase(draft);
+      return cloudSession?.profile ?? null;
     }
 
     const identifier = draft.identifier.trim().toLowerCase();
@@ -1930,7 +2677,7 @@ export const repository = {
         throw new Error(result.error.message || "Impossible de mettre a jour l'etat du compte.");
       }
 
-      await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "update",
         target_table: "users",
         target_id: userId,
@@ -1960,7 +2707,7 @@ export const repository = {
         throw new Error(result.error.message || "Impossible de mettre a jour le role.");
       }
 
-      await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "update",
         target_table: "users",
         target_id: userId,
@@ -2001,7 +2748,7 @@ export const repository = {
         throw new Error(result.error.message || "Impossible de reactiver l'acces utilisateur.");
       }
 
-      await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "update",
         target_table: "users",
         target_id: userId,
@@ -2042,7 +2789,7 @@ export const repository = {
         throw new Error(result.error.message || "Impossible de supprimer le profil utilisateur.");
       }
 
-      await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "delete",
         target_table: "users",
         target_id: userId,
@@ -2080,7 +2827,7 @@ export const repository = {
         .select("current_year, series_index, next_number")
         .eq("id", 1)
         .maybeSingle();
-      let sequence = ensureData(sequenceResult.data, sequenceResult.error) as SupabaseInvoiceSequenceRow | null;
+      let sequence = ensureOptionalData(sequenceResult.data, sequenceResult.error) as SupabaseInvoiceSequenceRow | null;
 
       if (!sequence) {
         const insertResult = await client
@@ -2133,13 +2880,12 @@ export const repository = {
         .eq("id", 1);
       ensureData(updateResult.data ?? [], updateResult.error);
 
-      const auditResult = await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "update",
         target_table: "invoice_sequences",
         target_id: 1,
         details: `Nouvelle serie de facturation S${getInvoiceSeriesLabel(nextSeriesIndex)}${current.yearCode}`,
       });
-      ensureData(auditResult.data ?? [], auditResult.error);
 
       return buildInvoiceSeriesInfo(current.year, nextSeriesIndex, 1);
     }
@@ -2177,13 +2923,12 @@ export const repository = {
       });
       ensureData(result.data ?? [], result.error);
 
-      const auditResult = await client.from("audit_logs").insert({
+      await insertSupabaseAuditLog(client, {
         action: "update",
         target_table: "inventory_cycles",
         target_id: nextCycleId,
         details: "Reinitialisation du cycle de stock apres inventaire",
       });
-      ensureData(auditResult.data ?? [], auditResult.error);
       return;
     }
 

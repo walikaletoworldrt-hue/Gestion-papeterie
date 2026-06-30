@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
@@ -7,15 +8,21 @@ import type {
   AppUser,
   Client,
   ClientDraft,
+  CloudDesktopSessionDraft,
   DashboardMetrics,
+  ExpenseDraft,
+  ExpenseItem,
   InvoiceSeriesInfo,
   LoginDraft,
   PasswordChangeDraft,
   Product,
   ProductDraft,
+  Service,
+  ServiceDraft,
   SaleDetail,
   SaleDetailItem,
   SaleItemDraft,
+  SaleServiceItemDraft,
   SaleDraft,
   SaleRecord,
   SyncSnapshot,
@@ -40,12 +47,25 @@ type ProductRow = {
   updated_at: string;
 };
 
+type ServiceRow = {
+  id: number;
+  name: string;
+  category: string;
+  unit_price: number;
+  description: string;
+  active: number;
+  created_at: string;
+  updated_at: string;
+};
+
 type SupplyHistoryRow = {
   id: number;
   date: string;
   product: string;
   quantity: number;
   supplier: string;
+  purchase_price: number;
+  selling_price: number;
   amount: number;
   movement_type: "stock_initial" | "reapprovisionnement" | "vente";
 };
@@ -59,12 +79,26 @@ type ClientRow = {
   created_at: string;
 };
 
+type ExpenseRow = {
+  id: number;
+  detail: string;
+  nature: string;
+  amount: number;
+  expense_date: string;
+  user_id: number | null;
+  approved_by: string;
+  purpose: string;
+  user_name: string | null;
+};
+
 type UserRow = {
   id: number;
+  auth_user_id?: string | null;
   full_name: string;
   username: string;
   email: string | null;
   password_hash?: string | null;
+  auth_sync_password?: string | null;
   role: string;
   active: number;
   created_at: string;
@@ -79,6 +113,10 @@ type AuditLogRow = {
   details: string | null;
   created_at: string;
   user_name: string | null;
+  actor_name: string | null;
+  actor_username: string | null;
+  source_device: string | null;
+  source_platform: string | null;
 };
 
 type StockCurrentRow = {
@@ -101,8 +139,11 @@ type SaleRow = {
 };
 
 type SaleItemRow = {
+  line_type: "product" | "service";
   product_id: number;
+  service_id: number | null;
   product_name: string;
+  category: string | null;
   quantity: number;
   unit_price: number;
   line_total: number;
@@ -159,6 +200,13 @@ const seedProducts: ProductDraft[] = [
 const seedClients = [
   { name: "Institut Amani", phone: "+243970000001", address: "Goma", email: "contact@amani.cd" },
   { name: "Groupe Horizon", phone: "+243970000002", address: "Bukavu", email: "admin@horizon.cd" },
+];
+
+const seedServices: ServiceDraft[] = [
+  { name: "Saisie de documents", category: "Bureautique", unitPrice: 2, description: "Saisie et mise en forme de documents", active: true },
+  { name: "Impression couleur", category: "Impression", unitPrice: 1, description: "Impression couleur par page", active: true },
+  { name: "Scan", category: "Numerisation", unitPrice: 1.5, description: "Numerisation de documents", active: true },
+  { name: "Maintenance informatique", category: "Maintenance", unitPrice: 15, description: "Intervention et maintenance", active: true },
 ];
 
 const seedUsers = [
@@ -234,10 +282,12 @@ export class LocalDatabase {
 
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        auth_user_id TEXT,
         full_name TEXT NOT NULL,
         username TEXT NOT NULL UNIQUE,
         email TEXT,
         password_hash TEXT,
+        auth_sync_password TEXT,
         role TEXT NOT NULL,
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
@@ -253,6 +303,18 @@ export class LocalDatabase {
         created_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS expenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        detail TEXT NOT NULL,
+        nature TEXT NOT NULL,
+        amount REAL NOT NULL,
+        expense_date TEXT NOT NULL,
+        user_id INTEGER,
+        approved_by TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
       CREATE TABLE IF NOT EXISTS products (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT NOT NULL UNIQUE,
@@ -263,6 +325,17 @@ export class LocalDatabase {
         unit TEXT NOT NULL DEFAULT 'piece',
         alert_threshold INTEGER NOT NULL DEFAULT 0,
         supplier TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS services (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        category TEXT NOT NULL DEFAULT 'Service general',
+        unit_price REAL NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -318,6 +391,17 @@ export class LocalDatabase {
         FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS sale_service_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER NOT NULL,
+        service_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price REAL NOT NULL,
+        line_total REAL NOT NULL,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS stock_movements (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         product_id INTEGER NOT NULL,
@@ -339,6 +423,10 @@ export class LocalDatabase {
         target_table TEXT NOT NULL,
         target_id INTEGER,
         details TEXT,
+        actor_name TEXT,
+        actor_username TEXT,
+        source_device TEXT,
+        source_platform TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
       );
@@ -383,6 +471,7 @@ export class LocalDatabase {
 
     this.ensureUserColumns();
     this.ensureCycleColumns();
+    this.ensureAuditLogColumns();
     this.ensureInventoryCycleSeed();
     this.ensureInvoiceSequenceSettings();
     this.ensureSyncSettings();
@@ -394,8 +483,16 @@ export class LocalDatabase {
     const columns = this.db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
     const names = new Set(columns.map((column) => column.name));
 
+    if (!names.has("auth_user_id")) {
+      this.db.exec("ALTER TABLE users ADD COLUMN auth_user_id TEXT");
+    }
+
     if (!names.has("email")) {
       this.db.exec("ALTER TABLE users ADD COLUMN email TEXT");
+    }
+
+    if (!names.has("auth_sync_password")) {
+      this.db.exec("ALTER TABLE users ADD COLUMN auth_sync_password TEXT");
     }
 
     if (!names.has("last_login_at")) {
@@ -423,6 +520,27 @@ export class LocalDatabase {
 
     if (!new Set(movementColumns.map((column) => column.name)).has("cycle_id")) {
       this.db.exec("ALTER TABLE stock_movements ADD COLUMN cycle_id INTEGER");
+    }
+  }
+
+  private ensureAuditLogColumns() {
+    const columns = this.db.prepare("PRAGMA table_info(audit_logs)").all() as Array<{ name: string }>;
+    const names = new Set(columns.map((column) => column.name));
+
+    if (!names.has("actor_name")) {
+      this.db.exec("ALTER TABLE audit_logs ADD COLUMN actor_name TEXT");
+    }
+
+    if (!names.has("actor_username")) {
+      this.db.exec("ALTER TABLE audit_logs ADD COLUMN actor_username TEXT");
+    }
+
+    if (!names.has("source_device")) {
+      this.db.exec("ALTER TABLE audit_logs ADD COLUMN source_device TEXT");
+    }
+
+    if (!names.has("source_platform")) {
+      this.db.exec("ALTER TABLE audit_logs ADD COLUMN source_platform TEXT");
     }
   }
 
@@ -456,45 +574,58 @@ export class LocalDatabase {
 
   private seedIfNeeded() {
     const productCount = this.db.prepare("SELECT COUNT(*) AS count FROM products").get() as { count: number };
-    if (productCount.count > 0) {
-      return;
+    const now = new Date().toISOString();
+    const serviceCount = this.db.prepare("SELECT COUNT(*) AS count FROM services").get() as { count: number };
+    const previousSessionUserId = this.sessionUserId;
+    let seedUserId = previousSessionUserId;
+
+    if (productCount.count === 0) {
+      const insertUser = this.db.prepare(`
+        INSERT INTO users (full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      seedUsers.forEach((user) => {
+        insertUser.run(
+          user.fullName,
+          user.username,
+          user.email,
+          this.hashPassword(DEFAULT_PASSWORD),
+          DEFAULT_PASSWORD,
+          user.role,
+          user.active,
+          user.createdAt,
+          user.lastLoginAt
+        );
+      });
+
+      const insertClient = this.db.prepare(`
+        INSERT INTO clients (name, phone, address, email, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+
+      seedClients.forEach((client) => {
+        insertClient.run(client.name, client.phone, client.address, client.email, now);
+      });
+
+      const firstSeedUser = this.db.prepare("SELECT id FROM users ORDER BY id ASC LIMIT 1").get() as
+        | { id: number }
+        | undefined;
+      seedUserId = firstSeedUser?.id ?? null;
+      this.sessionUserId = seedUserId;
+      seedProducts.forEach((product) => this.saveProduct(product));
+    } else if (serviceCount.count === 0 && this.sessionUserId == null) {
+      const firstExistingUser = this.db.prepare("SELECT id FROM users ORDER BY id ASC LIMIT 1").get() as
+        | { id: number }
+        | undefined;
+      seedUserId = firstExistingUser?.id ?? null;
     }
 
-    const now = new Date().toISOString();
-    const insertUser = this.db.prepare(`
-      INSERT INTO users (full_name, username, email, password_hash, role, active, created_at, last_login_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    if (serviceCount.count === 0) {
+      this.sessionUserId = seedUserId;
+      seedServices.forEach((service) => this.saveService(service));
+    }
 
-    seedUsers.forEach((user) => {
-      insertUser.run(
-        user.fullName,
-        user.username,
-        user.email,
-        this.hashPassword(DEFAULT_PASSWORD),
-        user.role,
-        user.active,
-        user.createdAt,
-        user.lastLoginAt
-      );
-    });
-
-    const insertClient = this.db.prepare(`
-      INSERT INTO clients (name, phone, address, email, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-
-    seedClients.forEach((client) => {
-      insertClient.run(client.name, client.phone, client.address, client.email, now);
-    });
-
-    const firstSeedUser = this.db.prepare("SELECT id FROM users ORDER BY id ASC LIMIT 1").get() as
-      | { id: number }
-      | undefined;
-    const previousSessionUserId = this.sessionUserId;
-
-    this.sessionUserId = firstSeedUser?.id ?? null;
-    seedProducts.forEach((product) => this.saveProduct(product));
     this.sessionUserId = previousSessionUserId;
   }
 
@@ -589,6 +720,27 @@ export class LocalDatabase {
     }));
   }
 
+  listServices(): Service[] {
+    const rows = this.db
+      .prepare(`
+        SELECT id, name, category, unit_price, description, active, created_at, updated_at
+        FROM services
+        ORDER BY active DESC, datetime(updated_at) DESC, name ASC
+      `)
+      .all() as ServiceRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      category: row.category,
+      unitPrice: row.unit_price,
+      description: row.description,
+      active: Boolean(row.active),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   saveProduct(draft: ProductDraft): Product[] {
     this.requirePermission("manage_inventory");
     const now = new Date().toISOString();
@@ -661,6 +813,50 @@ export class LocalDatabase {
     return this.listProducts();
   }
 
+  saveService(draft: ServiceDraft): Service[] {
+    this.requirePermission("manage_inventory");
+    const now = new Date().toISOString();
+    const normalizedName = draft.name.trim();
+    const normalizedCategory = draft.category.trim() || "Service general";
+    const normalizedDescription = draft.description.trim();
+    const unitPrice = Number(draft.unitPrice);
+
+    if (!normalizedName) {
+      throw new Error("Le nom du service est obligatoire.");
+    }
+
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      throw new Error("Le prix du service doit etre superieur a zero.");
+    }
+
+    const existing = this.db
+      .prepare("SELECT id FROM services WHERE LOWER(name) = LOWER(?) LIMIT 1")
+      .get(normalizedName) as { id: number } | undefined;
+
+    if (existing) {
+      this.db
+        .prepare(`
+          UPDATE services
+          SET category = ?, unit_price = ?, description = ?, active = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(normalizedCategory, unitPrice, normalizedDescription, draft.active === false ? 0 : 1, now, existing.id);
+
+      this.logAction(this.getActorUserId(), "update", "services", existing.id, `Mise a jour service ${normalizedName}`);
+    } else {
+      const result = this.db
+        .prepare(`
+          INSERT INTO services (name, category, unit_price, description, active, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(normalizedName, normalizedCategory, unitPrice, normalizedDescription, draft.active === false ? 0 : 1, now, now);
+
+      this.logAction(this.getActorUserId(), "create", "services", Number(result.lastInsertRowid), `Creation service ${normalizedName}`);
+    }
+
+    return this.listServices();
+  }
+
   deleteProduct(id: number): Product[] {
     this.requirePermission("manage_inventory");
     this.db.prepare("DELETE FROM products WHERE id = ?").run(id);
@@ -678,11 +874,13 @@ export class LocalDatabase {
           s.sold_at,
           s.total_amount,
           s.payment_method,
-          COUNT(si.id) AS items_count
+          (
+            SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id
+          ) + (
+            SELECT COUNT(*) FROM sale_service_items ssi WHERE ssi.sale_id = s.id
+          ) AS items_count
         FROM sales s
         LEFT JOIN clients c ON c.id = s.client_id
-        LEFT JOIN sale_items si ON si.sale_id = s.id
-        GROUP BY s.id, s.reference, c.name, s.sold_at, s.total_amount, s.payment_method
         ORDER BY s.id DESC
       `)
       .all() as SaleRow[];
@@ -763,14 +961,18 @@ export class LocalDatabase {
 
   exportSyncSnapshot(): SyncSnapshot {
     return {
+      users: this.db.prepare("SELECT id, auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at FROM users ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       products: this.db.prepare("SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at FROM products ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       clients: this.db.prepare("SELECT id, name, phone, address, email, created_at FROM clients ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      expenses: this.db.prepare("SELECT id, detail, nature, amount, expense_date, user_id, approved_by, purpose FROM expenses ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      services: this.db.prepare("SELECT id, name, category, unit_price, description, active, created_at, updated_at FROM services ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       initialStocks: this.db.prepare("SELECT id, product_id, quantity, purchase_price, stock_date, cycle_id, NULL as user_id, note FROM initial_stocks ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       replenishments: this.db.prepare("SELECT id, product_id, quantity, purchase_price, supplier, replenished_at, cycle_id, NULL as user_id, note FROM replenishments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       sales: this.db.prepare("SELECT id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, NULL as user_id FROM sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      saleServiceItems: this.db.prepare("SELECT id, sale_id, service_id, quantity, unit_price, line_total FROM sale_service_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       stockMovements: this.db.prepare("SELECT id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, NULL as user_id FROM stock_movements ORDER BY id ASC").all() as Array<Record<string, unknown>>,
-      auditLogs: this.db.prepare("SELECT id, NULL as user_id, action, target_table, target_id, details, created_at FROM audit_logs ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      auditLogs: this.db.prepare("SELECT id, NULL as user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at FROM audit_logs ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       invoiceSequences: this.db.prepare("SELECT id, current_year, series_index, next_number, updated_at FROM invoice_sequence_settings ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       inventoryCycles: this.db.prepare("SELECT id, label, started_at, NULL as user_id FROM inventory_cycles ORDER BY id ASC").all() as Array<Record<string, unknown>>,
     };
@@ -780,16 +982,24 @@ export class LocalDatabase {
     this.ensureSyncSettings();
     const replaceTransaction = this.db.transaction(() => {
       this.db.prepare("DELETE FROM sale_items").run();
+      this.db.prepare("DELETE FROM sale_service_items").run();
       this.db.prepare("DELETE FROM stock_movements").run();
       this.db.prepare("DELETE FROM sales").run();
       this.db.prepare("DELETE FROM replenishments").run();
       this.db.prepare("DELETE FROM initial_stocks").run();
       this.db.prepare("DELETE FROM audit_logs").run();
+      this.db.prepare("DELETE FROM expenses").run();
+      this.db.prepare("DELETE FROM services").run();
+      this.db.prepare("DELETE FROM users").run();
       this.db.prepare("DELETE FROM clients").run();
       this.db.prepare("DELETE FROM products").run();
       this.db.prepare("DELETE FROM inventory_cycles").run();
       this.db.prepare("DELETE FROM invoice_sequence_settings").run();
 
+      const insertUsers = this.db.prepare(`
+        INSERT INTO users (id, auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
+        VALUES (@id, @auth_user_id, @full_name, @username, @email, @password_hash, @auth_sync_password, @role, @active, @created_at, @last_login_at)
+      `);
       const insertProducts = this.db.prepare(`
         INSERT INTO products (id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at)
         VALUES (@id, @code, @name, @category, @purchase_price, @selling_price, @unit, @alert_threshold, @supplier, @created_at, @updated_at)
@@ -797,6 +1007,14 @@ export class LocalDatabase {
       const insertClients = this.db.prepare(`
         INSERT INTO clients (id, name, phone, address, email, created_at)
         VALUES (@id, @name, @phone, @address, @email, @created_at)
+      `);
+      const insertExpenses = this.db.prepare(`
+        INSERT INTO expenses (id, detail, nature, amount, expense_date, user_id, approved_by, purpose)
+        VALUES (@id, @detail, @nature, @amount, @expense_date, @user_id, @approved_by, @purpose)
+      `);
+      const insertServices = this.db.prepare(`
+        INSERT INTO services (id, name, category, unit_price, description, active, created_at, updated_at)
+        VALUES (@id, @name, @category, @unit_price, @description, @active, @created_at, @updated_at)
       `);
       const insertInitialStocks = this.db.prepare(`
         INSERT INTO initial_stocks (id, product_id, quantity, purchase_price, stock_date, cycle_id, user_id, note)
@@ -814,13 +1032,17 @@ export class LocalDatabase {
         INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price, line_total)
         VALUES (@id, @sale_id, @product_id, @quantity, @unit_price, @line_total)
       `);
+      const insertSaleServiceItems = this.db.prepare(`
+        INSERT INTO sale_service_items (id, sale_id, service_id, quantity, unit_price, line_total)
+        VALUES (@id, @sale_id, @service_id, @quantity, @unit_price, @line_total)
+      `);
       const insertStockMovements = this.db.prepare(`
         INSERT INTO stock_movements (id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, user_id)
         VALUES (@id, @product_id, @movement_type, @quantity, @source_table, @source_id, @movement_date, @cycle_id, @user_id)
       `);
       const insertAuditLogs = this.db.prepare(`
-        INSERT INTO audit_logs (id, user_id, action, target_table, target_id, details, created_at)
-        VALUES (@id, @user_id, @action, @target_table, @target_id, @details, @created_at)
+        INSERT INTO audit_logs (id, user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at)
+        VALUES (@id, @user_id, @action, @target_table, @target_id, @details, @actor_name, @actor_username, @source_device, @source_platform, @created_at)
       `);
       const insertInvoiceSequences = this.db.prepare(`
         INSERT INTO invoice_sequence_settings (id, current_year, series_index, next_number, updated_at)
@@ -831,14 +1053,18 @@ export class LocalDatabase {
         VALUES (@id, @label, @started_at, @user_id)
       `);
 
+      (snapshot.users ?? []).forEach((row) => insertUsers.run(row));
       (snapshot.products ?? []).forEach((row) => insertProducts.run(row));
       (snapshot.clients ?? []).forEach((row) => insertClients.run(row));
+      (snapshot.expenses ?? []).forEach((row) => insertExpenses.run(row));
+      (snapshot.services ?? []).forEach((row) => insertServices.run(row));
       (snapshot.inventoryCycles ?? []).forEach((row) => insertInventoryCycles.run(row));
       (snapshot.invoiceSequences ?? []).forEach((row) => insertInvoiceSequences.run(row));
       (snapshot.initialStocks ?? []).forEach((row) => insertInitialStocks.run(row));
       (snapshot.replenishments ?? []).forEach((row) => insertReplenishments.run(row));
       (snapshot.sales ?? []).forEach((row) => insertSales.run(row));
       (snapshot.saleItems ?? []).forEach((row) => insertSaleItems.run(row));
+      (snapshot.saleServiceItems ?? []).forEach((row) => insertSaleServiceItems.run(row));
       (snapshot.stockMovements ?? []).forEach((row) => insertStockMovements.run(row));
       (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run(row));
     });
@@ -881,14 +1107,15 @@ export class LocalDatabase {
 
   createSale(draft: SaleDraft): SaleRecord[] {
     this.requirePermission("manage_sales");
-    if (draft.items.length === 0) {
-      throw new Error("Ajoutez au moins un produit a la facture.");
+    if (draft.items.length === 0 && draft.serviceItems.length === 0) {
+      throw new Error("Ajoutez au moins un produit ou un service a la facture.");
     }
 
     const now = new Date().toISOString();
     const userId = this.getActorUserId();
     const cycleId = this.getCurrentInventoryCycleId();
     const normalizedItems = this.mergeSaleItems(draft.items);
+    const normalizedServiceItems = this.mergeSaleServiceItems(draft.serviceItems);
     let totalAmount = 0;
 
     const productQuery = this.db.prepare(`
@@ -931,8 +1158,48 @@ export class LocalDatabase {
       };
     });
 
+    const serviceQuery = this.db.prepare(`
+      SELECT id, name, category, unit_price, active
+      FROM services
+      WHERE id = ?
+    `);
+
+    const resolvedServiceItems = normalizedServiceItems.map((item) => {
+      const service = serviceQuery.get(item.serviceId) as
+        | { id: number; name: string; category: string; unit_price: number; active: number }
+        | undefined;
+
+      if (!service) {
+        throw new Error("Un service de la facture est introuvable.");
+      }
+
+      if (!Boolean(service.active)) {
+        throw new Error(`Le service ${service.name} est inactif.`);
+      }
+
+      if (item.quantity <= 0) {
+        throw new Error(`La quantite doit etre superieure a zero pour ${service.name}.`);
+      }
+
+      const lineTotal = service.unit_price * item.quantity;
+      totalAmount += lineTotal;
+
+      return {
+        serviceId: service.id,
+        serviceName: service.name,
+        category: service.category,
+        quantity: item.quantity,
+        unitPrice: service.unit_price,
+        lineTotal,
+      };
+    });
+
     const insertSaleItem = this.db.prepare(`
       INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, line_total)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    const insertSaleServiceItem = this.db.prepare(`
+      INSERT INTO sale_service_items (sale_id, service_id, quantity, unit_price, line_total)
       VALUES (?, ?, ?, ?, ?)
     `);
 
@@ -957,12 +1224,16 @@ export class LocalDatabase {
         insertMovement.run(item.productId, -item.quantity, saleId, now, cycleId, userId);
       });
 
+      resolvedServiceItems.forEach((item) => {
+        insertSaleServiceItem.run(saleId, item.serviceId, item.quantity, item.unitPrice, item.lineTotal);
+      });
+
       this.logAction(
         userId,
         "create",
         "sales",
         saleId,
-        `Vente ${reference} avec ${resolvedItems.length} ligne(s)`
+        `Vente ${reference} avec ${resolvedItems.length + resolvedServiceItems.length} ligne(s)`
       );
 
       return { saleId, reference };
@@ -989,6 +1260,8 @@ export class LocalDatabase {
             WHEN r.movement_type = 'vente' THEN COALESCE(c.name, 'Client comptoir')
             ELSE p.supplier
           END AS supplier,
+          p.purchase_price,
+          p.selling_price,
           ABS(r.quantity) * CASE WHEN r.movement_type = 'vente' THEN p.selling_price ELSE p.purchase_price END AS amount,
           r.movement_type
         FROM stock_movements r
@@ -1010,6 +1283,8 @@ export class LocalDatabase {
       product: row.product,
       quantity: row.quantity,
       supplier: row.supplier,
+      purchasePrice: row.purchase_price,
+      sellingPrice: row.selling_price,
       amount: row.amount,
       movementType: row.movement_type,
     }));
@@ -1024,6 +1299,10 @@ export class LocalDatabase {
           a.target_table,
           a.target_id,
           a.details,
+          a.actor_name,
+          a.actor_username,
+          a.source_device,
+          a.source_platform,
           a.created_at,
           u.full_name AS user_name
         FROM audit_logs a
@@ -1039,8 +1318,69 @@ export class LocalDatabase {
       action: this.formatActionLabel(row.action),
       target: this.formatTargetLabel(row.target_table, row.target_id),
       details: row.details ?? "",
-      user: row.user_name ?? "Utilisateur non precise",
+      user: this.formatAuditActorLabel(row),
     }));
+  }
+
+  listExpenses(): ExpenseItem[] {
+    const rows = this.db
+      .prepare(`
+        SELECT
+          e.id,
+          e.detail,
+          e.nature,
+          e.amount,
+          e.expense_date,
+          e.user_id,
+          e.approved_by,
+          e.purpose,
+          u.full_name AS user_name
+        FROM expenses e
+        LEFT JOIN users u ON u.id = e.user_id
+        ORDER BY datetime(e.expense_date) DESC, e.id DESC
+      `)
+      .all() as ExpenseRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      detail: row.detail,
+      nature: row.nature,
+      amount: row.amount,
+      date: this.formatDateTime(row.expense_date),
+      requestedBy: row.user_name ?? "Utilisateur non precise",
+      approvedBy: row.approved_by,
+      purpose: row.purpose,
+    }));
+  }
+
+  saveExpense(draft: ExpenseDraft): ExpenseItem[] {
+    this.requirePermission("manage_inventory");
+    const actorUserId = this.getActorUserId();
+    const detail = draft.detail.trim();
+    const nature = draft.nature.trim();
+    const approvedBy = draft.approvedBy.trim();
+    const purpose = draft.purpose.trim();
+    const amount = Number(draft.amount);
+    const expenseDate = draft.date?.trim() ? new Date(draft.date).toISOString() : new Date().toISOString();
+
+    if (!detail || !nature || !approvedBy || !purpose) {
+      throw new Error("Tous les champs de depense sont obligatoires.");
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error("Le montant de la depense doit etre superieur a zero.");
+    }
+
+    const result = this.db
+      .prepare(`
+        INSERT INTO expenses (detail, nature, amount, expense_date, user_id, approved_by, purpose)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(detail, nature, amount, expenseDate, actorUserId, approvedBy, purpose);
+
+    const expenseId = Number(result.lastInsertRowid);
+    this.logAction(actorUserId, "create", "expenses", expenseId, `Depense engagee ${nature} - ${amount} FC - ${purpose}`);
+    return this.listExpenses();
   }
 
   getDashboardMetrics(): DashboardMetrics {
@@ -1050,12 +1390,19 @@ export class LocalDatabase {
     const dailySales = this.db
       .prepare("SELECT COUNT(*) AS count FROM sales WHERE substr(sold_at, 1, 10) = ?")
       .get(today) as { count: number };
+    const totalSalesRow = this.db.prepare("SELECT COALESCE(SUM(total_amount), 0) AS total FROM sales").get() as { total: number };
+    const totalExpensesRow = this.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM expenses").get() as { total: number };
+    const totalSalesAmount = Number(totalSalesRow.total ?? 0);
+    const totalExpenses = Number(totalExpensesRow.total ?? 0);
 
     return {
       totalStock,
       totalProducts: products.length,
       dailySales: dailySales.count,
       suppliers: new Set(products.map((item) => item.supplier)).size,
+      totalSalesAmount,
+      totalExpenses,
+      netSalesAmount: totalSalesAmount - totalExpenses,
     };
   }
 
@@ -1077,14 +1424,14 @@ export class LocalDatabase {
   saveClient(draft: ClientDraft): Client[] {
     this.requirePermission("manage_clients");
     const now = new Date().toISOString();
-    this.db
+    const result = this.db
       .prepare(`
         INSERT INTO clients (name, phone, address, email, created_at)
         VALUES (?, ?, ?, ?, ?)
       `)
       .run(draft.name.trim(), draft.phone.trim(), draft.address.trim(), draft.email.trim(), now);
 
-    this.logAction(this.getActorUserId(), "create", "clients", 0, `Creation client ${draft.name.trim()}`);
+    this.logAction(this.getActorUserId(), "create", "clients", Number(result.lastInsertRowid), `Creation client ${draft.name.trim()}`);
     return this.listClients();
   }
 
@@ -1128,10 +1475,10 @@ export class LocalDatabase {
 
     const result = this.db
       .prepare(`
-        INSERT INTO users (full_name, username, email, password_hash, role, active, created_at, last_login_at)
-        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        INSERT INTO users (full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
       `)
-      .run(fullName, username, email, this.hashPassword(password), draft.role, now, now);
+      .run(fullName, username, email, this.hashPassword(password), password, draft.role, now, now);
 
     const userId = Number(result.lastInsertRowid);
     this.logAction(this.getActorUserId(userId), "create", "users", userId, `Creation utilisateur ${email}`);
@@ -1166,9 +1513,68 @@ export class LocalDatabase {
     const now = new Date().toISOString();
     this.db.prepare("UPDATE users SET active = 1, last_login_at = ? WHERE id = ?").run(now, user.id);
     this.sessionUserId = user.id;
+    this.logAction(user.id, "update", "users", user.id, "Connexion utilisateur");
 
     const refreshed = this.getUserRowById(user.id);
     return refreshed ? this.mapUserRow(refreshed) : null;
+  }
+
+  cacheCloudAuthenticatedUser(draft: CloudDesktopSessionDraft): AppUser {
+    const now = new Date().toISOString();
+    const authUserId = draft.authUserId.trim();
+    const fullName = draft.fullName.trim();
+    const username = draft.username.trim().toLowerCase();
+    const email = draft.email.trim().toLowerCase();
+    const password = draft.password.trim();
+
+    if (!authUserId || !fullName || !username || !email || !password) {
+      throw new Error("Le compte cloud ne contient pas assez d'informations pour etre memorise localement.");
+    }
+
+    const existing = this.db
+      .prepare(`
+        SELECT id, auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at
+        FROM users
+        WHERE auth_user_id = ?
+           OR LOWER(COALESCE(email, '')) = LOWER(?)
+           OR LOWER(username) = LOWER(?)
+        LIMIT 1
+      `)
+      .get(authUserId, email, username) as UserRow | undefined;
+
+    if (existing) {
+      this.db
+        .prepare(`
+          UPDATE users
+          SET auth_user_id = ?, full_name = ?, username = ?, email = ?, password_hash = ?, auth_sync_password = ?,
+              role = ?, active = 1, last_login_at = ?
+          WHERE id = ?
+        `)
+        .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, existing.id);
+      this.sessionUserId = existing.id;
+      this.logAction(existing.id, "update", "users", existing.id, `Connexion cloud synchronisee localement pour ${email}`);
+      const refreshed = this.getUserRowById(existing.id);
+      if (!refreshed) {
+        throw new Error("Impossible de recharger l'utilisateur local apres la synchronisation cloud.");
+      }
+      return this.mapUserRow(refreshed);
+    }
+
+    const result = this.db
+      .prepare(`
+        INSERT INTO users (auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      `)
+      .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, now);
+
+    const userId = Number(result.lastInsertRowid);
+    this.sessionUserId = userId;
+    this.logAction(userId, "create", "users", userId, `Compte cloud memorise localement pour ${email}`);
+    const created = this.getUserRowById(userId);
+    if (!created) {
+      throw new Error("Impossible de charger le compte local cree depuis Supabase.");
+    }
+    return this.mapUserRow(created);
   }
 
   restoreUserSession(userId: number): AppUser | null {
@@ -1184,6 +1590,9 @@ export class LocalDatabase {
   }
 
   logoutUser() {
+    if (this.sessionUserId) {
+      this.logAction(this.sessionUserId, "update", "users", this.sessionUserId, "Deconnexion utilisateur");
+    }
     this.sessionUserId = null;
   }
 
@@ -1214,7 +1623,9 @@ export class LocalDatabase {
       }
     }
 
-    this.db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(this.hashPassword(newPassword), targetUser.id);
+    this.db
+      .prepare("UPDATE users SET password_hash = ?, auth_sync_password = ? WHERE id = ?")
+      .run(this.hashPassword(newPassword), newPassword, targetUser.id);
     this.logAction(actor.id, "update", "users", targetUser.id, `Mot de passe mis a jour pour ${targetUser.email ?? targetUser.username}`);
     return this.listUsers();
   }
@@ -1336,12 +1747,14 @@ export class LocalDatabase {
           s.sold_at,
           s.total_amount,
           s.payment_method,
-          COUNT(si.id) AS items_count
+          (
+            SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id
+          ) + (
+            SELECT COUNT(*) FROM sale_service_items ssi WHERE ssi.sale_id = s.id
+          ) AS items_count
         FROM sales s
         LEFT JOIN clients c ON c.id = s.client_id
-        LEFT JOIN sale_items si ON si.sale_id = s.id
         WHERE s.id = ?
-        GROUP BY s.id, s.reference, c.name, s.sold_at, s.total_amount, s.payment_method
       `)
       .get(saleId) as SaleRow | undefined;
 
@@ -1352,21 +1765,40 @@ export class LocalDatabase {
     const items = this.db
       .prepare(`
         SELECT
+          'product' AS line_type,
           si.product_id,
+          NULL AS service_id,
           p.name AS product_name,
+          p.category AS category,
           si.quantity,
           si.unit_price,
           si.line_total
         FROM sale_items si
         INNER JOIN products p ON p.id = si.product_id
         WHERE si.sale_id = ?
-        ORDER BY si.id ASC
+        UNION ALL
+        SELECT
+          'service' AS line_type,
+          NULL AS product_id,
+          ssi.service_id,
+          sv.name AS product_name,
+          sv.category AS category,
+          ssi.quantity,
+          ssi.unit_price,
+          ssi.line_total
+        FROM sale_service_items ssi
+        INNER JOIN services sv ON sv.id = ssi.service_id
+        WHERE ssi.sale_id = ?
+        ORDER BY line_type ASC
       `)
-      .all(saleId) as SaleItemRow[];
+      .all(saleId, saleId) as SaleItemRow[];
 
     const detailItems: SaleDetailItem[] = items.map((item) => ({
-      productId: item.product_id,
+      lineType: item.line_type,
+      productId: item.product_id ?? undefined,
+      serviceId: item.service_id ?? undefined,
       productName: item.product_name,
+      category: item.category ?? undefined,
       quantity: item.quantity,
       unitPrice: item.unit_price,
       lineTotal: item.line_total,
@@ -1451,12 +1883,37 @@ export class LocalDatabase {
   }
 
   private logAction(userId: number | null, action: string, targetTable: string, targetId: number, details: string) {
+    const actor = userId ? this.getUserRowById(userId) : undefined;
     this.db
       .prepare(`
-        INSERT INTO audit_logs (user_id, action, target_table, target_id, details, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_logs (user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(userId, action, targetTable, targetId, details, new Date().toISOString());
+      .run(
+        userId,
+        action,
+        targetTable,
+        targetId,
+        details,
+        actor?.full_name ?? null,
+        actor?.username ?? null,
+        this.getSourceDeviceLabel(),
+        "desktop",
+        new Date().toISOString()
+      );
+  }
+
+  private formatAuditActorLabel(row: AuditLogRow) {
+    const actorName = row.user_name ?? row.actor_name ?? "Utilisateur non precise";
+    const actorUsername = row.actor_username ? ` [${row.actor_username}]` : "";
+    const sourcePlatform = row.source_platform ? ` - ${row.source_platform}` : "";
+    const sourceDevice = row.source_device ? ` - ${row.source_device}` : "";
+    return `${actorName}${actorUsername}${sourcePlatform}${sourceDevice}`;
+  }
+
+  private getSourceDeviceLabel() {
+    const rawName = process.env.COMPUTERNAME || os.hostname() || "Poste local";
+    return rawName.trim() || "Poste local";
   }
 
   private mapUserRow(row: UserRow): AppUser {
@@ -1475,7 +1932,7 @@ export class LocalDatabase {
   private getUserRowById(userId: number) {
     return this.db
       .prepare(`
-        SELECT id, full_name, username, email, password_hash, role, active, created_at, last_login_at
+        SELECT id, auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at
         FROM users
         WHERE id = ?
       `)
@@ -1613,6 +2070,19 @@ export class LocalDatabase {
     }));
   }
 
+  private mergeSaleServiceItems(items: SaleServiceItemDraft[]) {
+    const grouped = new Map<number, number>();
+
+    items.forEach((item) => {
+      grouped.set(item.serviceId, (grouped.get(item.serviceId) ?? 0) + item.quantity);
+    });
+
+    return Array.from(grouped.entries()).map(([serviceId, quantity]) => ({
+      serviceId,
+      quantity,
+    }));
+  }
+
   private formatDate(value: string) {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("fr-FR");
@@ -1650,6 +2120,7 @@ export class LocalDatabase {
       clients: "Client",
       users: "Utilisateur",
       sales: "Vente",
+      expenses: "Depense",
       initial_stocks: "Stock initial",
       replenishments: "Reapprovisionnement",
     };

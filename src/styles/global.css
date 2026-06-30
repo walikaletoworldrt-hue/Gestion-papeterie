@@ -681,6 +681,27 @@ h2 {
   gap: 0.75rem;
 }
 
+.sales-trends-card {
+  grid-column: 1 / -1;
+}
+
+.sales-trends-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.sales-trends-toolbar label {
+  min-width: 180px;
+  flex: 1 1 180px;
+}
+
+.sales-trends-summary {
+  margin-bottom: 1rem;
+}
+
 .section-tools {
   display: flex;
   align-items: center;
@@ -834,6 +855,16 @@ h2 {
   display: flex;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.sales-filters {
+  flex: 1 1 320px;
+  justify-content: flex-end;
+}
+
+.sales-filters input,
+.sales-filters select {
+  min-width: 170px;
 }
 
 .stock-filters select {
@@ -1503,6 +1534,120 @@ h2 {
   gap: 1rem;
 }
 
+.expense-report-sheet {
+  gap: 1.25rem;
+}
+
+.expense-report-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  padding: 1.15rem 1.2rem;
+  border: 1px solid #dce9f7;
+  border-radius: 1rem;
+  background: linear-gradient(135deg, #f4f9ff, #ffffff 72%);
+}
+
+.expense-report-kicker {
+  margin: 0 0 0.35rem;
+  color: var(--brand);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.expense-report-header h3,
+.expense-report-section h4 {
+  margin: 0;
+}
+
+.expense-report-subtitle {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.expense-report-meta {
+  display: grid;
+  gap: 0.35rem;
+  justify-items: end;
+  color: #617590;
+  font-size: 0.84rem;
+  text-align: right;
+}
+
+.expense-report-summary {
+  margin-bottom: 0;
+}
+
+.expense-report-callout,
+.expense-report-section {
+  padding: 1rem 1.05rem;
+  border: 1px solid #deebf7;
+  border-radius: 1rem;
+  background: #fcfdff;
+}
+
+.expense-report-callout h4,
+.expense-report-callout p,
+.expense-report-section-header p {
+  margin: 0;
+}
+
+.expense-report-callout p,
+.expense-report-section-header p {
+  margin-top: 0.45rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.expense-report-highlights {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.expense-report-highlight {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.9rem;
+  border-radius: 0.95rem;
+  background: #fff;
+  border: 1px solid #d9e6f4;
+}
+
+.expense-report-highlight span,
+.expense-report-highlight small {
+  color: #60738f;
+}
+
+.expense-report-highlight strong {
+  color: #16335b;
+  font-size: 1rem;
+}
+
+.expense-report-section-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 0.9rem;
+}
+
+.expense-report-table {
+  min-width: 760px;
+}
+
+.expense-report-actions {
+  position: sticky;
+  bottom: 0;
+  padding-top: 0.85rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08), #ffffff 36%);
+}
+
 .confirm-text {
   margin: 0;
   color: var(--muted);
@@ -2052,18 +2197,21 @@ tbody td:first-child {
 
 .bar-chart {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(88px, 1fr);
   align-items: end;
   gap: 0.8rem;
   min-height: 260px;
   padding-top: 1rem;
+  overflow-x: auto;
 }
 
 .bar-wrap {
   display: grid;
   justify-items: center;
-  gap: 0.7rem;
+  gap: 0.45rem;
   color: var(--muted);
+  min-width: 88px;
 }
 
 .bar {
@@ -2071,6 +2219,24 @@ tbody td:first-child {
   border-radius: 1rem 1rem 0.4rem 0.4rem;
   background: linear-gradient(180deg, var(--brand-glow), var(--brand));
   min-height: 2rem;
+  align-self: end;
+}
+
+.bar-wrap strong {
+  font-size: 0.82rem;
+  color: #16335b;
+  text-align: center;
+}
+
+.bar-wrap span {
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.bar-wrap small {
+  font-size: 0.74rem;
+  color: #7488a6;
+  text-align: center;
 }
 
 .summary-block + .summary-block {
@@ -2130,6 +2296,10 @@ tbody td:first-child {
     grid-template-columns: 1fr 1fr;
   }
 
+  .sales-trends-toolbar label {
+    min-width: 100%;
+  }
+
   .products-summary {
     grid-template-columns: 1fr 1fr;
   }
@@ -2142,6 +2312,10 @@ tbody td:first-child {
   .stock-filters,
   .stock-tools-actions {
     width: 100%;
+  }
+
+  .sales-filters {
+    justify-content: stretch;
   }
 
   .table-search-input {
@@ -2158,6 +2332,20 @@ tbody td:first-child {
   }
 
   .sync-conflict-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .expense-report-header,
+  .expense-report-section-header {
+    flex-direction: column;
+  }
+
+  .expense-report-meta {
+    justify-items: start;
+    text-align: left;
+  }
+
+  .expense-report-highlights {
     grid-template-columns: 1fr;
   }
 
@@ -2253,5 +2441,78 @@ tbody td:first-child {
     bottom: 1rem;
     min-width: 0;
     max-width: none;
+  }
+}
+
+@media print {
+  body {
+    background: #fff;
+  }
+
+  .app-shell.printing-expense-report > :not(.printable-expense-backdrop) {
+    display: none !important;
+  }
+
+  .modal-backdrop {
+    position: static;
+    padding: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .printable-expense-backdrop {
+    display: block !important;
+  }
+
+  .modal-card,
+  .modal-card.large {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .modal-header,
+  .modal-close-btn,
+  .expense-report-actions,
+  .toast {
+    display: none !important;
+  }
+
+  .modal-body {
+    padding: 0;
+  }
+
+  .printable-expense-backdrop .modal-body {
+    padding: 0;
+  }
+
+  .expense-report-sheet {
+    gap: 0.85rem;
+  }
+
+  .expense-report-header,
+  .expense-report-callout,
+  .expense-report-section,
+  .sales-indicator {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    border-color: #d8d8d8;
+    box-shadow: none;
+  }
+
+  .sales-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .table-wrap,
+  .modal-table-wrap {
+    overflow: visible;
+  }
+
+  .expense-report-table {
+    min-width: 0;
   }
 }

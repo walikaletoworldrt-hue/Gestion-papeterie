@@ -1,6 +1,6 @@
 {
   "name": "walikale-papeterie",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Application de gestion de papeterie avec React, Vite, Electron, Supabase et SQLite",
   "main": "main.cjs",
   "scripts": {

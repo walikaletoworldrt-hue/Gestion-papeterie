@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SaleDetail } from "../src/types";
 
+type InvoiceFormat = "a4" | "receipt80mm";
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -12,7 +14,8 @@ function escapeHtml(value: string) {
 }
 
 function formatCurrency(value: number) {
-  return `${value.toFixed(2)} FC`;
+  const safeValue = Number.isFinite(value) ? value : 0;
+  return `${safeValue % 1 === 0 ? safeValue.toFixed(0) : safeValue.toFixed(2)} FC`;
 }
 
 function getLogoDataUri(appRoot: string) {
@@ -32,23 +35,17 @@ function getLogoDataUri(appRoot: string) {
   return "";
 }
 
-export function buildInvoiceHtml(
-  sale: SaleDetail,
-  appRoot: string,
-  options?: {
-    interactive?: boolean;
-  }
-) {
-  const logoDataUri = getLogoDataUri(appRoot);
-  const toolbar = options?.interactive
-    ? `
-      <div class="toolbar">
-        <button type="button" onclick="window.print()">Imprimer</button>
-        <button type="button" class="secondary" onclick="window.close()">Fermer</button>
-      </div>
-    `
-    : "";
+function buildToolbar(format: InvoiceFormat) {
+  const label = format === "receipt80mm" ? "Imprimer ticket 80 mm" : "Imprimer facture";
+  return `
+    <div class="toolbar no-print">
+      <button type="button" onclick="window.print()">${label}</button>
+      <button type="button" class="secondary" onclick="window.close()">Fermer</button>
+    </div>
+  `;
+}
 
+function buildA4Markup(sale: SaleDetail, logoDataUri: string) {
   const rows = sale.items
     .map(
       (item) => `
@@ -63,12 +60,151 @@ export function buildInvoiceHtml(
     .join("");
 
   return `
+    <div class="sheet invoice-sheet">
+      <div class="header">
+        <div class="brand">
+          <img src="${logoDataUri}" alt="Walikale to World Tech Adapt Hub" />
+          <div>
+            <h1>Walikale Papeterie</h1>
+            <div class="company-meta">
+              <p><strong>N° RCCM :</strong> CD/GOM/RCCM/24-A-01041</p>
+              <p><strong>Id.NAT :</strong> 01-G4701-N66253Q</p>
+              <p><strong>N° Impôt :</strong> 01-G4701-N66</p>
+              <p><strong>Contact :</strong> +243 812681339</p>
+            </div>
+          </div>
+        </div>
+        <div class="invoice-title">
+          <h2>FACTURE</h2>
+          <p>${escapeHtml(sale.reference)}</p>
+          <p>${escapeHtml(sale.date)}</p>
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <span>Client</span>
+          <strong>${escapeHtml(sale.clientName)}</strong>
+        </div>
+        <div class="card">
+          <span>Paiement</span>
+          <strong>${escapeHtml(sale.paymentMethod)}</strong>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Produit</th>
+            <th>Quantite</th>
+            <th>Prix unitaire</th>
+            <th>Sous-total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows}
+        </tbody>
+      </table>
+
+      <div class="total-box">
+        <div class="total-row">
+          <span>Total</span>
+          <strong>${formatCurrency(sale.amount)}</strong>
+        </div>
+      </div>
+
+      <div class="footer">
+        <p>Adresse : Q.CampTP, Avenue Kuya, route vers MUBI en face du Bureau PAM</p>
+        <p>E-mail : walikaletoworld.rt@gmail.com</p>
+        <div class="thank-you">
+          Walikale to World vous remercie pour votre achat.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function buildReceiptMarkup(sale: SaleDetail, logoDataUri: string) {
+  const rows = sale.items
+    .map(
+      (item) => `
+        <div class="receipt-line">
+          <div class="receipt-line-name">${escapeHtml(item.productName)}</div>
+          <div class="receipt-line-meta">
+            <span>${item.quantity} x ${formatCurrency(item.unitPrice)}</span>
+            <strong>${formatCurrency(item.lineTotal)}</strong>
+          </div>
+        </div>
+      `
+    )
+    .join("");
+
+  return `
+    <div class="sheet receipt-sheet">
+      <div class="receipt-header">
+        ${logoDataUri ? `<img class="receipt-logo" src="${logoDataUri}" alt="Walikale to World Tech Adapt Hub" />` : ""}
+        <h1>Walikale Papeterie</h1>
+        <p>Q.CampTP, Avenue Kuya, route vers MUBI</p>
+        <p>En face du Bureau PAM</p>
+        <p>+243 812681339</p>
+      </div>
+
+      <div class="receipt-separator"></div>
+
+      <div class="receipt-meta">
+        <div><span>Ticket</span><strong>${escapeHtml(sale.reference)}</strong></div>
+        <div><span>Date</span><strong>${escapeHtml(sale.date)}</strong></div>
+        <div><span>Client</span><strong>${escapeHtml(sale.clientName)}</strong></div>
+        <div><span>Paiement</span><strong>${escapeHtml(sale.paymentMethod)}</strong></div>
+      </div>
+
+      <div class="receipt-separator"></div>
+
+      <div class="receipt-lines">
+        ${rows}
+      </div>
+
+      <div class="receipt-separator"></div>
+
+      <div class="receipt-total">
+        <span>TOTAL</span>
+        <strong>${formatCurrency(sale.amount)}</strong>
+      </div>
+
+      <div class="receipt-footer">
+        <p>Merci pour votre achat.</p>
+        <p>Walikale to World Tech Adapt Hub</p>
+      </div>
+    </div>
+  `;
+}
+
+export function buildInvoiceHtml(
+  sale: SaleDetail,
+  appRoot: string,
+  options?: {
+    interactive?: boolean;
+    format?: InvoiceFormat;
+  }
+) {
+  const format = options?.format ?? "a4";
+  const logoDataUri = getLogoDataUri(appRoot);
+  const toolbar = options?.interactive ? buildToolbar(format) : "";
+  const markup = format === "receipt80mm" ? buildReceiptMarkup(sale, logoDataUri) : buildA4Markup(sale, logoDataUri);
+
+  return `
     <!DOCTYPE html>
     <html lang="fr">
       <head>
         <meta charset="UTF-8" />
         <title>${escapeHtml(sale.reference)}</title>
         <style>
+          :root {
+            color-scheme: light;
+          }
+          * {
+            box-sizing: border-box;
+          }
           body {
             font-family: "Segoe UI", Arial, sans-serif;
             color: #0f1b2d;
@@ -97,9 +233,11 @@ export function buildInvoiceHtml(
             color: #29507a;
           }
           .sheet {
+            background: #fff;
+          }
+          .invoice-sheet {
             max-width: 760px;
             margin: 0 auto;
-            background: #fff;
             border: 1px solid #dfe8f1;
             border-radius: 16px;
             padding: 18px;
@@ -225,84 +363,107 @@ export function buildInvoiceHtml(
             font-size: 11px;
             line-height: 1.35;
           }
+          .receipt-sheet {
+            width: 72mm;
+            max-width: 72mm;
+            margin: 0 auto;
+            padding: 4mm 3mm 6mm;
+            font-family: "Courier New", monospace;
+            color: #000;
+          }
+          .receipt-header,
+          .receipt-footer {
+            text-align: center;
+          }
+          .receipt-logo {
+            display: block;
+            width: 34mm;
+            max-width: 100%;
+            height: auto;
+            margin: 0 auto 2mm;
+          }
+          .receipt-header h1 {
+            margin: 0 0 1.5mm;
+            font-size: 14px;
+          }
+          .receipt-header p,
+          .receipt-footer p {
+            margin: 0.6mm 0;
+            font-size: 10px;
+            line-height: 1.3;
+          }
+          .receipt-separator {
+            border-top: 1px dashed #000;
+            margin: 3mm 0;
+          }
+          .receipt-meta,
+          .receipt-lines {
+            display: grid;
+            gap: 2mm;
+          }
+          .receipt-meta div {
+            display: flex;
+            justify-content: space-between;
+            gap: 3mm;
+            font-size: 10px;
+          }
+          .receipt-meta span {
+            color: #333;
+          }
+          .receipt-meta strong {
+            font-size: 10px;
+            text-align: right;
+          }
+          .receipt-line {
+            display: grid;
+            gap: 1mm;
+          }
+          .receipt-line-name {
+            font-size: 10px;
+            font-weight: 700;
+            word-break: break-word;
+          }
+          .receipt-line-meta {
+            display: flex;
+            justify-content: space-between;
+            gap: 3mm;
+            font-size: 10px;
+          }
+          .receipt-line-meta strong {
+            text-align: right;
+          }
+          .receipt-total {
+            display: flex;
+            justify-content: space-between;
+            gap: 3mm;
+            font-size: 12px;
+            font-weight: 700;
+          }
           @media print {
             body {
               padding: 0;
+              margin: 0;
             }
-            .toolbar {
-              display: none;
+            .no-print {
+              display: none !important;
             }
-            .sheet {
+            .invoice-sheet {
               border: 0;
               border-radius: 0;
               padding: 0;
             }
           }
+          ${format === "receipt80mm" ? `
+            @page {
+              size: 80mm auto;
+              margin: 0;
+            }
+          ` : ""}
         </style>
       </head>
       <body>
         ${toolbar}
-        <div class="sheet">
-          <div class="header">
-            <div class="brand">
-              <img src="${logoDataUri}" alt="Walikale to World Tech Adapt Hub" />
-              <div>
-                <h1>Walikale Papeterie</h1>
-                <div class="company-meta">
-                  <p><strong>N° RCCM :</strong> CD/GOM/RCCM/24-A-01041</p>
-                  <p><strong>Id.NAT :</strong> 01-G4701-N66253Q</p>
-                  <p><strong>N° Impôt :</strong> 01-G4701-N66</p>
-                  <p><strong>Contact :</strong> +243 812681339</p>
-                </div>
-              </div>
-            </div>
-            <div class="invoice-title">
-              <h2>FACTURE</h2>
-              <p>${escapeHtml(sale.reference)}</p>
-              <p>${escapeHtml(sale.date)}</p>
-            </div>
-          </div>
-
-          <div class="grid">
-            <div class="card">
-              <span>Client</span>
-              <strong>${escapeHtml(sale.clientName)}</strong>
-            </div>
-            <div class="card">
-              <span>Paiement</span>
-              <strong>${escapeHtml(sale.paymentMethod)}</strong>
-            </div>
-          </div>
-
-          <table>
-            <thead>
-              <tr>
-                <th>Produit</th>
-                <th>Quantite</th>
-                <th>Prix unitaire</th>
-                <th>Sous-total</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows}
-            </tbody>
-          </table>
-
-          <div class="total-box">
-            <div class="total-row">
-              <span>Total</span>
-              <strong>${formatCurrency(sale.amount)}</strong>
-            </div>
-          </div>
-
-          <div class="footer">
-            <p>Adresse : Q.CampTP, Avenue Kuya, route vers MUBI en face du Bureau PAM</p>
-            <p>E-mail : walikaletoworld.rt@gmail.com</p>
-            <div class="thank-you">
-              Walikale to World vous remercie pour votre achat.
-            </div>
-          </div>
-        </div>
+        ${markup}
       </body>
     </html>
   `;

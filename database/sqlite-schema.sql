@@ -2,6 +2,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  auth_user_id TEXT,
   full_name TEXT NOT NULL,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT,
@@ -19,6 +20,18 @@ CREATE TABLE IF NOT EXISTS clients (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS expenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  detail TEXT NOT NULL,
+  nature TEXT NOT NULL,
+  amount REAL NOT NULL,
+  expense_date TEXT NOT NULL,
+  user_id INTEGER,
+  approved_by TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL UNIQUE,
@@ -29,6 +42,17 @@ CREATE TABLE IF NOT EXISTS products (
   unit TEXT NOT NULL DEFAULT 'piece',
   alert_threshold INTEGER NOT NULL DEFAULT 0,
   supplier TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS services (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  category TEXT NOT NULL DEFAULT 'Service general',
+  unit_price REAL NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -79,6 +103,17 @@ CREATE TABLE IF NOT EXISTS sale_items (
   line_total REAL NOT NULL,
   FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sale_service_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sale_id INTEGER NOT NULL,
+  service_id INTEGER NOT NULL,
+  quantity INTEGER NOT NULL,
+  unit_price REAL NOT NULL,
+  line_total REAL NOT NULL,
+  FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+  FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS stock_movements (
