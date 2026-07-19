@@ -1002,11 +1002,8 @@ async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>
       },
     });
 
-    if (signUpResult.error) {
-      const message = signUpResult.error.message.toLowerCase();
-      if (!message.includes("already") && !message.includes("registered")) {
-        throw new Error(`Impossible de creer le compte web pour ${currentPayload.email}: ${signUpResult.error.message}`);
-      }
+    if (signUpResult.error && !isRecoverableSupabaseSignUpError(signUpResult.error.message)) {
+      throw new Error(`Impossible de creer le compte web pour ${currentPayload.email}: ${signUpResult.error.message}`);
     }
 
     currentPayload.auth_user_id = signUpResult.data.user?.id ?? existingUser?.auth_user_id ?? null;
@@ -1030,6 +1027,17 @@ function mapSupabaseUser(row: SupabaseUserRow): AppUser {
     createdAt: row.created_at,
     lastLoginAt: row.last_login_at ?? row.created_at,
   };
+}
+
+function isRecoverableSupabaseSignUpError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("already") ||
+    normalized.includes("registered") ||
+    normalized.includes("security purposes") ||
+    normalized.includes("after ") ||
+    normalized.includes("too many requests")
+  );
 }
 
 async function authenticateWithSupabase(draft: LoginDraft): Promise<{ profile: AppUser; authUserId: string } | null> {

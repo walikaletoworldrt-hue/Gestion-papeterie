@@ -132,6 +132,7 @@ type ExpenseReportState = {
     quantity: number;
     amount: number;
   }>;
+  insights: string[];
 };
 
 type SyncConflictState = {
@@ -573,6 +574,31 @@ export default function App() {
   async function loadData() {
     setLoading(true);
     setStartupIssue("");
+
+    if (!currentUser) {
+      const settled = await Promise.allSettled([repository.listUsers()]);
+      const errors = settled
+        .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+        .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
+
+      const nextUsers = settled[0].status === "fulfilled" ? settled[0].value : [];
+
+      setUsers(nextUsers);
+      setSyncStatus((current) => ({
+        ...current,
+        available: Boolean(window.desktopApi && repository.hasSupabaseConfig),
+        online: typeof navigator !== "undefined" ? navigator.onLine : current.online,
+      }));
+
+      if (errors.length > 0) {
+        console.error("Chargement initial de connexion incomplet:", errors);
+        const message = errors[0] ?? "Une erreur est survenue pendant l'ouverture de l'application.";
+        setStartupIssue(message);
+      }
+
+      setLoading(false);
+      return;
+    }
 
     const settled = await Promise.allSettled([
       repository.getSyncStatus(),
@@ -1019,13 +1045,55 @@ export default function App() {
 
       const totalSalesAmount = sales.reduce((sum, sale) => sum + sale.amount, 0);
       const totalExpensesAmount = expenses.reduce((sum, item) => sum + item.amount, 0);
+      const netBalance = totalSalesAmount - totalExpensesAmount;
+      const expenseRatio = totalSalesAmount > 0 ? totalExpensesAmount / totalSalesAmount : totalExpensesAmount > 0 ? Infinity : 0;
+      const topProduct = [...productTotals.values()].sort((left, right) => right.amount - left.amount)[0] ?? null;
+      const topService = [...serviceTotals.values()].sort((left, right) => right.amount - left.amount)[0] ?? null;
+      const insights: string[] = [];
+
+      if (totalSalesAmount === 0 && totalExpensesAmount === 0) {
+        insights.push("Aucune vente ni depense n'a ete enregistree sur la periode analysee.");
+      } else if (totalSalesAmount === 0 && totalExpensesAmount > 0) {
+        insights.push("Des depenses ont ete engagees sans vente enregistree, ce qui place l'activite en deficit total sur la periode.");
+      } else if (netBalance < 0) {
+        insights.push(
+          `Les depenses depassent les ventes de ${formatCurrency(Math.abs(netBalance))}. Une reduction des charges ou une hausse des ventes est a envisager.`
+        );
+      } else if (expenseRatio >= 0.85) {
+        insights.push(
+          `Les ventes couvrent les depenses, mais la marge reste faible: ${formatCurrency(netBalance)} seulement apres charges.`
+        );
+      } else {
+        insights.push(`Les ventes couvrent les depenses avec un excedent de ${formatCurrency(netBalance)} sur la periode.`);
+      }
+
+      if (Number.isFinite(expenseRatio) && totalSalesAmount > 0) {
+        insights.push(`Les depenses representent environ ${(expenseRatio * 100).toFixed(1)}% du montant total vendu.`);
+      }
+
+      if (topProduct) {
+        insights.push(
+          `Le produit le plus contributif est ${topProduct.productName}, avec ${topProduct.quantity} unite(s) pour ${formatCurrency(topProduct.amount)}.`
+        );
+      }
+
+      if (topService) {
+        insights.push(
+          `Le service le plus rentable est ${topService.category}, avec ${topService.quantity} operation(s) pour ${formatCurrency(topService.amount)}.`
+        );
+      }
+
+      if (expenses.length > 0) {
+        insights.push(`La depense moyenne par operation est de ${formatCurrency(totalExpensesAmount / expenses.length)}.`);
+      }
 
       setExpenseReport({
         totalSalesAmount,
         totalExpensesAmount,
-        netBalance: totalSalesAmount - totalExpensesAmount,
+        netBalance,
         productLines: [...productTotals.values()].sort((left, right) => right.amount - left.amount),
         serviceLines: [...serviceTotals.values()].sort((left, right) => right.amount - left.amount),
+        insights,
       });
       setActiveModal("expenseReport");
     } catch (error) {
@@ -3673,6 +3741,20 @@ export default function App() {
                       : "Aucune depense enregistree"}
                   </small>
                 </div>
+              </div>
+            </section>
+
+            <section className="expense-report-section">
+              <div className="expense-report-section-header">
+                <div>
+                  <h4>Resume et interpretation</h4>
+                  <p>Commentaires automatiques pour faciliter la lecture du rapport.</p>
+                </div>
+              </div>
+              <div className="expense-report-callout">
+                {expenseReport.insights.map((insight, index) => (
+                  <p key={`${index}-${insight}`}>{insight}</p>
+                ))}
               </div>
             </section>
 
