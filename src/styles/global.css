@@ -2403,9 +2403,12 @@ tbody td:first-child {
 
 @media (max-width: 760px) {
   .login-shell,
-  .topbar,
   .content {
     padding: 1rem;
+  }
+
+  .topbar {
+    padding: 0;
   }
 
   .login-panel,
@@ -2424,11 +2427,16 @@ tbody td:first-child {
   }
 
   .topbar-main {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 0.85rem;
     padding: 0.9rem 1rem;
   }
 
   .topbar-tabs {
-    padding: 0 1rem;
+    padding: 0.2rem 0 0.1rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .hero-grid {
@@ -2441,10 +2449,98 @@ tbody td:first-child {
 
   .nav-tabs {
     width: 100%;
+    flex-wrap: nowrap;
+    gap: 0.55rem;
+    min-height: 0;
+    padding: 0 1rem 0.6rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
   }
 
   .nav-tab {
-    padding: 0.75rem 0;
+    flex: 0 0 auto;
+    padding: 0.72rem 0.95rem;
+    border-radius: 999px;
+    white-space: nowrap;
+    background: #f4f8fd;
+    border: 1px solid #dbe6ef;
+    font-size: 0.9rem;
+  }
+
+  .nav-tab.active::after {
+    display: none;
+  }
+
+  .nav-tab.active {
+    background: #e8f2ff;
+    border-color: #9cc5f5;
+  }
+
+  .topbar-actions {
+    justify-content: stretch;
+    gap: 0.65rem;
+  }
+
+  .topbar-actions > * {
+    flex: 1 1 100%;
+  }
+
+  .status-chip,
+  .topbar-action-btn,
+  .role-pill,
+  .logout-square-btn {
+    justify-content: center;
+  }
+
+  .topbar-action-btn,
+  .logout-square-btn {
+    width: 100%;
+  }
+
+  .user-inline-card {
+    flex-wrap: wrap;
+    justify-content: space-between;
+    padding: 0.1rem 0;
+    gap: 0.6rem;
+  }
+
+  .user-inline-name {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .brand {
+    align-items: flex-start;
+  }
+
+  .brand-copy {
+    min-width: 0;
+  }
+
+  .brand-title {
+    font-size: 0.95rem;
+  }
+
+  .brand-subtitle {
+    font-size: 0.76rem;
+  }
+
+  .global-search-shell {
+    min-width: 0;
+  }
+
+  .hero-card,
+  .panel-card {
+    border-radius: 1.15rem;
+  }
+
+  .hero-card {
+    padding: 1.2rem;
+  }
+
+  .panel-card {
+    padding: 1rem;
   }
 
   .toast {
