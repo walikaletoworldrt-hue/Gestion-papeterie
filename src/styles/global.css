@@ -415,6 +415,18 @@ button {
   border: 1px solid rgba(184, 227, 255, 0.28);
 }
 
+.status-chip.sync-chip {
+  background: rgba(255, 255, 255, 0.96);
+  color: #16324f;
+  border: 1px solid rgba(207, 220, 235, 0.9);
+}
+
+.status-chip.sync-chip.warning {
+  background: rgba(255, 232, 179, 0.96);
+  color: #6f4f00;
+  border: 1px solid rgba(232, 194, 94, 0.85);
+}
+
 .topbar-action-btn {
   min-height: 2.6rem;
   padding: 0.55rem 1rem;

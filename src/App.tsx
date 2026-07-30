@@ -2188,13 +2188,15 @@ export default function App() {
             <span className={`status-chip ${syncStatus.online && repository.hasSupabaseConfig ? "online" : ""}`}>
               {!repository.hasSupabaseConfig ? "Sync non configuree" : syncStatus.online ? "En ligne" : "Hors ligne"}
             </span>
-            <button className="topbar-action-btn" type="button" disabled>
+            <span className={`status-chip sync-chip ${syncStatus.cloudHasChanges ? "warning" : ""}`}>
               {syncStatus.cloudHasChanges
                 ? "Cloud modifie"
                 : syncStatus.lastSyncedAt
-                  ? `Sync ${syncStatus.pendingChanges > 0 ? `(${syncStatus.pendingChanges})` : "a jour"}`
+                  ? syncStatus.pendingChanges > 0
+                    ? `En attente (${syncStatus.pendingChanges})`
+                    : "Derniere sync OK"
                   : "Sync non lancee"}
-            </button>
+            </span>
             <button
               className="topbar-action-btn"
               type="button"

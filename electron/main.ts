@@ -163,6 +163,7 @@ function registerIpc() {
   ipcMain.handle("users:cache-cloud-auth", (_event, draft: CloudDesktopSessionDraft) =>
     database.cacheCloudAuthenticatedUser(draft)
   );
+  ipcMain.handle("users:get-sync-credentials", () => database.getCurrentSyncCredentials());
   ipcMain.handle("users:restore-session", (_event, userId: number) => database.restoreUserSession(userId));
   ipcMain.handle("users:logout", () => {
     database.logoutUser();

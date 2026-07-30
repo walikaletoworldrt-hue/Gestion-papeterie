@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   authenticateUser: (draft: LoginDraft): Promise<AppUser | null> => ipcRenderer.invoke("users:authenticate", draft),
   cacheCloudAuthenticatedUser: (draft: CloudDesktopSessionDraft): Promise<AppUser> =>
     ipcRenderer.invoke("users:cache-cloud-auth", draft),
+  getCurrentSyncCredentials: () => ipcRenderer.invoke("users:get-sync-credentials"),
   restoreUserSession: (userId: number): Promise<AppUser | null> => ipcRenderer.invoke("users:restore-session", userId),
   logoutUser: (): Promise<void> => ipcRenderer.invoke("users:logout"),
   changeUserPassword: (draft: PasswordChangeDraft): Promise<AppUser[]> =>

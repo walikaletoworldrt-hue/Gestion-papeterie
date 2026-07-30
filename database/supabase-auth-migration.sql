@@ -295,8 +295,9 @@ to authenticated
 using (true);
 
 create policy clients_write_policy on public.clients
-for insert
+for all
 to authenticated
+using (true)
 with check (true);
 
 create policy expenses_select_policy on public.expenses
@@ -360,8 +361,9 @@ to authenticated
 using (true);
 
 create policy sales_write_policy on public.sales
-for insert
+for all
 to authenticated
+using (true)
 with check (true);
 
 create policy sale_items_select_policy on public.sale_items
@@ -370,8 +372,9 @@ to authenticated
 using (true);
 
 create policy sale_items_write_policy on public.sale_items
-for insert
+for all
 to authenticated
+using (true)
 with check (true);
 
 create policy sale_service_items_select_policy on public.sale_service_items
@@ -380,8 +383,9 @@ to authenticated
 using (true);
 
 create policy sale_service_items_write_policy on public.sale_service_items
-for insert
+for all
 to authenticated
+using (true)
 with check (true);
 
 create policy stock_movements_select_policy on public.stock_movements
@@ -390,8 +394,9 @@ to authenticated
 using (true);
 
 create policy stock_movements_write_policy on public.stock_movements
-for insert
+for all
 to authenticated
+using (true)
 with check (true);
 
 create policy audit_logs_select_policy on public.audit_logs
@@ -400,8 +405,9 @@ to authenticated
 using (public.is_super_admin());
 
 create policy audit_logs_write_policy on public.audit_logs
-for insert
+for all
 to authenticated
+using (true)
 with check (true);
 
 create policy invoice_sequences_select_policy on public.invoice_sequences

@@ -9,6 +9,7 @@ import type {
   Client,
   ClientDraft,
   CloudDesktopSessionDraft,
+  DesktopSyncCredentials,
   DashboardMetrics,
   ExpenseDraft,
   ExpenseItem,
@@ -1575,6 +1576,29 @@ export class LocalDatabase {
       throw new Error("Impossible de charger le compte local cree depuis Supabase.");
     }
     return this.mapUserRow(created);
+  }
+
+  getCurrentSyncCredentials(): DesktopSyncCredentials {
+    const actor = this.requireAuthenticatedUser();
+    const email = actor.email?.trim().toLowerCase() ?? "";
+    const password = actor.auth_sync_password?.trim() ?? "";
+
+    if (!email) {
+      throw new Error("Le compte local connecte n'a pas d'email. Ajoutez un email utilisateur avant de synchroniser.");
+    }
+
+    if (!password) {
+      throw new Error(
+        "Le mot de passe de synchronisation cloud n'est pas disponible pour cet utilisateur. Reinitialisez son mot de passe local puis relancez la synchronisation."
+      );
+    }
+
+    return {
+      userId: actor.id,
+      email,
+      password,
+      role: actor.role as UserRole,
+    };
   }
 
   restoreUserSession(userId: number): AppUser | null {

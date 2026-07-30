@@ -6,6 +6,7 @@ import type {
   Client,
   ClientDraft,
   DashboardMetrics,
+  DesktopSyncCredentials,
   ExpenseDraft,
   ExpenseItem,
   InvoiceSeriesInfo,
@@ -32,6 +33,10 @@ import type {
 const now = new Date().toISOString();
 const webSessionStorageKey = "walikale-web-active-user-id";
 const webDefaultPassword = "Walikale123";
+const desktopSupabaseAuthRetryDelayMs = 60_000;
+let desktopSupabaseSessionPromise: Promise<ReturnType<typeof getSupabaseClient>> | null = null;
+let desktopSupabaseAuthBlockedUntil = 0;
+let desktopSupabaseSessionEmail: string | null = null;
 
 const webSeedProducts: Product[] = [
   {
@@ -573,6 +578,76 @@ function getSupabaseClient() {
   return supabase;
 }
 
+async function ensureDesktopSupabaseSession() {
+  if (!window.desktopApi) {
+    return getSupabaseClient();
+  }
+
+  if (desktopSupabaseAuthBlockedUntil > Date.now()) {
+    const waitSeconds = Math.max(1, Math.ceil((desktopSupabaseAuthBlockedUntil - Date.now()) / 1000));
+    throw new Error(
+      `Connexion cloud temporairement limitee par Supabase. Reessayez dans ${waitSeconds} seconde(s).`
+    );
+  }
+
+  const credentials = (await window.desktopApi.getCurrentSyncCredentials()) as DesktopSyncCredentials;
+  const normalizedEmail = credentials.email.toLowerCase();
+
+  if (desktopSupabaseSessionPromise && desktopSupabaseSessionEmail === normalizedEmail) {
+    return desktopSupabaseSessionPromise;
+  }
+
+  desktopSupabaseSessionPromise = null;
+  desktopSupabaseSessionEmail = normalizedEmail;
+
+  desktopSupabaseSessionPromise = (async () => {
+    const client = getSupabaseClient();
+    const currentSession = await client.auth.getSession();
+    const sessionUser = currentSession.data.session?.user ?? null;
+
+    if (sessionUser?.email?.toLowerCase() === normalizedEmail) {
+      return client;
+    }
+
+    if (sessionUser) {
+      const signOutResult = await client.auth.signOut();
+      if (signOutResult.error) {
+        throw new Error(signOutResult.error.message || "Impossible de reinitialiser la session Supabase.");
+      }
+    }
+
+    const signInResult = await client.auth.signInWithPassword({
+      email: credentials.email,
+      password: credentials.password,
+    });
+
+    if (signInResult.error) {
+      const message = signInResult.error.message || "authentification refusee.";
+      const normalized = message.toLowerCase();
+
+      if (normalized.includes("rate limit")) {
+        desktopSupabaseAuthBlockedUntil = Date.now() + desktopSupabaseAuthRetryDelayMs;
+        throw new Error(
+          `Connexion cloud temporairement limitee par Supabase pour ${credentials.email}. Attendez environ 60 secondes puis relancez la synchronisation.`
+        );
+      }
+
+      throw new Error(`Impossible d'ouvrir la session cloud pour ${credentials.email}: ${message}`);
+    }
+
+    desktopSupabaseAuthBlockedUntil = 0;
+    return client;
+  })();
+
+  try {
+    return await desktopSupabaseSessionPromise;
+  } catch (error) {
+    desktopSupabaseSessionPromise = null;
+    desktopSupabaseSessionEmail = null;
+    throw error;
+  }
+}
+
 function getWebSourceDeviceLabel() {
   if (typeof navigator === "undefined") {
     return "Navigateur web";
@@ -696,7 +771,7 @@ function relationFirst<T>(value: T | T[] | null | undefined): T | null {
 }
 
 async function deleteSupabaseRows(table: string) {
-  const client = getSupabaseClient();
+  const client = await ensureDesktopSupabaseSession();
   const result = await client.from(table).delete().gte("id", 0);
   ensureData(result.data ?? [], result.error);
 }
@@ -706,17 +781,23 @@ async function insertSupabaseRows(table: string, rows: Array<Record<string, unkn
     return;
   }
 
-  const client = getSupabaseClient();
+  const client = await ensureDesktopSupabaseSession();
+  const canUpsertById = rows.every((row) => typeof row.id === "number" || typeof row.id === "string");
 
   for (let index = 0; index < rows.length; index += chunkSize) {
     const chunk = rows.slice(index, index + chunkSize);
-    const result = await client.from(table).insert(chunk);
+    const result = canUpsertById
+      ? await client.from(table).upsert(chunk, {
+          onConflict: "id",
+          ignoreDuplicates: false,
+        })
+      : await client.from(table).insert(chunk);
     ensureData(result.data ?? [], result.error);
   }
 }
 
 async function getCloudLastChangeAt() {
-  const client = getSupabaseClient();
+  const client = await ensureDesktopSupabaseSession();
   const result = await client
     .from("audit_logs")
     .select("created_at")
@@ -741,8 +822,44 @@ function extractMissingSupabaseRelation(message: string) {
   return null;
 }
 
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error && typeof error === "object") {
+    const candidate = error as {
+      message?: unknown;
+      details?: unknown;
+      hint?: unknown;
+      code?: unknown;
+      error_description?: unknown;
+    };
+
+    const parts = [
+      typeof candidate.message === "string" ? candidate.message : null,
+      typeof candidate.details === "string" ? candidate.details : null,
+      typeof candidate.hint === "string" ? candidate.hint : null,
+      typeof candidate.error_description === "string" ? candidate.error_description : null,
+      typeof candidate.code === "string" ? `code: ${candidate.code}` : null,
+    ].filter((part): part is string => Boolean(part && part.trim().length > 0));
+
+    if (parts.length > 0) {
+      return parts.join(" | ");
+    }
+
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+
+  return String(error);
+}
+
 function normalizeSupabaseSyncError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = getErrorMessage(error);
   const missingRelation = extractMissingSupabaseRelation(message);
 
   if (missingRelation) {
@@ -751,7 +868,7 @@ function normalizeSupabaseSyncError(error: unknown) {
     );
   }
 
-  return error instanceof Error ? error : new Error(message);
+  return new Error(message);
 }
 
 async function assertSupabaseSyncSchema() {
@@ -928,7 +1045,7 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
 }
 
 async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>) {
-  const client = getSupabaseClient();
+  const client = await ensureDesktopSupabaseSession();
   const authClient = createIsolatedSupabaseClient();
   const existingResult = await client
     .from("users")
@@ -943,21 +1060,33 @@ async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>
     role: string;
     active: boolean;
     created_at: string;
-    last_login_at: string | null;
+      last_login_at: string | null;
   }>;
 
+  const existingByAuthUserId = new Map(
+    existingUsers.filter((user) => user.auth_user_id).map((user) => [String(user.auth_user_id), user])
+  );
   const existingByUsername = new Map(existingUsers.map((user) => [user.username.toLowerCase(), user]));
   const existingByEmail = new Map(
     existingUsers.filter((user) => user.email).map((user) => [String(user.email).toLowerCase(), user])
   );
 
   const payload = snapshotUsers.map((rawUser) => {
+    const snapshotAuthUserId =
+      typeof rawUser.auth_user_id === "string" && rawUser.auth_user_id.trim().length > 0
+        ? rawUser.auth_user_id.trim()
+        : null;
     const username = String(rawUser.username ?? "").trim().toLowerCase();
     const email = rawUser.email ? String(rawUser.email).trim().toLowerCase() : null;
-    const existingUser = (email ? existingByEmail.get(email) : undefined) ?? existingByUsername.get(username);
+    const existingUser =
+      (snapshotAuthUserId ? existingByAuthUserId.get(snapshotAuthUserId) : undefined) ??
+      (email ? existingByEmail.get(email) : undefined) ??
+      existingByUsername.get(username);
+    const resolvedAuthUserId = existingUser?.auth_user_id ?? null;
 
     return {
-      auth_user_id: existingUser?.auth_user_id ?? null,
+      id: existingUser?.id ?? null,
+      auth_user_id: resolvedAuthUserId ?? null,
       full_name: String(rawUser.full_name ?? ""),
       username,
       email,
@@ -973,9 +1102,29 @@ async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>
     return;
   }
 
+  const seenAuthUserIds = new Map<string, string>();
+  for (const row of payload) {
+    if (!row.auth_user_id) {
+      continue;
+    }
+
+    const previousUsername = seenAuthUserIds.get(row.auth_user_id);
+    if (previousUsername && previousUsername !== row.username) {
+      throw new Error(
+        `Deux profils locaux (${previousUsername} et ${row.username}) pointent vers le meme compte web (${row.auth_user_id}). Corrigez la duplication des utilisateurs avant de relancer la synchronisation.`
+      );
+    }
+
+    seenAuthUserIds.set(row.auth_user_id, row.username);
+  }
+
   for (let index = 0; index < payload.length; index += 1) {
     const currentPayload = payload[index];
-    const existingUser = (currentPayload.email ? existingByEmail.get(currentPayload.email) : undefined) ?? existingByUsername.get(currentPayload.username);
+    const existingUser =
+      (currentPayload.auth_user_id ? existingByAuthUserId.get(currentPayload.auth_user_id) : undefined) ??
+      (currentPayload.email ? existingByEmail.get(currentPayload.email) : undefined) ??
+      existingByUsername.get(currentPayload.username);
+
     if (currentPayload.auth_user_id || !currentPayload.email) {
       continue;
     }
@@ -1002,18 +1151,41 @@ async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>
       },
     });
 
-    if (signUpResult.error && !isRecoverableSupabaseSignUpError(signUpResult.error.message)) {
-      throw new Error(`Impossible de creer le compte web pour ${currentPayload.email}: ${signUpResult.error.message}`);
+    if (signUpResult.error) {
+      const message = signUpResult.error.message;
+      const normalized = message.toLowerCase();
+
+      if (normalized.includes("rate limit") || normalized.includes("too many requests")) {
+        throw new Error(
+          `Le compte web ${currentPayload.email} n'a pas pu etre cree automatiquement car la limite d'envoi de Supabase a ete atteinte. Creez d'abord cet utilisateur dans Authentication > Users, puis relancez la synchronisation.`
+        );
+      }
+
+      if (!isRecoverableSupabaseSignUpError(message)) {
+        throw new Error(`Impossible de creer le compte web pour ${currentPayload.email}: ${message}`);
+      }
     }
 
     currentPayload.auth_user_id = signUpResult.data.user?.id ?? existingUser?.auth_user_id ?? null;
   }
 
-  const upsertResult = await client.from("users").upsert(payload, {
-    onConflict: "username",
-    ignoreDuplicates: false,
-  });
-  ensureData(upsertResult.data ?? [], upsertResult.error);
+  const existingPayload = payload.filter((row) => row.id !== null);
+  const newPayload = payload
+    .filter((row) => row.id === null)
+    .map(({ id: _id, ...row }) => row);
+
+  if (existingPayload.length > 0) {
+    const upsertResult = await client.from("users").upsert(existingPayload, {
+      onConflict: "id",
+      ignoreDuplicates: false,
+    });
+    ensureData(upsertResult.data ?? [], upsertResult.error);
+  }
+
+  if (newPayload.length > 0) {
+    const insertResult = await client.from("users").insert(newPayload);
+    ensureData(insertResult.data ?? [], insertResult.error);
+  }
 }
 
 function mapSupabaseUser(row: SupabaseUserRow): AppUser {
@@ -1147,25 +1319,12 @@ export const repository = {
     }
 
     const localStatus = await window.desktopApi.getSyncStatus();
-    let cloudHasChanges = false;
-
-    if (supabase && (typeof navigator === "undefined" || navigator.onLine)) {
-      try {
-        const cloudLastChangeAt = await getCloudLastChangeAt();
-        cloudHasChanges = Boolean(
-          cloudLastChangeAt &&
-            (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
-        );
-      } catch (error) {
-        console.error("Etat de synchronisation cloud indisponible:", normalizeSupabaseSyncError(error));
-      }
-    }
 
     return {
       ...localStatus,
       available: Boolean(supabase),
       online: typeof navigator !== "undefined" ? navigator.onLine : true,
-      cloudHasChanges,
+      cloudHasChanges: false,
     };
   },
 

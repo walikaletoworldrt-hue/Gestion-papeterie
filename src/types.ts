@@ -208,6 +208,13 @@ export type CloudDesktopSessionDraft = {
   password: string;
 };
 
+export type DesktopSyncCredentials = {
+  userId: number;
+  email: string;
+  password: string;
+  role: UserRole;
+};
+
 export type PasswordChangeDraft = {
   userId: number;
   currentPassword?: string;
@@ -296,6 +303,7 @@ export type DesktopApi = {
   saveUser: (draft: UserDraft) => Promise<AppUser[]>;
   authenticateUser: (draft: LoginDraft) => Promise<AppUser | null>;
   cacheCloudAuthenticatedUser: (draft: CloudDesktopSessionDraft) => Promise<AppUser>;
+  getCurrentSyncCredentials: () => Promise<DesktopSyncCredentials>;
   restoreUserSession: (userId: number) => Promise<AppUser | null>;
   logoutUser: () => Promise<void>;
   changeUserPassword: (draft: PasswordChangeDraft) => Promise<AppUser[]>;
