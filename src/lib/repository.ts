@@ -632,6 +632,44 @@ async function ensureDesktopSupabaseSession() {
         );
       }
 
+      if (normalized.includes("invalid login credentials")) {
+        const authClient = createIsolatedSupabaseClient();
+        const signUpResult = await authClient.auth.signUp({
+          email: credentials.email,
+          password: credentials.password,
+        });
+
+        if (signUpResult.error) {
+          const signUpMessage = signUpResult.error.message || "creation du compte cloud refusee.";
+          const signUpNormalized = signUpMessage.toLowerCase();
+
+          if (signUpNormalized.includes("rate limit") || signUpNormalized.includes("too many requests")) {
+            desktopSupabaseAuthBlockedUntil = Date.now() + desktopSupabaseAuthRetryDelayMs;
+            throw new Error(
+              `Creation du compte cloud temporairement limitee par Supabase pour ${credentials.email}. Attendez environ 60 secondes puis relancez la synchronisation.`
+            );
+          }
+
+          if (!isRecoverableSupabaseSignUpError(signUpMessage)) {
+            throw new Error(`Impossible de creer le compte cloud pour ${credentials.email}: ${signUpMessage}`);
+          }
+        }
+
+        const retrySignInResult = await client.auth.signInWithPassword({
+          email: credentials.email,
+          password: credentials.password,
+        });
+
+        if (retrySignInResult.error) {
+          throw new Error(
+            `Impossible d'ouvrir la session cloud pour ${credentials.email}: ${retrySignInResult.error.message || "authentification refusee."}`
+          );
+        }
+
+        desktopSupabaseAuthBlockedUntil = 0;
+        return client;
+      }
+
       throw new Error(`Impossible d'ouvrir la session cloud pour ${credentials.email}: ${message}`);
     }
 
@@ -1366,6 +1404,8 @@ export const repository = {
       }
 
       await assertSupabaseSyncSchema();
+      const syncCredentials = (await window.desktopApi.getCurrentSyncCredentials()) as DesktopSyncCredentials;
+      const canSyncUsers = syncCredentials.role === "Super admin";
       const localStatus = await window.desktopApi.getSyncStatus();
       const cloudLastChangeAt = await getCloudLastChangeAt();
       const cloudHasChanges = Boolean(
@@ -1400,7 +1440,10 @@ export const repository = {
       await deleteSupabaseRows("products");
       await deleteSupabaseRows("inventory_cycles");
       await deleteSupabaseRows("invoice_sequences");
-      await syncUsersToSupabase(syncSnapshot.users ?? []);
+
+      if (canSyncUsers) {
+        await syncUsersToSupabase(syncSnapshot.users ?? []);
+      }
 
       await insertSupabaseRows("products", syncSnapshot.products);
       await insertSupabaseRows("services", syncSnapshot.services);
