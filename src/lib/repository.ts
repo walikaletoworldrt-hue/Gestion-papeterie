@@ -820,20 +820,23 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
           <div class="invoice-head">
             <div class="invoice-brand">
               ${logoSrc ? `<img class="invoice-logo" src="${logoSrc}" alt="Walikale to World" />` : ""}
-              <div>
+              <div class="invoice-brand-copy">
+                <p class="invoice-kicker">Facture client</p>
                 <h1>Walikale Papeterie</h1>
-                <p>Gestion des stocks</p>
+                <p>Gestion des stocks et ventes</p>
               </div>
             </div>
             <div class="invoice-title">
               <h2>FACTURE</h2>
-              <p>${escapeHtml(sale.reference)}</p>
-              <p>${escapeHtml(sale.date)}</p>
+              <p>Reference : ${escapeHtml(sale.reference)}</p>
+              <p>Date : ${escapeHtml(sale.date)}</p>
             </div>
           </div>
           <div class="invoice-meta">
             <div><span>Client</span><strong>${escapeHtml(sale.clientName)}</strong></div>
             <div><span>Paiement</span><strong>${escapeHtml(sale.paymentMethod)}</strong></div>
+            <div><span>Contact</span><strong>+243 812681339</strong></div>
+            <div><span>Adresse</span><strong>Q. Camp TP, avenue Kuya, vers Mubi</strong></div>
           </div>
           <table>
             <thead>
@@ -847,8 +850,12 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
             <tbody>${rows}</tbody>
           </table>
           <div class="invoice-total">
-            <span>Total</span>
+            <span>Total a payer</span>
             <strong>${formatCurrency(sale.amount)}</strong>
+          </div>
+          <div class="invoice-footer">
+            <p>RCCM : CD/GOM/RCCM/24-A-01041 | Id. Nat : 01-G4701-N66253Q</p>
+            <p>E-mail : walikaletoworld.rt@gmail.com</p>
           </div>
         </div>
       `;
@@ -877,46 +884,72 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
           .invoice-sheet {
             max-width: 820px;
             border-radius: 18px;
-            padding: 24px;
+            padding: 26px 26px 22px;
           }
           .invoice-head {
             display: flex;
             justify-content: space-between;
-            gap: 16px;
+            gap: 18px;
             align-items: flex-start;
             border-bottom: 1px solid #d6e4f5;
-            padding-bottom: 16px;
+            padding-bottom: 18px;
           }
           .invoice-brand {
             display: flex;
             align-items: flex-start;
             gap: 14px;
           }
+          .invoice-brand-copy {
+            display: grid;
+            gap: 4px;
+          }
           .invoice-logo {
-            width: 96px;
+            width: 84px;
             height: auto;
             object-fit: contain;
           }
           h1, h2, p { margin: 0; }
-          .invoice-brand p, .invoice-title p { color: #5f7391; margin-top: 4px; }
+          .invoice-kicker {
+            color: #1567d8;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+          }
+          .invoice-brand p, .invoice-title p, .invoice-footer p {
+            color: #5f7391;
+            margin-top: 4px;
+          }
+          .invoice-brand h1 {
+            font-size: 26px;
+            line-height: 1.1;
+          }
           .invoice-title { text-align: right; }
-          .invoice-title h2 { color: #1567d8; margin-bottom: 8px; }
+          .invoice-title h2 {
+            color: #1567d8;
+            margin-bottom: 8px;
+            font-size: 24px;
+            letter-spacing: 0.04em;
+          }
           .invoice-meta {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 12px;
-            margin: 18px 0;
+            gap: 10px;
+            margin: 18px 0 16px;
           }
           .invoice-meta div, .receipt-block div {
             border: 1px solid #dbe6ef;
             border-radius: 12px;
-            padding: 12px 14px;
+            padding: 10px 12px;
+            background: #fafcff;
           }
           .invoice-meta span, .receipt-block span {
             display: block;
             color: #5f7391;
-            font-size: 12px;
+            font-size: 11px;
             margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
           }
           table {
             width: 100%;
@@ -924,30 +957,45 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
           }
           thead th {
             text-align: left;
-            font-size: 12px;
+            font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 0.04em;
             color: #5f7391;
             background: #f4f8fd;
-            padding: 12px;
+            padding: 10px 12px;
           }
           tbody td {
-            padding: 12px;
+            padding: 11px 12px;
             border-bottom: 1px solid #e5edf6;
             vertical-align: top;
+            font-size: 14px;
           }
           .line-name { font-weight: 600; }
-          .line-category { color: #7084a0; font-size: 12px; margin-top: 4px; }
+          .line-category {
+            color: #7084a0;
+            font-size: 12px;
+            margin-top: 4px;
+          }
           .invoice-total, .receipt-total {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-top: 18px;
-            padding: 16px 18px;
+            padding: 14px 16px;
             border-radius: 14px;
             background: #eef5ff;
-            font-size: 18px;
+            font-size: 17px;
             font-weight: 700;
+          }
+          .invoice-footer {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid #e5edf6;
+            text-align: center;
+          }
+          .invoice-footer p {
+            font-size: 11px;
+            line-height: 1.45;
           }
           .receipt-sheet {
             width: 80mm;
@@ -997,6 +1045,22 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
               max-width: none;
               border-radius: 0;
               padding: 0;
+            }
+          }
+          @media (max-width: 760px) {
+            body {
+              padding: 12px;
+            }
+            .invoice-sheet {
+              padding: 18px;
+            }
+            .invoice-head,
+            .invoice-meta {
+              grid-template-columns: 1fr;
+              display: grid;
+            }
+            .invoice-title {
+              text-align: left;
             }
           }
         </style>
