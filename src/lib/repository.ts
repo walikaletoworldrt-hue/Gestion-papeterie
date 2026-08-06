@@ -735,6 +735,303 @@ function formatAuditActorLabel(row: SupabaseAuditLogRow) {
   return `${actorName}${actorUsername}${sourcePlatform}${sourceDevice}`;
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatCurrency(value: number) {
+  const safeValue = Number.isFinite(value) ? value : 0;
+  return `${safeValue % 1 === 0 ? safeValue.toFixed(0) : safeValue.toFixed(2)} FC`;
+}
+
+function getBrowserBrandLogoSrc() {
+  if (typeof document === "undefined") {
+    return "";
+  }
+
+  const logo = document.querySelector<HTMLImageElement>(".brand-logo");
+  return logo?.src ?? "";
+}
+
+function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "receipt") {
+  const logoSrc = getBrowserBrandLogoSrc();
+  const rows = sale.items
+    .map((item) => {
+      const label = item.lineType === "service" ? `${item.productName} (Service)` : item.productName;
+      const category = item.category ? `<div class="line-category">${escapeHtml(item.category)}</div>` : "";
+      return `
+        <tr>
+          <td>
+            <div class="line-name">${escapeHtml(label)}</div>
+            ${category}
+          </td>
+          <td>${item.quantity}</td>
+          <td>${formatCurrency(item.unitPrice)}</td>
+          <td>${formatCurrency(item.lineTotal)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  const compactRows = sale.items
+    .map((item) => {
+      const label = item.lineType === "service" ? `${item.productName} (Service)` : item.productName;
+      return `
+        <div class="receipt-line">
+          <div class="line-name">${escapeHtml(label)}</div>
+          <div class="receipt-meta-line">
+            <span>${item.quantity} x ${formatCurrency(item.unitPrice)}</span>
+            <strong>${formatCurrency(item.lineTotal)}</strong>
+          </div>
+        </div>
+      `;
+    })
+    .join("");
+
+  const body =
+    format === "receipt"
+      ? `
+        <div class="receipt-sheet">
+          <div class="receipt-head">
+            ${logoSrc ? `<img class="receipt-logo" src="${logoSrc}" alt="Walikale to World" />` : ""}
+            <h1>Walikale Papeterie</h1>
+            <p>Gestion des stocks</p>
+          </div>
+          <div class="receipt-block">
+            <div><span>Ticket</span><strong>${escapeHtml(sale.reference)}</strong></div>
+            <div><span>Date</span><strong>${escapeHtml(sale.date)}</strong></div>
+            <div><span>Client</span><strong>${escapeHtml(sale.clientName)}</strong></div>
+            <div><span>Paiement</span><strong>${escapeHtml(sale.paymentMethod)}</strong></div>
+          </div>
+          <div class="receipt-lines">${compactRows}</div>
+          <div class="receipt-total">
+            <span>Total</span>
+            <strong>${formatCurrency(sale.amount)}</strong>
+          </div>
+        </div>
+      `
+      : `
+        <div class="invoice-sheet">
+          <div class="invoice-head">
+            <div class="invoice-brand">
+              ${logoSrc ? `<img class="invoice-logo" src="${logoSrc}" alt="Walikale to World" />` : ""}
+              <div>
+                <h1>Walikale Papeterie</h1>
+                <p>Gestion des stocks</p>
+              </div>
+            </div>
+            <div class="invoice-title">
+              <h2>FACTURE</h2>
+              <p>${escapeHtml(sale.reference)}</p>
+              <p>${escapeHtml(sale.date)}</p>
+            </div>
+          </div>
+          <div class="invoice-meta">
+            <div><span>Client</span><strong>${escapeHtml(sale.clientName)}</strong></div>
+            <div><span>Paiement</span><strong>${escapeHtml(sale.paymentMethod)}</strong></div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Designation</th>
+                <th>Quantite</th>
+                <th>Prix unitaire</th>
+                <th>Sous-total</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <div class="invoice-total">
+            <span>Total</span>
+            <strong>${formatCurrency(sale.amount)}</strong>
+          </div>
+        </div>
+      `;
+
+  return `
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>${escapeHtml(sale.reference)}</title>
+        <style>
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            font-family: "Segoe UI", Arial, sans-serif;
+            color: #10213c;
+            background: #f3f7fc;
+            padding: 24px;
+          }
+          .invoice-sheet, .receipt-sheet {
+            background: #fff;
+            margin: 0 auto;
+            box-shadow: 0 18px 48px rgba(15, 35, 65, 0.12);
+          }
+          .invoice-sheet {
+            max-width: 820px;
+            border-radius: 18px;
+            padding: 24px;
+          }
+          .invoice-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 16px;
+            align-items: flex-start;
+            border-bottom: 1px solid #d6e4f5;
+            padding-bottom: 16px;
+          }
+          .invoice-brand {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+          }
+          .invoice-logo {
+            width: 96px;
+            height: auto;
+            object-fit: contain;
+          }
+          h1, h2, p { margin: 0; }
+          .invoice-brand p, .invoice-title p { color: #5f7391; margin-top: 4px; }
+          .invoice-title { text-align: right; }
+          .invoice-title h2 { color: #1567d8; margin-bottom: 8px; }
+          .invoice-meta {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            margin: 18px 0;
+          }
+          .invoice-meta div, .receipt-block div {
+            border: 1px solid #dbe6ef;
+            border-radius: 12px;
+            padding: 12px 14px;
+          }
+          .invoice-meta span, .receipt-block span {
+            display: block;
+            color: #5f7391;
+            font-size: 12px;
+            margin-bottom: 4px;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          thead th {
+            text-align: left;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #5f7391;
+            background: #f4f8fd;
+            padding: 12px;
+          }
+          tbody td {
+            padding: 12px;
+            border-bottom: 1px solid #e5edf6;
+            vertical-align: top;
+          }
+          .line-name { font-weight: 600; }
+          .line-category { color: #7084a0; font-size: 12px; margin-top: 4px; }
+          .invoice-total, .receipt-total {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 18px;
+            padding: 16px 18px;
+            border-radius: 14px;
+            background: #eef5ff;
+            font-size: 18px;
+            font-weight: 700;
+          }
+          .receipt-sheet {
+            width: 80mm;
+            border-radius: 0;
+            padding: 12px;
+            box-shadow: none;
+          }
+          .receipt-head { text-align: center; }
+          .receipt-logo {
+            width: 68px;
+            height: auto;
+            object-fit: contain;
+            margin-bottom: 6px;
+          }
+          .receipt-head p {
+            color: #5f7391;
+            margin-top: 4px;
+            font-size: 12px;
+          }
+          .receipt-block, .receipt-lines {
+            display: grid;
+            gap: 8px;
+            margin-top: 12px;
+          }
+          .receipt-line {
+            border-bottom: 1px dashed #d4ddea;
+            padding-bottom: 8px;
+          }
+          .receipt-meta-line {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin-top: 4px;
+            font-size: 12px;
+            color: #516785;
+          }
+          @media print {
+            body {
+              background: #fff;
+              padding: 0;
+            }
+            .invoice-sheet, .receipt-sheet {
+              box-shadow: none;
+              margin: 0;
+            }
+            .invoice-sheet {
+              max-width: none;
+              border-radius: 0;
+              padding: 0;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        ${body}
+        <script>
+          window.addEventListener("load", () => {
+            setTimeout(() => {
+              window.focus();
+              window.print();
+            }, 150);
+          });
+        </script>
+      </body>
+    </html>
+  `;
+}
+
+function printBrowserSaleDocument(sale: SaleDetail, format: "invoice" | "receipt") {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  const popup = window.open("", "_blank", format === "receipt" ? "width=420,height=900" : "width=1100,height=900");
+  if (!popup) {
+    throw new Error("Impossible d'ouvrir la fenetre d'impression. Autorisez les popups puis reessayez.");
+  }
+
+  popup.document.open();
+  popup.document.write(buildBrowserSaleDocumentHtml(sale, format));
+  popup.document.close();
+  return true;
+}
+
 function ensureData<T>(data: T | null, error: { message?: string } | null | undefined) {
   if (error) {
     throw new Error(error.message || "Erreur Supabase.");
@@ -844,6 +1141,12 @@ async function getCloudLastChangeAt() {
     .maybeSingle();
   const row = ensureOptionalData(result.data, result.error) as { created_at: string } | null;
   return row?.created_at ?? null;
+}
+
+async function syncSupabaseIdentitySequences() {
+  const client = await ensureDesktopSupabaseSession();
+  const result = await client.rpc("sync_identity_sequences");
+  ensureOptionalData(result.data, result.error);
 }
 
 function extractMissingSupabaseRelation(message: string) {
@@ -1458,6 +1761,7 @@ export const repository = {
       await insertSupabaseRows("sale_service_items", syncSnapshot.saleServiceItems);
       await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
       await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
+      await syncSupabaseIdentitySequences();
 
       const syncedAt = new Date().toISOString();
       await window.desktopApi.markSyncComplete(syncedAt);
@@ -1524,6 +1828,12 @@ export const repository = {
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
+      try {
+        const sequenceSyncResult = await client.rpc("sync_identity_sequences");
+        ensureOptionalData(sequenceSyncResult.data, sequenceSyncResult.error);
+      } catch {
+        // Compatibility: older Supabase projects may not yet have the helper function.
+      }
       const cycleId = await getCurrentSupabaseInventoryCycleId();
       const trimmedName = draft.name.trim();
       const trimmedSupplier = draft.supplier.trim();
@@ -1966,8 +2276,7 @@ export const repository = {
       return false;
     }
 
-    window.print();
-    return true;
+    return printBrowserSaleDocument(detail, "invoice");
   },
 
   async exportSalePdf(saleId: number): Promise<string | null> {
@@ -1980,8 +2289,8 @@ export const repository = {
       return null;
     }
 
-    window.print();
-    return "Utilisez le dialogue d'impression du navigateur pour enregistrer en PDF.";
+    printBrowserSaleDocument(detail, "invoice");
+    return "La facture s'ouvre dans une fenetre dediee. Utilisez ensuite le dialogue d'impression du navigateur pour enregistrer en PDF.";
   },
 
   async printSaleReceipt(saleId: number): Promise<boolean> {
@@ -1994,8 +2303,7 @@ export const repository = {
       return false;
     }
 
-    window.print();
-    return true;
+    return printBrowserSaleDocument(detail, "receipt");
   },
 
   async exportSaleReceiptPdf(saleId: number): Promise<string | null> {
@@ -2008,8 +2316,8 @@ export const repository = {
       return null;
     }
 
-    window.print();
-    return "Utilisez le dialogue d'impression du navigateur pour enregistrer le ticket en PDF.";
+    printBrowserSaleDocument(detail, "receipt");
+    return "Le ticket s'ouvre dans une fenetre dediee. Utilisez ensuite le dialogue d'impression du navigateur pour enregistrer en PDF.";
   },
 
   async createSale(draft: SaleDraft): Promise<SaleRecord[]> {

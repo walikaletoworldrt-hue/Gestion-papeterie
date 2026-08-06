@@ -209,12 +209,36 @@ as $$
 end;
 $$;
 
+create or replace function public.sync_identity_sequences()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  perform setval(pg_get_serial_sequence('public.users', 'id'), coalesce((select max(id) from public.users), 1), true);
+  perform setval(pg_get_serial_sequence('public.clients', 'id'), coalesce((select max(id) from public.clients), 1), true);
+  perform setval(pg_get_serial_sequence('public.expenses', 'id'), coalesce((select max(id) from public.expenses), 1), true);
+  perform setval(pg_get_serial_sequence('public.products', 'id'), coalesce((select max(id) from public.products), 1), true);
+  perform setval(pg_get_serial_sequence('public.services', 'id'), coalesce((select max(id) from public.services), 1), true);
+  perform setval(pg_get_serial_sequence('public.initial_stocks', 'id'), coalesce((select max(id) from public.initial_stocks), 1), true);
+  perform setval(pg_get_serial_sequence('public.replenishments', 'id'), coalesce((select max(id) from public.replenishments), 1), true);
+  perform setval(pg_get_serial_sequence('public.sales', 'id'), coalesce((select max(id) from public.sales), 1), true);
+  perform setval(pg_get_serial_sequence('public.sale_items', 'id'), coalesce((select max(id) from public.sale_items), 1), true);
+  perform setval(pg_get_serial_sequence('public.sale_service_items', 'id'), coalesce((select max(id) from public.sale_service_items), 1), true);
+  perform setval(pg_get_serial_sequence('public.stock_movements', 'id'), coalesce((select max(id) from public.stock_movements), 1), true);
+  perform setval(pg_get_serial_sequence('public.audit_logs', 'id'), coalesce((select max(id) from public.audit_logs), 1), true);
+  perform setval(pg_get_serial_sequence('public.inventory_cycles', 'id'), coalesce((select max(id) from public.inventory_cycles), 1), true);
+end;
+$$;
+
 grant execute on function public.current_app_role() to authenticated;
 grant execute on function public.is_super_admin() to authenticated;
 grant execute on function public.is_admin_role() to authenticated;
 grant execute on function public.find_login_user(text) to anon, authenticated;
 grant execute on function public.link_authenticated_user(text) to authenticated;
 grant execute on function public.touch_last_login() to authenticated;
+grant execute on function public.sync_identity_sequences() to authenticated;
 
 drop trigger if exists services_set_updated_at on public.services;
 create trigger services_set_updated_at
