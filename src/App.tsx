@@ -163,6 +163,342 @@ function formatCurrency(value: number) {
   return `${safeValue % 1 === 0 ? safeValue.toFixed(0) : safeValue.toFixed(2)} FC`;
 }
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function buildExpenseReportPrintHtml(options: {
+  generatedAt: string;
+  generatedBy: string;
+  totalSalesAmount: number;
+  totalExpensesAmount: number;
+  netBalance: number;
+  topProductLabel: string;
+  topProductMeta: string;
+  topCategoryLabel: string;
+  topCategoryMeta: string;
+  expensesCount: number;
+  expensesAverageLabel: string;
+  insights: string[];
+  productLines: Array<{ productName: string; category: string; quantity: number; amount: number }>;
+  serviceLines: Array<{ category: string; quantity: number; amount: number }>;
+  expenses: ExpenseItem[];
+}) {
+  const productRows = options.productLines
+    .map(
+      (line) => `
+        <tr>
+          <td>${escapeHtml(line.productName)}</td>
+          <td>${escapeHtml(line.category)}</td>
+          <td>${line.quantity}</td>
+          <td>${formatCurrency(line.amount)}</td>
+        </tr>
+      `
+    )
+    .join("");
+
+  const serviceRows = options.serviceLines
+    .map(
+      (line) => `
+        <tr>
+          <td>${escapeHtml(line.category)}</td>
+          <td>${line.quantity}</td>
+          <td>${formatCurrency(line.amount)}</td>
+        </tr>
+      `
+    )
+    .join("");
+
+  const expenseRows = options.expenses
+    .map(
+      (item) => `
+        <tr>
+          <td>${escapeHtml(item.date)}</td>
+          <td>${escapeHtml(item.nature)}</td>
+          <td>${escapeHtml(item.detail)}</td>
+          <td>${formatCurrency(item.amount)}</td>
+          <td>${escapeHtml(item.requestedBy)}</td>
+          <td>${escapeHtml(item.approvedBy)}</td>
+          <td>${escapeHtml(item.purpose)}</td>
+        </tr>
+      `
+    )
+    .join("");
+
+  const insights = options.insights.map((insight) => `<p>${escapeHtml(insight)}</p>`).join("");
+
+  return `
+    <!DOCTYPE html>
+    <html lang="fr">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Rapport financier</title>
+        <style>
+          * { box-sizing: border-box; }
+          body {
+            margin: 0;
+            padding: 24px;
+            font-family: "Segoe UI", Arial, sans-serif;
+            color: #11233d;
+            background: #f3f7fc;
+          }
+          .sheet {
+            max-width: 920px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 18px;
+            padding: 26px;
+            box-shadow: 0 18px 48px rgba(15, 35, 65, 0.12);
+          }
+          .header {
+            display: flex;
+            justify-content: space-between;
+            gap: 18px;
+            align-items: flex-start;
+            padding-bottom: 16px;
+            border-bottom: 1px solid #dce9f7;
+          }
+          .kicker {
+            margin: 0 0 6px;
+            color: #1567d8;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+          }
+          h1, h2, h3, h4, p { margin: 0; }
+          .subtitle, .meta, .section-head p, .callout p {
+            color: #5f7391;
+          }
+          .subtitle {
+            margin-top: 6px;
+            line-height: 1.55;
+          }
+          .meta {
+            display: grid;
+            gap: 4px;
+            text-align: right;
+            font-size: 13px;
+          }
+          .summary {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: 18px 0;
+          }
+          .summary-card {
+            padding: 12px 14px;
+            border-radius: 12px;
+            border: 1px solid #dbe6ef;
+            background: #fafcff;
+          }
+          .summary-card span {
+            display: block;
+            color: #5f7391;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 6px;
+          }
+          .summary-card strong {
+            font-size: 20px;
+          }
+          .callout, .section {
+            border: 1px solid #deebf7;
+            border-radius: 14px;
+            background: #fcfdff;
+            padding: 16px;
+            margin-top: 14px;
+          }
+          .highlights {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin-top: 12px;
+          }
+          .highlight {
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid #d9e6f4;
+            background: #fff;
+          }
+          .highlight span, .highlight small {
+            color: #60738f;
+          }
+          .highlight strong {
+            display: block;
+            margin: 6px 0 4px;
+            color: #16335b;
+          }
+          .section-head {
+            margin-bottom: 10px;
+          }
+          .section-head p {
+            margin-top: 4px;
+            line-height: 1.55;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          th {
+            text-align: left;
+            padding: 10px 12px;
+            background: #f4f8fd;
+            color: #5f7391;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+          }
+          td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #e5edf6;
+            vertical-align: top;
+            font-size: 14px;
+          }
+          .footer {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid #e5edf6;
+            color: #5f7391;
+            font-size: 11px;
+            text-align: center;
+          }
+          @media print {
+            body {
+              background: #fff;
+              padding: 0;
+            }
+            .sheet {
+              max-width: none;
+              border-radius: 0;
+              padding: 0;
+              box-shadow: none;
+            }
+          }
+          @media (max-width: 760px) {
+            body { padding: 12px; }
+            .sheet { padding: 18px; }
+            .header, .summary, .highlights {
+              display: grid;
+              grid-template-columns: 1fr;
+            }
+            .meta {
+              text-align: left;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="sheet">
+          <div class="header">
+            <div>
+              <p class="kicker">Rapport financier</p>
+              <h1>Rapport complet des ventes et depenses</h1>
+              <p class="subtitle">Document de synthese pour impression papier ou export PDF.</p>
+            </div>
+            <div class="meta">
+              <span>Genere le ${escapeHtml(options.generatedAt)}</span>
+              <span>Par ${escapeHtml(options.generatedBy)}</span>
+            </div>
+          </div>
+
+          <div class="summary">
+            <div class="summary-card"><span>Montant total vendu</span><strong>${formatCurrency(options.totalSalesAmount)}</strong></div>
+            <div class="summary-card"><span>Total des depenses</span><strong>${formatCurrency(options.totalExpensesAmount)}</strong></div>
+            <div class="summary-card"><span>Solde apres depenses</span><strong>${formatCurrency(options.netBalance)}</strong></div>
+          </div>
+
+          <section class="callout">
+            <h3>Lecture rapide</h3>
+            <p style="margin-top: 8px;">
+              ${options.netBalance >= 0
+                ? `Les ventes couvrent actuellement les depenses avec un solde positif de ${formatCurrency(options.netBalance)}.`
+                : `Les depenses depassent actuellement les ventes de ${formatCurrency(Math.abs(options.netBalance))}.`}
+            </p>
+            <div class="highlights">
+              <div class="highlight">
+                <span>Produit le plus vendeur</span>
+                <strong>${escapeHtml(options.topProductLabel)}</strong>
+                <small>${escapeHtml(options.topProductMeta)}</small>
+              </div>
+              <div class="highlight">
+                <span>Service dominant</span>
+                <strong>${escapeHtml(options.topCategoryLabel)}</strong>
+                <small>${escapeHtml(options.topCategoryMeta)}</small>
+              </div>
+              <div class="highlight">
+                <span>Nombre de depenses</span>
+                <strong>${options.expensesCount}</strong>
+                <small>${escapeHtml(options.expensesAverageLabel)}</small>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head">
+              <h4>Resume et interpretation</h4>
+              <p>Commentaires automatiques pour faciliter la lecture du rapport.</p>
+            </div>
+            <div class="callout">${insights}</div>
+          </section>
+
+          <section class="section">
+            <div class="section-head">
+              <h4>Ventes par produit</h4>
+              <p>Quels produits ont genere le plus de chiffre d'affaires.</p>
+            </div>
+            <table>
+              <thead><tr><th>Produit</th><th>Categorie</th><th>Quantite vendue</th><th>Montant vendu</th></tr></thead>
+              <tbody>${productRows}</tbody>
+            </table>
+          </section>
+
+          <section class="section">
+            <div class="section-head">
+              <h4>Repartition par categorie</h4>
+              <p>Vue detaillee des services et activites vendus.</p>
+            </div>
+            <table>
+              <thead><tr><th>Service / activite</th><th>Quantite totale</th><th>Total genere</th></tr></thead>
+              <tbody>${serviceRows}</tbody>
+            </table>
+          </section>
+
+          <section class="section">
+            <div class="section-head">
+              <h4>Journal des depenses</h4>
+              <p>Liste detaillee des depenses qui impactent le resultat.</p>
+            </div>
+            <table>
+              <thead><tr><th>Date</th><th>Nature</th><th>Detail</th><th>Montant</th><th>Utilisateur</th><th>Approuve par</th><th>Usage</th></tr></thead>
+              <tbody>${expenseRows}</tbody>
+            </table>
+          </section>
+
+          <div class="footer">
+            <p>Pour enlever le nom du site ou l'URL en haut de la feuille, desactive "Headers and footers" dans le dialogue d'impression du navigateur.</p>
+          </div>
+        </div>
+        <script>
+          window.addEventListener("load", () => {
+            setTimeout(() => {
+              window.focus();
+              window.print();
+            }, 150);
+          });
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 function formatDateTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -1918,6 +2254,47 @@ export default function App() {
     } finally {
       setSyncBusy(false);
     }
+  }
+
+  function handlePrintExpenseReport() {
+    if (!expenseReport) {
+      return;
+    }
+
+    const popup = window.open("", "_blank", "width=1180,height=900");
+    if (!popup) {
+      showToast("error", "Impossible d'ouvrir la fenetre d'impression. Autorisez les popups puis reessayez.");
+      return;
+    }
+
+    popup.document.open();
+    popup.document.write(
+      buildExpenseReportPrintHtml({
+        generatedAt: expenseReportGeneratedAt,
+        generatedBy: currentUser?.fullName ?? "Utilisateur",
+        totalSalesAmount: expenseReport.totalSalesAmount,
+        totalExpensesAmount: expenseReport.totalExpensesAmount,
+        netBalance: expenseReport.netBalance,
+        topProductLabel: expenseReportTopProduct ? expenseReportTopProduct.productName : "Aucun produit",
+        topProductMeta: expenseReportTopProduct
+          ? `${expenseReportTopProduct.quantity} unite(s) - ${formatCurrency(expenseReportTopProduct.amount)}`
+          : "Aucune vente detaillee",
+        topCategoryLabel: expenseReportTopCategory ? expenseReportTopCategory.category : "Aucun service",
+        topCategoryMeta: expenseReportTopCategory
+          ? `${expenseReportTopCategory.quantity} unite(s) - ${formatCurrency(expenseReportTopCategory.amount)}`
+          : "Aucune repartition disponible",
+        expensesCount: expenses.length,
+        expensesAverageLabel:
+          expenses.length > 0
+            ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenses.length)}`
+            : "Aucune depense enregistree",
+        insights: expenseReport.insights,
+        productLines: expenseReport.productLines,
+        serviceLines: expenseReport.serviceLines,
+        expenses,
+      })
+    );
+    popup.document.close();
   }
 
   function handleSyncButtonClick() {
@@ -3858,7 +4235,7 @@ export default function App() {
             </section>
 
             <div className="modal-actions expense-report-actions">
-              <button className="ghost-btn" type="button" onClick={() => window.print()}>
+              <button className="ghost-btn" type="button" onClick={handlePrintExpenseReport}>
                 Imprimer / PDF
               </button>
               <button className="ghost-btn muted" type="button" onClick={closeModal}>
