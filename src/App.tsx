@@ -173,6 +173,7 @@ function escapeHtml(value: string) {
 }
 
 function buildExpenseReportPrintHtml(options: {
+  logoSrc: string;
   generatedAt: string;
   generatedBy: string;
   totalSalesAmount: number;
@@ -264,6 +265,25 @@ function buildExpenseReportPrintHtml(options: {
             padding-bottom: 16px;
             border-bottom: 1px solid #dce9f7;
           }
+          .brand-block {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex: 1;
+          }
+          .brand-logo {
+            width: 84px;
+            height: 84px;
+            object-fit: contain;
+            border-radius: 18px;
+            border: 1px solid #d8e5f5;
+            background: #fff;
+            padding: 8px;
+          }
+          .brand-copy {
+            display: grid;
+            gap: 4px;
+          }
           .kicker {
             margin: 0 0 6px;
             color: #1567d8;
@@ -279,6 +299,11 @@ function buildExpenseReportPrintHtml(options: {
           .subtitle {
             margin-top: 6px;
             line-height: 1.55;
+          }
+          .shop-meta {
+            color: #425a7a;
+            font-size: 12px;
+            line-height: 1.6;
           }
           .meta {
             display: grid;
@@ -389,6 +414,9 @@ function buildExpenseReportPrintHtml(options: {
               display: grid;
               grid-template-columns: 1fr;
             }
+            .brand-block {
+              align-items: flex-start;
+            }
             .meta {
               text-align: left;
             }
@@ -398,10 +426,18 @@ function buildExpenseReportPrintHtml(options: {
       <body>
         <div class="sheet">
           <div class="header">
-            <div>
-              <p class="kicker">Rapport financier</p>
-              <h1>Rapport complet des ventes et depenses</h1>
-              <p class="subtitle">Document de synthese pour impression papier ou export PDF.</p>
+            <div class="brand-block">
+              <img class="brand-logo" src="${escapeHtml(options.logoSrc)}" alt="Logo Walikale Papeterie" />
+              <div class="brand-copy">
+                <p class="kicker">Rapport financier</p>
+                <h1>Walikale Papeterie</h1>
+                <p class="subtitle">Rapport complet des ventes et depenses pour impression papier ou export PDF.</p>
+                <p class="shop-meta">
+                  Q. Camp TP, avenue Kuya, route vers Mubi, en face du Bureau PAM<br />
+                  Tel : +243 812681339 | E-mail : walikaletoworld.rt@gmail.com<br />
+                  RCCM : CD/GOM/RCCM/24-A-01041 | Id. Nat : 01-G4701-N66253Q
+                </p>
+              </div>
             </div>
             <div class="meta">
               <span>Genere le ${escapeHtml(options.generatedAt)}</span>
@@ -483,7 +519,7 @@ function buildExpenseReportPrintHtml(options: {
           </section>
 
           <div class="footer">
-            <p>Pour enlever le nom du site ou l'URL en haut de la feuille, desactive "Headers and footers" dans le dialogue d'impression du navigateur.</p>
+            <p>Document genere par Walikale Papeterie pour suivi financier interne.</p>
           </div>
         </div>
         <script>
@@ -2270,6 +2306,7 @@ export default function App() {
     popup.document.open();
     popup.document.write(
       buildExpenseReportPrintHtml({
+        logoSrc: brandLogo,
         generatedAt: expenseReportGeneratedAt,
         generatedBy: currentUser?.fullName ?? "Utilisateur",
         totalSalesAmount: expenseReport.totalSalesAmount,
