@@ -120,6 +120,8 @@ type ExpenseReportState = {
   totalSalesAmount: number;
   totalExpensesAmount: number;
   netBalance: number;
+  conclusion: string;
+  conclusionTone: "neutral" | "danger" | "warning" | "success";
   productLines: Array<{
     productId: number;
     productName: string;
@@ -179,6 +181,8 @@ function buildExpenseReportPrintHtml(options: {
   totalSalesAmount: number;
   totalExpensesAmount: number;
   netBalance: number;
+  conclusion: string;
+  conclusionTone: "neutral" | "danger" | "warning" | "success";
   topProductLabel: string;
   topProductMeta: string;
   topCategoryLabel: string;
@@ -395,6 +399,43 @@ function buildExpenseReportPrintHtml(options: {
             font-size: 11px;
             text-align: center;
           }
+          .conclusion {
+            margin-top: 16px;
+            padding: 16px 18px;
+            border-radius: 16px;
+            border: 1px solid #cfe0f4;
+            background: linear-gradient(135deg, #eef5ff 0%, #f8fbff 100%);
+          }
+          .conclusion.danger {
+            border-color: #f1c7cd;
+            background: linear-gradient(135deg, #fff1f3 0%, #fff8f9 100%);
+          }
+          .conclusion.warning {
+            border-color: #f1ddb8;
+            background: linear-gradient(135deg, #fff7e8 0%, #fffbf3 100%);
+          }
+          .conclusion.success {
+            border-color: #c6e8d3;
+            background: linear-gradient(135deg, #edf9f1 0%, #f8fdf9 100%);
+          }
+          .conclusion span {
+            display: block;
+            margin-bottom: 8px;
+            color: #1567d8;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+          }
+          .conclusion.danger span { color: #c1324a; }
+          .conclusion.warning span { color: #b86a05; }
+          .conclusion.success span { color: #137a43; }
+          .conclusion strong {
+            display: block;
+            color: #102846;
+            font-size: 16px;
+            line-height: 1.6;
+          }
           @media print {
             body {
               background: #fff;
@@ -483,6 +524,11 @@ function buildExpenseReportPrintHtml(options: {
               <p>Commentaires automatiques pour faciliter la lecture du rapport.</p>
             </div>
             <div class="callout">${insights}</div>
+          </section>
+
+          <section class="conclusion ${escapeHtml(options.conclusionTone)}">
+            <span>Conclusion finale</span>
+            <strong>${escapeHtml(options.conclusion)}</strong>
           </section>
 
           <section class="section">
@@ -1459,10 +1505,47 @@ export default function App() {
         insights.push(`La depense moyenne par operation est de ${formatCurrency(totalExpensesAmount / expenses.length)}.`);
       }
 
+      let comparativeConclusion = "Conclusion: activite stable, mais les indicateurs restent insuffisants pour une interpretation comparative detaillee.";
+      let comparativeConclusionTone: ExpenseReportState["conclusionTone"] = "neutral";
+      if (totalSalesAmount === 0 && totalExpensesAmount === 0) {
+        comparativeConclusion =
+          "Conclusion: aucune activite exploitable n'a ete observee sur cette periode, donc aucune comparaison fiable entre ventes et depenses n'est possible.";
+        comparativeConclusionTone = "neutral";
+      } else if (totalSalesAmount === 0 && totalExpensesAmount > 0) {
+        comparativeConclusion =
+          "Conclusion: la periode est en echec financier total, car des depenses ont ete engagees sans aucune vente pour les compenser.";
+        comparativeConclusionTone = "danger";
+      } else if (netBalance < 0) {
+        comparativeConclusion = `Conclusion: la periode se termine en perte de ${formatCurrency(
+          Math.abs(netBalance)
+        )}. Les depenses n'ont pas ete bien calibrees par rapport aux ventes.`;
+        comparativeConclusionTone = "danger";
+      } else if (expenseRatio >= 0.95) {
+        comparativeConclusion =
+          "Conclusion: l'activite reste positive, mais elle est tres fragile. Les depenses absorbent presque tout le chiffre d'affaires.";
+        comparativeConclusionTone = "warning";
+      } else if (expenseRatio >= 0.75) {
+        comparativeConclusion =
+          "Conclusion: les ventes couvrent les depenses, mais la marge reste limitee. Une meilleure maitrise des charges ameliorerait le resultat.";
+        comparativeConclusionTone = "warning";
+      } else if (expenseRatio >= 0.45) {
+        comparativeConclusion =
+          "Conclusion: les depenses semblent globalement bien calibrees par rapport aux ventes, avec un equilibre d'exploitation satisfaisant.";
+        comparativeConclusionTone = "neutral";
+      } else {
+        comparativeConclusion =
+          "Conclusion: l'activite est bien rentable sur cette periode, avec des depenses bien maitrisees par rapport aux ventes.";
+        comparativeConclusionTone = "success";
+      }
+
+      insights.push(comparativeConclusion);
+
       setExpenseReport({
         totalSalesAmount,
         totalExpensesAmount,
         netBalance,
+        conclusion: comparativeConclusion,
+        conclusionTone: comparativeConclusionTone,
         productLines: [...productTotals.values()].sort((left, right) => right.amount - left.amount),
         serviceLines: [...serviceTotals.values()].sort((left, right) => right.amount - left.amount),
         insights,
@@ -2312,6 +2395,8 @@ export default function App() {
         totalSalesAmount: expenseReport.totalSalesAmount,
         totalExpensesAmount: expenseReport.totalExpensesAmount,
         netBalance: expenseReport.netBalance,
+        conclusion: expenseReport.conclusion,
+        conclusionTone: expenseReport.conclusionTone,
         topProductLabel: expenseReportTopProduct ? expenseReportTopProduct.productName : "Aucun produit",
         topProductMeta: expenseReportTopProduct
           ? `${expenseReportTopProduct.quantity} unite(s) - ${formatCurrency(expenseReportTopProduct.amount)}`
@@ -4172,6 +4257,11 @@ export default function App() {
                   <p key={`${index}-${insight}`}>{insight}</p>
                 ))}
               </div>
+            </section>
+
+            <section className={`expense-report-conclusion ${expenseReport.conclusionTone}`}>
+              <span>Conclusion finale</span>
+              <strong>{expenseReport.conclusion}</strong>
             </section>
 
             <section className="expense-report-section">

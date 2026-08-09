@@ -1602,6 +1602,58 @@ h2 {
   background: #fcfdff;
 }
 
+.expense-report-conclusion {
+  padding: 1rem 1.1rem;
+  border: 1px solid #cfe0f4;
+  border-radius: 1rem;
+  background: linear-gradient(135deg, #eef5ff 0%, #f9fbff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.expense-report-conclusion.danger {
+  border-color: #f1c7cd;
+  background: linear-gradient(135deg, #fff1f3 0%, #fff8f9 100%);
+}
+
+.expense-report-conclusion.warning {
+  border-color: #f1ddb8;
+  background: linear-gradient(135deg, #fff7e8 0%, #fffbf3 100%);
+}
+
+.expense-report-conclusion.success {
+  border-color: #c6e8d3;
+  background: linear-gradient(135deg, #edf9f1 0%, #f8fdf9 100%);
+}
+
+.expense-report-conclusion span {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: #1567d8;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.expense-report-conclusion.danger span {
+  color: #c1324a;
+}
+
+.expense-report-conclusion.warning span {
+  color: #b86a05;
+}
+
+.expense-report-conclusion.success span {
+  color: #137a43;
+}
+
+.expense-report-conclusion strong {
+  display: block;
+  color: #102846;
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
 .expense-report-callout h4,
 .expense-report-callout p,
 .expense-report-section-header p {
@@ -2690,6 +2742,7 @@ tbody td:first-child {
 
   .expense-report-header,
   .expense-report-callout,
+  .expense-report-conclusion,
   .expense-report-section,
   .sales-indicator {
     break-inside: avoid;
