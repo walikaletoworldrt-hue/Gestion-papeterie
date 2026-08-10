@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld("desktopApi", {
   exportSalePdf: (saleId: number): Promise<string | null> => ipcRenderer.invoke("sales:export-pdf", saleId),
   printSaleReceipt: (saleId: number): Promise<boolean> => ipcRenderer.invoke("sales:print-receipt", saleId),
   exportSaleReceiptPdf: (saleId: number): Promise<string | null> => ipcRenderer.invoke("sales:export-receipt-pdf", saleId),
+  exportExpenseReportPdf: (html: string, fileName: string): Promise<string | null> =>
+    ipcRenderer.invoke("reports:export-expense-pdf", html, fileName),
   getSupplyHistory: (): Promise<SupplyHistoryItem[]> => ipcRenderer.invoke("history:supply"),
   getActivityHistory: (): Promise<ActivityHistoryItem[]> => ipcRenderer.invoke("history:activity"),
   listExpenses: (): Promise<ExpenseItem[]> => ipcRenderer.invoke("expenses:list"),

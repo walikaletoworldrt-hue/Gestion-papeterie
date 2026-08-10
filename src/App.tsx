@@ -2380,7 +2380,8 @@ export default function App() {
   }
 
   function handlePrintExpenseReport() {
-    if (!expenseReport) {
+    const documentHtml = getExpenseReportDocumentHtml();
+    if (!documentHtml) {
       return;
     }
 
@@ -2391,36 +2392,66 @@ export default function App() {
     }
 
     popup.document.open();
-    popup.document.write(
-      buildExpenseReportPrintHtml({
-        logoSrc: brandLogo,
-        generatedAt: expenseReportGeneratedAt,
-        generatedBy: currentUser?.fullName ?? "Utilisateur",
-        totalSalesAmount: expenseReport.totalSalesAmount,
-        totalExpensesAmount: expenseReport.totalExpensesAmount,
-        netBalance: expenseReport.netBalance,
-        conclusion: expenseReport.conclusion,
-        conclusionTone: expenseReport.conclusionTone,
-        topProductLabel: expenseReportTopProduct ? expenseReportTopProduct.productName : "Aucun produit",
-        topProductMeta: expenseReportTopProduct
-          ? `${expenseReportTopProduct.quantity} unite(s) - ${formatCurrency(expenseReportTopProduct.amount)}`
-          : "Aucune vente detaillee",
-        topCategoryLabel: expenseReportTopCategory ? expenseReportTopCategory.category : "Aucun service",
-        topCategoryMeta: expenseReportTopCategory
-          ? `${expenseReportTopCategory.quantity} unite(s) - ${formatCurrency(expenseReportTopCategory.amount)}`
-          : "Aucune repartition disponible",
-        expensesCount: expenses.length,
-        expensesAverageLabel:
-          expenses.length > 0
-            ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenses.length)}`
-            : "Aucune depense enregistree",
-        insights: expenseReport.insights,
-        productLines: expenseReport.productLines,
-        serviceLines: expenseReport.serviceLines,
-        expenses,
-      })
-    );
+    popup.document.write(documentHtml);
     popup.document.close();
+  }
+
+  function getExpenseReportDocumentHtml() {
+    if (!expenseReport) {
+      return null;
+    }
+
+    const absoluteLogoSrc = new URL(brandLogo, window.location.href).href;
+    return buildExpenseReportPrintHtml({
+      logoSrc: absoluteLogoSrc,
+      generatedAt: expenseReportGeneratedAt,
+      generatedBy: currentUser?.fullName ?? "Utilisateur",
+      totalSalesAmount: expenseReport.totalSalesAmount,
+      totalExpensesAmount: expenseReport.totalExpensesAmount,
+      netBalance: expenseReport.netBalance,
+      conclusion: expenseReport.conclusion,
+      conclusionTone: expenseReport.conclusionTone,
+      topProductLabel: expenseReportTopProduct ? expenseReportTopProduct.productName : "Aucun produit",
+      topProductMeta: expenseReportTopProduct
+        ? `${expenseReportTopProduct.quantity} unite(s) - ${formatCurrency(expenseReportTopProduct.amount)}`
+        : "Aucune vente detaillee",
+      topCategoryLabel: expenseReportTopCategory ? expenseReportTopCategory.category : "Aucun service",
+      topCategoryMeta: expenseReportTopCategory
+        ? `${expenseReportTopCategory.quantity} unite(s) - ${formatCurrency(expenseReportTopCategory.amount)}`
+        : "Aucune repartition disponible",
+      expensesCount: expenses.length,
+      expensesAverageLabel:
+        expenses.length > 0
+          ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenses.length)}`
+          : "Aucune depense enregistree",
+      insights: expenseReport.insights,
+      productLines: expenseReport.productLines,
+      serviceLines: expenseReport.serviceLines,
+      expenses,
+    });
+  }
+
+  async function handleExportExpenseReportPdf() {
+    const documentHtml = getExpenseReportDocumentHtml();
+    if (!documentHtml) {
+      return;
+    }
+
+    if (!window.desktopApi) {
+      showToast("info", "L'export PDF fidele du rapport est disponible dans l'application desktop.");
+      return;
+    }
+
+    const safeDate = new Date().toISOString().slice(0, 10);
+
+    try {
+      const result = await repository.exportExpenseReportPdf(documentHtml, `rapport-financier-${safeDate}`);
+      const message = result ? `Rapport PDF exporte: ${result}` : "Export PDF annule ou impossible.";
+      showToast(result ? "success" : "info", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible d'exporter ce rapport en PDF.";
+      showToast("error", message);
+    }
   }
 
   function handleSyncButtonClick() {
@@ -4366,8 +4397,11 @@ export default function App() {
             </section>
 
             <div className="modal-actions expense-report-actions">
+              <button className="ghost-btn" type="button" onClick={() => void handleExportExpenseReportPdf()}>
+                Exporter PDF
+              </button>
               <button className="ghost-btn" type="button" onClick={handlePrintExpenseReport}>
-                Imprimer / PDF
+                Imprimer
               </button>
               <button className="ghost-btn muted" type="button" onClick={closeModal}>
                 Fermer

@@ -150,6 +150,41 @@ function registerIpc() {
       return null;
     }
   });
+  ipcMain.handle("reports:export-expense-pdf", async (_event, html: string, fileName: string) => {
+    try {
+      const downloadsPath = app.getPath("downloads");
+      const sanitizedName = (fileName || "rapport-financier")
+        .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "-")
+        .trim();
+      const baseFilePath = path.join(downloadsPath, `${sanitizedName || "rapport-financier"}.pdf`);
+      const filePath = await getAvailablePdfPath(baseFilePath);
+      const win = await createDocumentWindow(html, {
+        width: 1240,
+        height: 1600,
+        title: "Rapport financier",
+      });
+
+      try {
+        await waitForWindowReady(win);
+        const pdf = await win.webContents.printToPDF({
+          printBackground: true,
+          margins: { top: 16, bottom: 16, left: 16, right: 16 },
+          pageSize: "A4",
+          preferCSSPageSize: true,
+        });
+        await fs.writeFile(filePath, pdf);
+        shell.showItemInFolder(filePath);
+        return filePath;
+      } finally {
+        if (!win.isDestroyed()) {
+          win.close();
+        }
+      }
+    } catch (error) {
+      console.error("reports:export-expense-pdf failed", error);
+      return null;
+    }
+  });
   ipcMain.handle("history:supply", () => database.getSupplyHistory());
   ipcMain.handle("history:activity", () => database.getActivityHistory());
   ipcMain.handle("expenses:list", () => database.listExpenses());

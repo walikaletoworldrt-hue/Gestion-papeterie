@@ -292,6 +292,7 @@ export type DesktopApi = {
   exportSalePdf: (saleId: number) => Promise<string | null>;
   printSaleReceipt: (saleId: number) => Promise<boolean>;
   exportSaleReceiptPdf: (saleId: number) => Promise<string | null>;
+  exportExpenseReportPdf: (html: string, fileName: string) => Promise<string | null>;
   getSupplyHistory: () => Promise<SupplyHistoryItem[]>;
   getActivityHistory: () => Promise<ActivityHistoryItem[]>;
   listExpenses: () => Promise<ExpenseItem[]>;

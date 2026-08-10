@@ -2510,6 +2510,14 @@ export const repository = {
     return "Le ticket s'ouvre dans une fenetre dediee. Utilisez ensuite le dialogue d'impression du navigateur pour enregistrer en PDF.";
   },
 
+  async exportExpenseReportPdf(html: string, fileName: string): Promise<string | null> {
+    if (window.desktopApi) {
+      return window.desktopApi.exportExpenseReportPdf(html, fileName);
+    }
+
+    return null;
+  },
+
   async createSale(draft: SaleDraft): Promise<SaleRecord[]> {
     if (window.desktopApi) {
       return window.desktopApi.createSale(draft);
