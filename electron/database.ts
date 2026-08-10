@@ -1578,6 +1578,55 @@ export class LocalDatabase {
     return this.mapUserRow(created);
   }
 
+  linkCloudUserProfile(draft: CloudDesktopSessionDraft): AppUser[] {
+    this.requirePermission("manage_users");
+    const now = new Date().toISOString();
+    const authUserId = draft.authUserId.trim();
+    const fullName = draft.fullName.trim();
+    const username = draft.username.trim().toLowerCase();
+    const email = draft.email.trim().toLowerCase();
+    const password = draft.password.trim();
+
+    if (!authUserId || !fullName || !username || !email || !password) {
+      throw new Error("Le profil cloud ne contient pas assez d'informations pour etre lie localement.");
+    }
+
+    const existing = this.db
+      .prepare(`
+        SELECT id, auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at
+        FROM users
+        WHERE auth_user_id = ?
+           OR LOWER(COALESCE(email, '')) = LOWER(?)
+           OR LOWER(username) = LOWER(?)
+        LIMIT 1
+      `)
+      .get(authUserId, email, username) as UserRow | undefined;
+
+    if (existing) {
+      this.db
+        .prepare(`
+          UPDATE users
+          SET auth_user_id = ?, full_name = ?, username = ?, email = ?, password_hash = ?, auth_sync_password = ?,
+              role = ?, active = 1, last_login_at = ?
+          WHERE id = ?
+        `)
+        .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, existing.id);
+      this.logAction(this.getActorUserId(existing.id), "update", "users", existing.id, `Compte cloud lie a ${email}`);
+      return this.listUsers();
+    }
+
+    const result = this.db
+      .prepare(`
+        INSERT INTO users (auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      `)
+      .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, now);
+
+    const userId = Number(result.lastInsertRowid);
+    this.logAction(this.getActorUserId(userId), "create", "users", userId, `Profil cloud importe pour ${email}`);
+    return this.listUsers();
+  }
+
   getCurrentSyncCredentials(): DesktopSyncCredentials {
     const actor = this.requireAuthenticatedUser();
     const email = actor.email?.trim().toLowerCase() ?? "";

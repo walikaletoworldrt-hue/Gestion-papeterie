@@ -159,6 +159,9 @@ function registerIpc() {
   ipcMain.handle("clients:save", (_event, draft: ClientDraft) => database.saveClient(draft));
   ipcMain.handle("users:list", () => database.listUsers());
   ipcMain.handle("users:save", (_event, draft: UserDraft) => database.saveUser(draft));
+  ipcMain.handle("users:link-cloud-profile", (_event, draft: CloudDesktopSessionDraft) =>
+    database.linkCloudUserProfile(draft)
+  );
   ipcMain.handle("users:authenticate", (_event, draft: LoginDraft) => database.authenticateUser(draft));
   ipcMain.handle("users:cache-cloud-auth", (_event, draft: CloudDesktopSessionDraft) =>
     database.cacheCloudAuthenticatedUser(draft)

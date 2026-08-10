@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld("desktopApi", {
   saveClient: (draft: ClientDraft): Promise<Client[]> => ipcRenderer.invoke("clients:save", draft),
   listUsers: (): Promise<AppUser[]> => ipcRenderer.invoke("users:list"),
   saveUser: (draft: UserDraft): Promise<AppUser[]> => ipcRenderer.invoke("users:save", draft),
+  linkCloudUserProfile: (draft: CloudDesktopSessionDraft): Promise<AppUser[]> =>
+    ipcRenderer.invoke("users:link-cloud-profile", draft),
   authenticateUser: (draft: LoginDraft): Promise<AppUser | null> => ipcRenderer.invoke("users:authenticate", draft),
   cacheCloudAuthenticatedUser: (draft: CloudDesktopSessionDraft): Promise<AppUser> =>
     ipcRenderer.invoke("users:cache-cloud-auth", draft),

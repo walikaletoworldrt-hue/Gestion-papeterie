@@ -1606,6 +1606,132 @@ function mapSupabaseUser(row: SupabaseUserRow): AppUser {
   };
 }
 
+function normalizeUserDraftForProvisioning(draft: UserDraft) {
+  const fullName = draft.fullName.trim();
+  const normalizedEmail = draft.email.trim().toLowerCase();
+  const normalizedUsername = draft.username.trim().toLowerCase();
+  const password = draft.password.trim();
+
+  if (!fullName || !normalizedEmail || !normalizedUsername || !password) {
+    throw new Error("Tous les champs utilisateur sont obligatoires.");
+  }
+
+  if (password.length < 6) {
+    throw new Error("Le mot de passe doit contenir au moins 6 caracteres.");
+  }
+
+  return {
+    fullName,
+    normalizedEmail,
+    normalizedUsername,
+    password,
+  };
+}
+
+async function findSupabaseUserProfileByIdentity(
+  client: ReturnType<typeof getSupabaseClient>,
+  email: string,
+  username: string
+): Promise<SupabaseUserRow | null> {
+  const byEmailResult = await client
+    .from("users")
+    .select("id, auth_user_id, full_name, username, email, role, active, created_at, last_login_at")
+    .eq("email", email)
+    .limit(1);
+  const byEmailRows = ensureData(byEmailResult.data ?? [], byEmailResult.error) as SupabaseUserRow[];
+
+  if (byEmailRows[0]) {
+    return byEmailRows[0];
+  }
+
+  const byUsernameResult = await client
+    .from("users")
+    .select("id, auth_user_id, full_name, username, email, role, active, created_at, last_login_at")
+    .eq("username", username)
+    .limit(1);
+  const byUsernameRows = ensureData(byUsernameResult.data ?? [], byUsernameResult.error) as SupabaseUserRow[];
+  return byUsernameRows[0] ?? null;
+}
+
+async function provisionUserIntoSupabase(draft: UserDraft) {
+  const client = window.desktopApi ? await ensureDesktopSupabaseSession() : getSupabaseClient();
+  const authClient = createIsolatedSupabaseClient();
+  const { fullName, normalizedEmail, normalizedUsername, password } = normalizeUserDraftForProvisioning(draft);
+  let existingProfile = await findSupabaseUserProfileByIdentity(client, normalizedEmail, normalizedUsername);
+  let authUserId = existingProfile?.auth_user_id ?? null;
+
+  if (!authUserId) {
+    const signUpResult = await authClient.auth.signUp({
+      email: normalizedEmail,
+      password,
+      options: {
+        data: {
+          full_name: fullName,
+          username: normalizedUsername,
+          role: draft.role,
+        },
+      },
+    });
+
+    if (signUpResult.error) {
+      const message = signUpResult.error.message || "Impossible de creer le compte Supabase.";
+      const normalized = message.toLowerCase();
+
+      if (normalized.includes("rate limit") || normalized.includes("too many requests")) {
+        throw new Error(
+          `Supabase limite temporairement la creation du compte web pour ${normalizedEmail}. Reessayez un peu plus tard ou lancez la synchronisation ensuite.`
+        );
+      }
+
+      if (!isRecoverableSupabaseSignUpError(message)) {
+        throw new Error(message);
+      }
+    }
+
+    authUserId = signUpResult.data.user?.id ?? null;
+
+    if (!authUserId) {
+      existingProfile = await findSupabaseUserProfileByIdentity(client, normalizedEmail, normalizedUsername);
+      authUserId = existingProfile?.auth_user_id ?? null;
+    }
+  }
+
+  if (!authUserId) {
+    throw new Error(
+      `Le compte Auth de ${normalizedEmail} semble deja exister, mais son profil applicatif n'a pas pu etre relie automatiquement.`
+    );
+  }
+
+  const profilePayload = {
+    auth_user_id: authUserId,
+    full_name: fullName,
+    username: normalizedUsername,
+    email: normalizedEmail,
+    role: draft.role,
+    active: true,
+    last_login_at: existingProfile?.last_login_at ?? new Date().toISOString(),
+  };
+
+  if (existingProfile) {
+    const updateResult = await client.from("users").update(profilePayload).eq("id", existingProfile.id);
+    ensureData(updateResult.data ?? [], updateResult.error);
+  } else {
+    const insertResult = await client.from("users").insert({
+      ...profilePayload,
+      created_at: new Date().toISOString(),
+    });
+    ensureData(insertResult.data ?? [], insertResult.error);
+  }
+
+  return {
+    authUserId,
+    fullName,
+    normalizedEmail,
+    normalizedUsername,
+    password,
+  };
+}
+
 function isRecoverableSupabaseSignUpError(message: string) {
   const normalized = message.toLowerCase();
   return (
@@ -2965,84 +3091,66 @@ export const repository = {
     return loadJson("walikale-web-users", webSeedUsers);
   },
 
-  async saveUser(draft: UserDraft): Promise<AppUser[]> {
+  async saveUser(draft: UserDraft): Promise<{ users: AppUser[]; notice?: string }> {
     if (window.desktopApi) {
-      return window.desktopApi.saveUser(draft);
+      const users = await window.desktopApi.saveUser(draft);
+
+      if (!supabase) {
+        return {
+          users,
+          notice: "Utilisateur ajoute localement. Le cloud n'est pas configure sur ce poste.",
+        };
+      }
+
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        return {
+          users,
+          notice: "Utilisateur ajoute localement. Son compte web sera prepare au retour d'Internet.",
+        };
+      }
+
+      try {
+        await assertSupabaseSyncSchema();
+        const provisionedUser = await provisionUserIntoSupabase(draft);
+        const linkedUsers = await window.desktopApi.linkCloudUserProfile({
+          authUserId: provisionedUser.authUserId,
+          fullName: provisionedUser.fullName,
+          username: provisionedUser.normalizedUsername,
+          email: provisionedUser.normalizedEmail,
+          role: draft.role,
+          password: provisionedUser.password,
+        });
+
+        return {
+          users: linkedUsers,
+          notice: "Utilisateur ajoute localement et compte web prepare pour les autres postes.",
+        };
+      } catch (error) {
+        console.warn("saveUser desktop cloud provisioning failed", error);
+        return {
+          users,
+          notice:
+            error instanceof Error
+              ? `Utilisateur ajoute localement. La preparation du compte web reste a finaliser: ${error.message}`
+              : "Utilisateur ajoute localement. La preparation du compte web reste a finaliser.",
+        };
+      }
     }
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
-      const fullName = draft.fullName.trim();
-      const normalizedEmail = draft.email.trim().toLowerCase();
-      const normalizedUsername = draft.username.trim().toLowerCase();
-      const password = draft.password.trim();
-
-      if (!fullName || !normalizedEmail || !normalizedUsername || !password) {
-        throw new Error("Tous les champs utilisateur sont obligatoires.");
-      }
-
-      if (password.length < 6) {
-        throw new Error("Le mot de passe doit contenir au moins 6 caracteres.");
-      }
-
-      const previousSessionResult = await client.auth.getSession();
-      const previousSession = previousSessionResult.data.session;
-      const signUpResult = await client.auth.signUp({
-        email: normalizedEmail,
-        password,
-        options: {
-          data: {
-            full_name: fullName,
-            username: normalizedUsername,
-            role: draft.role,
-          },
-        },
-      });
-
-      if (signUpResult.error) {
-        throw new Error(signUpResult.error.message || "Impossible de creer le compte Supabase.");
-      }
-
-      const authUserId = signUpResult.data.user?.id;
-
-      if (!authUserId) {
-        throw new Error("Le compte Supabase n'a pas renvoye d'identifiant utilisateur.");
-      }
-
-      if (previousSession && signUpResult.data.session) {
-        const restoreResult = await client.auth.setSession({
-          access_token: previousSession.access_token,
-          refresh_token: previousSession.refresh_token,
-        });
-
-        if (restoreResult.error) {
-          throw new Error("Le compte a ete cree, mais la session administrateur n'a pas pu etre restauree.");
-        }
-      }
-
-      const insertResult = await client
-        .from("users")
-        .insert({
-          auth_user_id: authUserId,
-          full_name: fullName,
-          username: normalizedUsername,
-          email: normalizedEmail,
-          role: draft.role,
-          active: true,
-          created_at: new Date().toISOString(),
-        });
-
-      if (insertResult.error) {
-        throw new Error(insertResult.error.message || "Le profil utilisateur n'a pas pu etre cree.");
-      }
+      const provisionedUser = await provisionUserIntoSupabase(draft);
 
       await insertSupabaseAuditLog(client, {
         action: "create",
         target_table: "users",
-        details: `Creation utilisateur ${normalizedEmail}`,
+        details: `Creation utilisateur ${provisionedUser.normalizedEmail}`,
       });
 
-      return this.listUsers();
+      return {
+        users: await this.listUsers(),
+        notice: "Utilisateur ajoute avec succes.",
+      };
     }
 
     const users = loadJson("walikale-web-users", webSeedUsers);
@@ -3092,7 +3200,10 @@ export const repository = {
       user: "Utilisateur web",
     });
     persistWebActivityHistory(activityHistory);
-    return users;
+    return {
+      users,
+      notice: "Utilisateur ajoute avec succes.",
+    };
   },
 
   async authenticateUser(draft: LoginDraft): Promise<AppUser | null> {

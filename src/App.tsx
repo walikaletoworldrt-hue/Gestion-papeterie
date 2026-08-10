@@ -1807,7 +1807,7 @@ export default function App() {
     }
 
     try {
-      const nextUsers = await repository.saveUser({
+      const result = await repository.saveUser({
         fullName: userDraft.fullName.trim(),
         username: userDraft.username.trim(),
         email: userDraft.email.trim(),
@@ -1815,11 +1815,15 @@ export default function App() {
         password: userDraft.password,
       });
 
-      setUsers(nextUsers);
+      setUsers(result.users);
+      if (window.desktopApi) {
+        const nextStatus = await repository.getSyncStatus();
+        setSyncStatus(nextStatus);
+      }
       setUserDraft(emptyUserDraft);
-      setUserMessage("Utilisateur ajoute avec succes.");
+      setUserMessage(result.notice ?? "Utilisateur ajoute avec succes.");
       closeModal();
-      showToast("success", "Utilisateur ajoute avec succes.");
+      showToast("success", result.notice ?? "Utilisateur ajoute avec succes.");
     } catch (error) {
       setUserError(error instanceof Error ? error.message : "Impossible d'ajouter cet utilisateur.");
       showToast("error", error instanceof Error ? error.message : "Impossible d'ajouter cet utilisateur.");

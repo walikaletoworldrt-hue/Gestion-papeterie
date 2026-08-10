@@ -301,6 +301,7 @@ export type DesktopApi = {
   saveClient: (draft: ClientDraft) => Promise<Client[]>;
   listUsers: () => Promise<AppUser[]>;
   saveUser: (draft: UserDraft) => Promise<AppUser[]>;
+  linkCloudUserProfile: (draft: CloudDesktopSessionDraft) => Promise<AppUser[]>;
   authenticateUser: (draft: LoginDraft) => Promise<AppUser | null>;
   cacheCloudAuthenticatedUser: (draft: CloudDesktopSessionDraft) => Promise<AppUser>;
   getCurrentSyncCredentials: () => Promise<DesktopSyncCredentials>;
