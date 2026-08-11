@@ -967,6 +967,7 @@ export default function App() {
   const isAdministrator = currentUser?.role === "Administrateur";
   const canManageUsers = isSuperAdmin;
   const canManageInventory = isSuperAdmin || isAdministrator;
+  const canManageInventoryCycles = isSuperAdmin;
   const canManageExpenses = isSuperAdmin || isAdministrator;
   const canCreateClients = Boolean(currentUser);
   const canCreateSales = Boolean(currentUser);
@@ -2305,8 +2306,8 @@ export default function App() {
   }
 
   async function handleAdvanceInvoiceSeries() {
-    if (!canManageInventory) {
-      showAccessDenied("Votre profil ne permet pas de changer la serie des factures.");
+    if (!canManageInventoryCycles) {
+      showAccessDenied("Seul le super administrateur peut demarrer une nouvelle serie de factures.");
       return;
     }
 
@@ -2317,8 +2318,8 @@ export default function App() {
   }
 
   async function handleResetInventoryCycle() {
-    if (!canManageInventory) {
-      showAccessDenied("Votre profil ne permet pas de reinitialiser le stock apres inventaire.");
+    if (!canManageInventoryCycles) {
+      showAccessDenied("Seul le super administrateur peut reinitialiser l'inventaire et demarrer un nouveau cycle.");
       return;
     }
 
@@ -3316,7 +3317,7 @@ export default function App() {
             <div className="panel-header">
               <h2>Stock initial</h2>
               <div className="panel-header-actions">
-                {canManageInventory ? (
+                {canManageInventoryCycles ? (
                   <button
                     className="ghost-btn"
                     type="button"
@@ -3611,7 +3612,7 @@ export default function App() {
             <div className="panel-header">
               <h2>Stock actuel</h2>
               <div className="panel-header-actions">
-                {canManageInventory ? (
+                {canManageInventoryCycles ? (
                   <button
                     className="ghost-btn danger"
                     type="button"

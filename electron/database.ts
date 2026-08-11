@@ -919,7 +919,7 @@ export class LocalDatabase {
   }
 
   resetInventoryCycle() {
-    this.requirePermission("manage_inventory");
+    this.requireSuperAdminAccess("Seul le super administrateur peut reinitialiser l'inventaire et demarrer un nouveau cycle.");
     const now = new Date().toISOString();
     const actorUserId = this.getActorUserId();
     const lastCycle = this.db
@@ -1081,8 +1081,16 @@ export class LocalDatabase {
       .run(timestamp, new Date().toISOString());
   }
 
+  private requireSuperAdminAccess(message = "Seul le super administrateur peut effectuer cette action.") {
+    const actor = this.requireAuthenticatedUser();
+    if (actor.role !== "Super admin") {
+      throw new Error(message);
+    }
+    return actor;
+  }
+
   advanceInvoiceSeries(): InvoiceSeriesInfo {
-    this.requirePermission("manage_inventory");
+    this.requireSuperAdminAccess("Seul le super administrateur peut demarrer une nouvelle serie de factures.");
     const sequence = this.getCurrentInvoiceSequence();
     const now = new Date().toISOString();
 

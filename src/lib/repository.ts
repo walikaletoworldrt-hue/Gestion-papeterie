@@ -1653,7 +1653,7 @@ async function findSupabaseUserProfileByIdentity(
   return byUsernameRows[0] ?? null;
 }
 
-async function provisionUserIntoSupabase(draft: UserDraft) {
+async function provisionUserIntoSupabase(draft: UserDraft, options?: { localUserId?: number }) {
   const client = window.desktopApi ? await ensureDesktopSupabaseSession() : getSupabaseClient();
   const authClient = createIsolatedSupabaseClient();
   const { fullName, normalizedEmail, normalizedUsername, password } = normalizeUserDraftForProvisioning(draft);
@@ -1703,6 +1703,7 @@ async function provisionUserIntoSupabase(draft: UserDraft) {
   }
 
   const profilePayload = {
+    id: existingProfile?.id ?? options?.localUserId,
     auth_user_id: authUserId,
     full_name: fullName,
     username: normalizedUsername,
@@ -1722,6 +1723,13 @@ async function provisionUserIntoSupabase(draft: UserDraft) {
     });
     ensureData(insertResult.data ?? [], insertResult.error);
   }
+
+  await insertSupabaseAuditLog(client, {
+    action: existingProfile ? "update" : "create",
+    target_table: "users",
+    target_id: existingProfile?.id ?? options?.localUserId ?? null,
+    details: `${existingProfile ? "Liaison" : "Creation"} utilisateur ${normalizedEmail}`,
+  });
 
   return {
     authUserId,
@@ -1832,6 +1840,28 @@ async function getSupabaseSessionProfile() {
   }
 
   return mapSupabaseUser(profile);
+}
+
+async function ensureSuperAdminAccessForInventoryCycle() {
+  if (window.desktopApi) {
+    return;
+  }
+
+  if (isSupabaseEnabled()) {
+    const profile = await getSupabaseSessionProfile();
+    if (profile?.role !== "Super admin") {
+      throw new Error("Seul le super administrateur peut effectuer cette action.");
+    }
+    return;
+  }
+
+  const activeUserId = Number(localStorage.getItem(webSessionStorageKey) ?? "0");
+  const users = loadJson("walikale-web-users", webSeedUsers);
+  const activeUser = users.find((user) => user.id === activeUserId) ?? null;
+
+  if (activeUser?.role !== "Super admin") {
+    throw new Error("Seul le super administrateur peut effectuer cette action.");
+  }
 }
 
 export const repository = {
@@ -3101,7 +3131,26 @@ export const repository = {
 
   async saveUser(draft: UserDraft): Promise<{ users: AppUser[]; notice?: string }> {
     if (window.desktopApi) {
+      const previousLocalStatus = await window.desktopApi.getSyncStatus();
+      let cloudAlreadyAhead = false;
+
+      if (supabase && (typeof navigator === "undefined" || navigator.onLine)) {
+        try {
+          await assertSupabaseSyncSchema();
+          const previousCloudLastChangeAt = await getCloudLastChangeAt();
+          cloudAlreadyAhead = Boolean(
+            previousCloudLastChangeAt &&
+              (!previousLocalStatus.lastSyncedAt ||
+                new Date(previousCloudLastChangeAt).getTime() > new Date(previousLocalStatus.lastSyncedAt).getTime())
+          );
+        } catch (error) {
+          console.warn("saveUser desktop preflight sync check failed", error);
+        }
+      }
+
       const users = await window.desktopApi.saveUser(draft);
+      const normalizedEmail = draft.email.trim().toLowerCase();
+      const createdLocalUser = users.find((user) => user.email.trim().toLowerCase() === normalizedEmail) ?? null;
 
       if (!supabase) {
         return {
@@ -3119,7 +3168,9 @@ export const repository = {
 
       try {
         await assertSupabaseSyncSchema();
-        const provisionedUser = await provisionUserIntoSupabase(draft);
+        const provisionedUser = await provisionUserIntoSupabase(draft, {
+          localUserId: createdLocalUser?.id,
+        });
         const linkedUsers = await window.desktopApi.linkCloudUserProfile({
           authUserId: provisionedUser.authUserId,
           fullName: provisionedUser.fullName,
@@ -3129,8 +3180,19 @@ export const repository = {
           password: provisionedUser.password,
         });
 
+        if (previousLocalStatus.pendingChanges === 0) {
+          const syncedAt = (await getCloudLastChangeAt()) ?? new Date().toISOString();
+
+          if (cloudAlreadyAhead) {
+            const cloudSnapshot = await getCloudSnapshot();
+            await window.desktopApi.importSyncSnapshot(cloudSnapshot);
+          }
+
+          await window.desktopApi.markSyncComplete(syncedAt);
+        }
+
         return {
-          users: linkedUsers,
+          users: previousLocalStatus.pendingChanges === 0 && cloudAlreadyAhead ? await window.desktopApi.listUsers() : linkedUsers,
           notice: "Utilisateur ajoute localement et compte web prepare pour les autres postes.",
         };
       } catch (error) {
@@ -3567,6 +3629,8 @@ export const repository = {
       return window.desktopApi.advanceInvoiceSeries();
     }
 
+    await ensureSuperAdminAccessForInventoryCycle();
+
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
       const current = await this.getInvoiceSeriesInfo();
@@ -3614,6 +3678,8 @@ export const repository = {
       await window.desktopApi.resetInventoryCycle();
       return;
     }
+
+    await ensureSuperAdminAccessForInventoryCycle();
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
