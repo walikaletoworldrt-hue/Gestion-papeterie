@@ -3,6 +3,7 @@ import path from "node:path";
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { LocalDatabase } from "./database";
 import { buildInvoiceHtml } from "./invoice-template";
+import type { SyncSnapshot } from "../src/types";
 import type {
   ClientDraft,
   CloudDesktopSessionDraft,
@@ -21,6 +22,7 @@ const RECEIPT_PAGE_WIDTH_MICRONS = 80000;
 let database: LocalDatabase;
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
+const BACKUP_SCHEMA_VERSION = 1;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -222,6 +224,124 @@ function registerIpc() {
   ipcMain.handle("sync:complete", (_event, syncedAt?: string | null) => {
     database.markSyncComplete(syncedAt ?? undefined);
   });
+  ipcMain.handle("backup:create", async () => createManualBackup());
+  ipcMain.handle("backup:restore", async () => restoreBackupFromDialog());
+}
+
+type BackupPayload = {
+  app: "walikale-papeterie";
+  schemaVersion: number;
+  createdAt: string;
+  appVersion: string;
+  lastSyncedAt: string | null;
+  snapshot: SyncSnapshot;
+};
+
+function getBackupRootDir() {
+  return path.join(app.getPath("documents"), "Walikale Papeterie", "Backups");
+}
+
+async function ensureBackupDir(type: "Auto" | "Manual") {
+  const dir = path.join(getBackupRootDir(), type);
+  await fs.mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function buildBackupPayload(): BackupPayload {
+  const status = database.getSyncStatus();
+  return {
+    app: "walikale-papeterie",
+    schemaVersion: BACKUP_SCHEMA_VERSION,
+    createdAt: new Date().toISOString(),
+    appVersion: app.getVersion(),
+    lastSyncedAt: status.lastSyncedAt,
+    snapshot: database.exportSyncSnapshot(),
+  };
+}
+
+async function writeBackupFile(targetPath: string) {
+  const payload = buildBackupPayload();
+  await fs.writeFile(targetPath, JSON.stringify(payload, null, 2), "utf-8");
+  return targetPath;
+}
+
+async function pruneOldAutomaticBackups(limit = 15) {
+  const autoDir = await ensureBackupDir("Auto");
+  const entries = await fs.readdir(autoDir, { withFileTypes: true });
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => entry.name)
+    .sort((left, right) => right.localeCompare(left, "en"));
+
+  const overflow = files.slice(limit);
+  await Promise.all(overflow.map((file) => fs.unlink(path.join(autoDir, file)).catch(() => {})));
+}
+
+async function createAutomaticBackup(reason: "startup" | "before-update") {
+  const autoDir = await ensureBackupDir("Auto");
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const targetPath = path.join(autoDir, `walikale-auto-${reason}-${timestamp}.json`);
+  await writeBackupFile(targetPath);
+  await pruneOldAutomaticBackups();
+  return targetPath;
+}
+
+async function createManualBackup() {
+  const manualDir = await ensureBackupDir("Manual");
+  const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  const defaultPath = path.join(manualDir, `walikale-backup-${timestamp}.json`);
+  const dialogOwner = mainWindow ?? BrowserWindow.getFocusedWindow() ?? null;
+  const result = dialogOwner
+    ? await dialog.showSaveDialog(dialogOwner, {
+        title: "Sauvegarder les donnees de Walikale Papeterie",
+        defaultPath,
+        filters: [{ name: "Sauvegarde Walikale", extensions: ["json"] }],
+      })
+    : await dialog.showSaveDialog({
+        title: "Sauvegarder les donnees de Walikale Papeterie",
+        defaultPath,
+        filters: [{ name: "Sauvegarde Walikale", extensions: ["json"] }],
+      });
+
+  if (result.canceled || !result.filePath) {
+    return null;
+  }
+
+  return writeBackupFile(result.filePath);
+}
+
+async function restoreBackupFromDialog() {
+  const backupDir = await ensureBackupDir("Manual");
+  const dialogOwner = mainWindow ?? BrowserWindow.getFocusedWindow() ?? null;
+  const result = dialogOwner
+    ? await dialog.showOpenDialog(dialogOwner, {
+        title: "Restaurer une sauvegarde Walikale Papeterie",
+        defaultPath: backupDir,
+        properties: ["openFile"],
+        filters: [{ name: "Sauvegarde Walikale", extensions: ["json"] }],
+      })
+    : await dialog.showOpenDialog({
+        title: "Restaurer une sauvegarde Walikale Papeterie",
+        defaultPath: backupDir,
+        properties: ["openFile"],
+        filters: [{ name: "Sauvegarde Walikale", extensions: ["json"] }],
+      });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const filePath = result.filePaths[0];
+  const raw = await fs.readFile(filePath, "utf-8");
+  const payload = JSON.parse(raw) as Partial<BackupPayload>;
+
+  if (payload.app !== "walikale-papeterie" || !payload.snapshot) {
+    throw new Error("Ce fichier n'est pas une sauvegarde valide de Walikale Papeterie.");
+  }
+
+  database.importSyncSnapshot(payload.snapshot);
+  database.markSyncComplete(payload.lastSyncedAt ?? undefined);
+  return filePath;
 }
 
 async function createDocumentWindow(
@@ -345,6 +465,9 @@ app.whenReady()
   .then(() => {
     database = new LocalDatabase(path.join(app.getPath("userData"), "storage"));
     registerIpc();
+    void createAutomaticBackup("startup").catch((error) => {
+      console.error("Automatic backup failed", error);
+    });
     createWindow();
   })
   .catch((error) => {

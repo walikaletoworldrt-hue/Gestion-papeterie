@@ -2548,6 +2548,22 @@ export const repository = {
     return null;
   },
 
+  async createBackup(): Promise<string | null> {
+    if (window.desktopApi) {
+      return window.desktopApi.createBackup();
+    }
+
+    return null;
+  },
+
+  async restoreBackup(): Promise<string | null> {
+    if (window.desktopApi) {
+      return window.desktopApi.restoreBackup();
+    }
+
+    return null;
+  },
+
   async createSale(draft: SaleDraft): Promise<SaleRecord[]> {
     if (window.desktopApi) {
       return window.desktopApi.createSale(draft);

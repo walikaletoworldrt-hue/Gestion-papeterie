@@ -75,4 +75,6 @@ contextBridge.exposeInMainWorld("desktopApi", {
   exportSyncSnapshot: (): Promise<SyncSnapshot> => ipcRenderer.invoke("sync:snapshot"),
   importSyncSnapshot: (snapshot: SyncSnapshot): Promise<void> => ipcRenderer.invoke("sync:import", snapshot),
   markSyncComplete: (syncedAt?: string | null): Promise<void> => ipcRenderer.invoke("sync:complete", syncedAt),
+  createBackup: (): Promise<string | null> => ipcRenderer.invoke("backup:create"),
+  restoreBackup: (): Promise<string | null> => ipcRenderer.invoke("backup:restore"),
 });

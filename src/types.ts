@@ -322,4 +322,6 @@ export type DesktopApi = {
   exportSyncSnapshot: () => Promise<SyncSnapshot>;
   importSyncSnapshot: (snapshot: SyncSnapshot) => Promise<void>;
   markSyncComplete: (syncedAt?: string | null) => Promise<void>;
+  createBackup: () => Promise<string | null>;
+  restoreBackup: () => Promise<string | null>;
 };

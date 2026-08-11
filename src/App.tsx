@@ -1894,6 +1894,69 @@ export default function App() {
     }
   }
 
+  async function handleCreateBackup() {
+    setUserError("");
+    setUserMessage("");
+
+    if (!window.desktopApi) {
+      setUserError("La sauvegarde locale complete est disponible dans l'application desktop.");
+      showToast("error", "La sauvegarde locale complete est disponible dans l'application desktop.");
+      return;
+    }
+
+    try {
+      const result = await repository.createBackup();
+      const message = result
+        ? `Sauvegarde terminee: ${result}`
+        : "Sauvegarde annulee. Les sauvegardes automatiques restent conservees dans Documents.";
+      setUserMessage(message);
+      showToast(result ? "success" : "info", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible de creer la sauvegarde.";
+      setUserError(message);
+      showToast("error", message);
+    }
+  }
+
+  async function handleRestoreBackup() {
+    setUserError("");
+    setUserMessage("");
+
+    if (!window.desktopApi) {
+      setUserError("La restauration locale complete est disponible dans l'application desktop.");
+      showToast("error", "La restauration locale complete est disponible dans l'application desktop.");
+      return;
+    }
+
+    try {
+      const result = await repository.restoreBackup();
+      if (!result) {
+        const message = "Restauration annulee.";
+        setUserMessage(message);
+        showToast("info", message);
+        return;
+      }
+
+      await loadData();
+      const restoredUser = currentUser ? await repository.restoreUserSession(currentUser.id) : null;
+      if (currentUser) {
+        setCurrentUser(restoredUser);
+        if (!restoredUser) {
+          window.sessionStorage.removeItem(sessionStorageKey);
+        }
+      }
+      const nextStatus = await repository.getSyncStatus();
+      setSyncStatus(nextStatus);
+      const message = `Restauration terminee: ${result}`;
+      setUserMessage(message);
+      showToast("success", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible de restaurer cette sauvegarde.";
+      setUserError(message);
+      showToast("error", message);
+    }
+  }
+
   async function handleChangePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -3778,6 +3841,25 @@ export default function App() {
               <div className="users-header-actions">
                 <button className="ghost-btn muted" type="button" onClick={() => void loadData()}>
                   Actualiser
+                </button>
+                <button className="ghost-btn" type="button" onClick={() => void handleCreateBackup()}>
+                  Sauvegarder
+                </button>
+                <button
+                  className="ghost-btn danger"
+                  type="button"
+                  onClick={() =>
+                    askConfirmation({
+                      title: "Restaurer une sauvegarde complete",
+                      message:
+                        "Les donnees actuelles du poste seront remplacees par celles de la sauvegarde choisie. Utilisez cette action seulement pour recuperer ou migrer un poste.",
+                      actionLabel: "Restaurer la sauvegarde",
+                      tone: "danger",
+                      onConfirm: () => handleRestoreBackup(),
+                    })
+                  }
+                >
+                  Restaurer
                 </button>
                 {canManageUsers ? (
                   <button className="primary-btn" type="button" onClick={openUserModal}>
