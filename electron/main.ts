@@ -411,10 +411,10 @@ async function getAvailablePdfPath(initialPath: string) {
 function createWindow() {
   const preloadFile = app.isPackaged ? "preload.js" : "preload.cjs";
   mainWindow = new BrowserWindow({
-    width: 1460,
-    height: 940,
-    minWidth: 1140,
-    minHeight: 720,
+    width: 1340,
+    height: 860,
+    minWidth: 980,
+    minHeight: 640,
     backgroundColor: "#eef2f7",
     title: "Walikale Papeterie",
     autoHideMenuBar: true,

@@ -2323,14 +2323,91 @@ tbody td:first-child {
 }
 
 @media (max-width: 1080px) {
-  .topbar-main,
   .login-layout,
-  .hero-card,
   .dashboard-grid,
   .stats-grid,
   .sales-grid,
   .supply-form {
     grid-template-columns: 1fr;
+  }
+
+  .topbar-main {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 0.8rem 1rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .topbar-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    gap: 0.55rem;
+  }
+
+  .status-chip,
+  .topbar-action-btn,
+  .role-pill,
+  .logout-square-btn {
+    min-height: 2.25rem;
+    padding: 0.4rem 0.8rem;
+    font-size: 0.75rem;
+  }
+
+  .user-inline-card {
+    gap: 0.55rem;
+    padding-left: 0;
+  }
+
+  .user-inline-name {
+    font-size: 0.88rem;
+  }
+
+  .brand-logo-banner {
+    min-width: 3.8rem;
+    min-height: 3.8rem;
+  }
+
+  .brand-logo {
+    max-width: 3.35rem;
+    max-height: 3.35rem;
+  }
+
+  .brand-title {
+    font-size: 0.92rem;
+  }
+
+  .brand-subtitle {
+    font-size: 0.7rem;
+  }
+
+  .global-search-shell {
+    min-height: 2.35rem;
+    padding: 0 0.75rem;
+  }
+
+  .hero-card {
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    padding: 1.2rem;
+  }
+
+  .hero-card h1 {
+    font-size: 1.45rem;
+    margin-bottom: 0.55rem;
+  }
+
+  .hero-copy {
+    font-size: 0.92rem;
+    line-height: 1.55;
+  }
+
+  .content {
+    padding: 1.2rem;
+  }
+
+  .panel-card {
+    padding: 1rem;
+    border-radius: 1.2rem;
   }
 
   .login-highlights {
@@ -2426,19 +2503,6 @@ tbody td:first-child {
   .invoice-header {
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .brand {
-    width: 100%;
-  }
-
-  .brand-subtitle {
-    max-width: none;
-  }
-
-  .brand-logo-banner {
-    min-width: 4.2rem;
-    min-height: 4.2rem;
   }
 
   .global-search-shell,
@@ -2612,6 +2676,7 @@ tbody td:first-child {
   }
 
   .hero-card {
+    grid-template-columns: 1fr;
     padding: 1.2rem;
   }
 
@@ -2682,6 +2747,7 @@ tbody td:first-child {
   }
 
   .hero-card {
+    grid-template-columns: 1fr;
     padding: 1rem;
     gap: 1rem;
   }
