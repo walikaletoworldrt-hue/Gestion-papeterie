@@ -3685,6 +3685,12 @@ export const repository = {
       const client = getSupabaseClient();
       const currentCycleId = await getCurrentSupabaseInventoryCycleId();
       const nextCycleId = currentCycleId + 1;
+      await deleteSupabaseRows("sale_items");
+      await deleteSupabaseRows("sale_service_items");
+      await deleteSupabaseRows("stock_movements");
+      await deleteSupabaseRows("sales");
+      await deleteSupabaseRows("replenishments");
+      await deleteSupabaseRows("initial_stocks");
       const result = await client.from("inventory_cycles").insert({
         label: `Cycle ${nextCycleId}`,
       });
@@ -3704,9 +3710,7 @@ export const repository = {
       quantity: 0,
       updatedAt: new Date().toISOString(),
     }));
-    const sales = loadJson("walikale-web-sales", webSeedSales);
-    const saleDetails = loadJson("walikale-web-sale-details", webSeedSaleDetails);
-    persistWeb(products, [], sales, saleDetails);
+    persistWeb(products, [], [], []);
 
     const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
     activityHistory.unshift({

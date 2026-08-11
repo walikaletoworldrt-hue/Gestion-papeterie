@@ -926,10 +926,21 @@ export class LocalDatabase {
       .prepare("SELECT id, label, started_at FROM inventory_cycles ORDER BY id DESC LIMIT 1")
       .get() as InventoryCycleRow | undefined;
     const nextCycleNumber = (lastCycle?.id ?? 0) + 1;
+    const resetTransaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM sale_items").run();
+      this.db.prepare("DELETE FROM sale_service_items").run();
+      this.db.prepare("DELETE FROM stock_movements").run();
+      this.db.prepare("DELETE FROM sales").run();
+      this.db.prepare("DELETE FROM replenishments").run();
+      this.db.prepare("DELETE FROM initial_stocks").run();
+      this.db.prepare("INSERT INTO inventory_cycles (label, started_at, user_id) VALUES (?, ?, ?)").run(
+        `Cycle ${nextCycleNumber}`,
+        now,
+        actorUserId
+      );
+    });
 
-    this.db
-      .prepare("INSERT INTO inventory_cycles (label, started_at, user_id) VALUES (?, ?, ?)")
-      .run(`Cycle ${nextCycleNumber}`, now, actorUserId);
+    resetTransaction();
 
     this.logAction(
       actorUserId,
