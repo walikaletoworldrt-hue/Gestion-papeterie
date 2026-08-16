@@ -19,6 +19,7 @@ import type {
   SaleRecord,
   Service,
   ServiceDraft,
+  SyncConflictBucket,
   SyncConflictPreview,
   SyncStatus,
   StockRow,
@@ -139,6 +140,11 @@ type ExpenseReportState = {
 
 type SyncConflictState = {
   preview: SyncConflictPreview;
+} | null;
+
+type SyncSelectionState = {
+  buckets: SyncConflictBucket[];
+  selectedKeys: string[];
 } | null;
 
 type ReplenishmentDraft = {
@@ -962,6 +968,8 @@ export default function App() {
   const [passwordError, setPasswordError] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [syncConflictState, setSyncConflictState] = useState<SyncConflictState>(null);
+  const [syncSelectionState, setSyncSelectionState] = useState<SyncSelectionState>(null);
+  const [pendingSyncRequestKeys, setPendingSyncRequestKeys] = useState<string[] | null>(null);
   const [expenseReportBusy, setExpenseReportBusy] = useState(false);
   const isSuperAdmin = currentUser?.role === "Super admin";
   const isAdministrator = currentUser?.role === "Administrateur";
@@ -2392,8 +2400,13 @@ export default function App() {
   }
 
   async function handleSyncNow() {
+    await handleSyncNowWithSelection();
+  }
+
+  async function handleSyncNowWithSelection(selectedKeys?: string[]) {
     try {
       setSyncBusy(true);
+      setPendingSyncRequestKeys(selectedKeys && selectedKeys.length > 0 ? selectedKeys : null);
       const currentSyncStatus = await repository.getSyncStatus();
 
       if (currentSyncStatus.pendingChanges > 0 && currentSyncStatus.cloudHasChanges) {
@@ -2404,10 +2417,13 @@ export default function App() {
         return;
       }
 
-      const nextStatus = await repository.syncDesktopToCloud();
+      const nextStatus = await repository.syncDesktopToCloud(false, selectedKeys);
       setSyncStatus(nextStatus);
+      setSyncSelectionState(null);
+      setPendingSyncRequestKeys(null);
       showToast("success", "Synchronisation vers Supabase terminee.");
     } catch (error) {
+      setPendingSyncRequestKeys(null);
       showToast("error", error instanceof Error ? error.message : "Synchronisation impossible.");
     } finally {
       setSyncBusy(false);
@@ -2417,11 +2433,14 @@ export default function App() {
   async function handleKeepLocalDuringConflict() {
     try {
       setSyncBusy(true);
-      const nextStatus = await repository.syncDesktopToCloud(true);
+      const nextStatus = await repository.syncDesktopToCloud(true, pendingSyncRequestKeys ?? undefined);
       setSyncStatus(nextStatus);
       setSyncConflictState(null);
+      setSyncSelectionState(null);
+      setPendingSyncRequestKeys(null);
       showToast("success", "Les donnees locales ont ete poussees vers Supabase.");
     } catch (error) {
+      setPendingSyncRequestKeys(null);
       showToast("error", error instanceof Error ? error.message : "Synchronisation impossible.");
     } finally {
       setSyncBusy(false);
@@ -2434,9 +2453,12 @@ export default function App() {
       const nextStatus = await repository.pullCloudToDesktop();
       setSyncStatus(nextStatus);
       setSyncConflictState(null);
+      setSyncSelectionState(null);
+      setPendingSyncRequestKeys(null);
       await loadData();
       showToast("success", "Les donnees du cloud ont remplace les donnees locales.");
     } catch (error) {
+      setPendingSyncRequestKeys(null);
       showToast("error", error instanceof Error ? error.message : "Recuperation du cloud impossible.");
     } finally {
       setSyncBusy(false);
@@ -2519,22 +2541,99 @@ export default function App() {
   }
 
   function handleSyncButtonClick() {
-    if (!window.desktopApi) {
-      showToast("error", "La synchronisation locale vers Supabase est reservee a l'application desktop.");
-      return;
-    }
-
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      showToast("info", "Mode hors ligne actif. Vous pouvez continuer a travailler localement puis synchroniser des que la connexion revient.");
-      return;
-    }
-
-    if (!repository.hasSupabaseConfig) {
-      showToast("error", "Supabase n'est pas configure sur cette version de l'application. Ajoutez la configuration puis regenerez l'executable.");
+    if (!ensureSyncReady()) {
       return;
     }
 
     void handleSyncNow();
+  }
+
+  function ensureSyncReady() {
+    if (!window.desktopApi) {
+      showToast("error", "La synchronisation locale vers Supabase est reservee a l'application desktop.");
+      return false;
+    }
+
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      showToast("info", "Mode hors ligne actif. Vous pouvez continuer a travailler localement puis synchroniser des que la connexion revient.");
+      return false;
+    }
+
+    if (!repository.hasSupabaseConfig) {
+      showToast("error", "Supabase n'est pas configure sur cette version de l'application. Ajoutez la configuration puis regenerez l'executable.");
+      return false;
+    }
+
+    return true;
+  }
+
+  async function handleOpenPendingSyncSelector() {
+    if (!ensureSyncReady()) {
+      return;
+    }
+
+    try {
+      const overview = await repository.getPendingSyncOverview();
+      if (overview.buckets.length === 0) {
+        showToast("info", "Aucun changement local en attente pour le moment.");
+        return;
+      }
+
+      setSyncSelectionState({
+        buckets: overview.buckets,
+        selectedKeys: overview.buckets.map((bucket) => bucket.key),
+      });
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible de charger les changements en attente.");
+    }
+  }
+
+  function handleToggleSyncBucket(bucketKey: string) {
+    setSyncSelectionState((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const selectedKeys = current.selectedKeys.includes(bucketKey)
+        ? current.selectedKeys.filter((key) => key !== bucketKey)
+        : [...current.selectedKeys, bucketKey];
+
+      return {
+        ...current,
+        selectedKeys,
+      };
+    });
+  }
+
+  function handleSelectAllSyncBuckets() {
+    setSyncSelectionState((current) =>
+      current
+        ? {
+            ...current,
+            selectedKeys: current.buckets.map((bucket) => bucket.key),
+          }
+        : current
+    );
+  }
+
+  function handleClearSyncBuckets() {
+    setSyncSelectionState((current) =>
+      current
+        ? {
+            ...current,
+            selectedKeys: [],
+          }
+        : current
+    );
+  }
+
+  async function handleSyncSelectedBuckets() {
+    if (!syncSelectionState || syncSelectionState.selectedKeys.length === 0) {
+      showToast("info", "Choisissez au moins une rubrique a synchroniser.");
+      return;
+    }
+
+    await handleSyncNowWithSelection(syncSelectionState.selectedKeys);
   }
 
   const filteredUsers = users.filter((item) => {
@@ -2786,15 +2885,20 @@ export default function App() {
             <span className={`status-chip ${syncStatus.online && repository.hasSupabaseConfig ? "online" : ""}`}>
               {!repository.hasSupabaseConfig ? "Sync non configuree" : syncStatus.online ? "En ligne" : "Hors ligne"}
             </span>
-            <span className={`status-chip sync-chip ${syncStatus.cloudHasChanges ? "warning" : ""}`}>
-              {syncStatus.cloudHasChanges
-                ? "Cloud modifie"
-                : syncStatus.lastSyncedAt
-                  ? syncStatus.pendingChanges > 0
-                    ? `En attente (${syncStatus.pendingChanges})`
-                    : "Derniere sync OK"
-                  : "Sync non lancee"}
-            </span>
+            {syncStatus.pendingChanges > 0 ? (
+              <button
+                className={`status-chip sync-chip status-chip-button ${syncStatus.cloudHasChanges ? "warning" : ""}`}
+                type="button"
+                onClick={() => void handleOpenPendingSyncSelector()}
+                disabled={syncBusy}
+              >
+                {`En attente (${syncStatus.pendingChanges})`}
+              </button>
+            ) : (
+              <span className={`status-chip sync-chip ${syncStatus.cloudHasChanges ? "warning" : ""}`}>
+                {syncStatus.cloudHasChanges ? "Cloud modifie" : syncStatus.lastSyncedAt ? "Derniere sync OK" : "Sync non lancee"}
+              </span>
+            )}
             <button
               className="topbar-action-btn"
               type="button"
@@ -2843,11 +2947,24 @@ export default function App() {
                 <div className="hero-story-grid">
                   <article className="hero-story-card">
                     <span className="hero-story-label">A propos de l'entreprise</span>
-                    <h3>Walikale to World accompagne la gestion quotidienne de la papeterie.</h3>
+                    <h3>Walikale to World est un etablissement de reference qui rapproche la technologie des besoins quotidiens.</h3>
                     <p>
-                      La boutique centralise la vente des fournitures, les services, les depenses,
-                      le stock et le suivi des utilisateurs depuis un espace unique, simple et clair.
+                      Depuis plus de 4 ans, l'entreprise facilite l'acces a Internet, accompagne la
+                      population par des formations en informatique et propose des services pratiques
+                      tels que le secretariat, la papeterie, les impressions et d'autres prestations
+                      de proximite.
                     </p>
+                    <p className="hero-story-note">
+                      Sa mission est d'offrir un service moderne, utile et accessible, avec une
+                      organisation claire pour mieux servir les clients au quotidien.
+                    </p>
+                    <div className="hero-activity-row">
+                      <span className="hero-activity-chip">Internet</span>
+                      <span className="hero-activity-chip">Formation</span>
+                      <span className="hero-activity-chip">Secretariat</span>
+                      <span className="hero-activity-chip">Papeterie</span>
+                      <span className="hero-activity-chip">Impression</span>
+                    </div>
                   </article>
 
                   <article className="hero-story-card accent">
@@ -5047,6 +5164,57 @@ export default function App() {
                 onClick={() => void handleConfirmAction()}
               >
                 {confirmBusy ? "Traitement..." : confirmState.actionLabel}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {syncSelectionState ? (
+        <Modal title="Choisir les elements a synchroniser" onClose={() => !syncBusy && setSyncSelectionState(null)}>
+          <div className="confirm-stack">
+            <p className="confirm-text">
+              Choisissez les rubriques locales que vous voulez envoyer maintenant vers Supabase. Les elements non coches
+              resteront en attente sur ce poste.
+            </p>
+            <div className="sync-selection-toolbar">
+              <button className="ghost-btn" type="button" disabled={syncBusy} onClick={handleSelectAllSyncBuckets}>
+                Tout cocher
+              </button>
+              <button className="ghost-btn muted" type="button" disabled={syncBusy} onClick={handleClearSyncBuckets}>
+                Tout decocher
+              </button>
+            </div>
+            <div className="sync-selection-list">
+              {syncSelectionState.buckets.map((bucket) => {
+                const checked = syncSelectionState.selectedKeys.includes(bucket.key);
+                return (
+                  <label className={`sync-selection-row ${checked ? "selected" : ""}`} key={bucket.key}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={syncBusy}
+                      onChange={() => handleToggleSyncBucket(bucket.key)}
+                    />
+                    <span className="sync-selection-copy">
+                      <strong>{bucket.label}</strong>
+                      <small>{bucket.count} changement(s) en attente</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="ghost-btn muted"
+                type="button"
+                disabled={syncBusy}
+                onClick={() => setSyncSelectionState(null)}
+              >
+                Fermer
+              </button>
+              <button className="primary-btn" type="button" disabled={syncBusy} onClick={() => void handleSyncSelectedBuckets()}>
+                {syncBusy ? "Synchronisation..." : "Synchroniser la selection"}
               </button>
             </div>
           </div>

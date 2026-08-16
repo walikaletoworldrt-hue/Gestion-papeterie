@@ -217,12 +217,16 @@ function registerIpc() {
   ipcMain.handle("users:delete", (_event, userId: number) => database.deleteUser(userId));
   ipcMain.handle("stock:current", () => database.getCurrentStock());
   ipcMain.handle("sync:status", () => database.getSyncStatus());
+  ipcMain.handle("sync:pending-overview", () => database.getPendingSyncOverview());
   ipcMain.handle("sync:snapshot", () => database.exportSyncSnapshot());
   ipcMain.handle("sync:import", (_event, snapshot) => {
     database.importSyncSnapshot(snapshot);
   });
   ipcMain.handle("sync:complete", (_event, syncedAt?: string | null) => {
     database.markSyncComplete(syncedAt ?? undefined);
+  });
+  ipcMain.handle("sync:complete-buckets", (_event, tables: string[], syncedAt?: string | null) => {
+    database.markSyncBucketsComplete(tables, syncedAt ?? undefined);
   });
   ipcMain.handle("backup:create", async () => createManualBackup());
   ipcMain.handle("backup:restore", async () => restoreBackupFromDialog());

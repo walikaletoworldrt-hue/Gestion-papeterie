@@ -253,6 +253,11 @@ export type SyncConflictBucket = {
   count: number;
 };
 
+export type SyncPendingOverview = {
+  buckets: SyncConflictBucket[];
+  latestChangedAt: string | null;
+};
+
 export type SyncConflictPreview = {
   localPendingChanges: number;
   localLastChangeAt: string | null;
@@ -318,10 +323,12 @@ export type DesktopApi = {
   advanceInvoiceSeries: () => Promise<InvoiceSeriesInfo>;
   resetInventoryCycle: () => Promise<void>;
   getSyncStatus: () => Promise<SyncStatus>;
+  getPendingSyncOverview: () => Promise<SyncPendingOverview>;
   getSyncConflictPreview: () => Promise<SyncConflictPreview>;
   exportSyncSnapshot: () => Promise<SyncSnapshot>;
   importSyncSnapshot: (snapshot: SyncSnapshot) => Promise<void>;
   markSyncComplete: (syncedAt?: string | null) => Promise<void>;
+  markSyncBucketsComplete: (tables: string[], syncedAt?: string | null) => Promise<void>;
   createBackup: () => Promise<string | null>;
   restoreBackup: () => Promise<string | null>;
 };

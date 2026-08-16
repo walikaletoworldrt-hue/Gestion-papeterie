@@ -21,7 +21,9 @@ import type {
   SaleServiceItemDraft,
   SaleDraft,
   SaleRecord,
+  SyncConflictBucket,
   SyncConflictPreview,
+  SyncPendingOverview,
   SyncSnapshot,
   SyncStatus,
   StockRow,
@@ -1305,23 +1307,60 @@ async function assertSupabaseSyncSchema() {
   }
 }
 
-const syncBucketLabels: Record<string, string> = {
-  products: "Produits",
-  services: "Services",
-  clients: "Clients",
-  expenses: "Depenses",
-  sales: "Ventes",
-  sale_service_items: "Services vendus",
-  replenishments: "Reapprovisionnements",
-  initial_stocks: "Stock initial",
-  stock_movements: "Mouvements de stock",
-  users: "Utilisateurs",
-  invoice_sequences: "Facturation",
-  inventory_cycles: "Inventaire",
+const syncBucketDefinitions: Record<string, { label: string; tables: string[] }> = {
+  products: { label: "Produits", tables: ["products"] },
+  services: { label: "Services", tables: ["services"] },
+  clients: { label: "Clients", tables: ["clients"] },
+  expenses: { label: "Depenses", tables: ["expenses"] },
+  initial_stocks: { label: "Stock initial", tables: ["initial_stocks"] },
+  replenishments: { label: "Reapprovisionnements", tables: ["replenishments"] },
+  sales: { label: "Ventes et mouvements", tables: ["sales", "sale_items", "sale_service_items", "stock_movements"] },
+  users: { label: "Utilisateurs", tables: ["users"] },
+  invoice_sequences: { label: "Facturation", tables: ["invoice_sequences"] },
+  inventory_cycles: { label: "Inventaire", tables: ["inventory_cycles"] },
 };
 
+const syncTableToBucketKey = new Map(
+  Object.entries(syncBucketDefinitions).flatMap(([bucketKey, definition]) =>
+    definition.tables.map((table) => [table, bucketKey] as const)
+  )
+);
+
 function getSyncBucketLabel(key: string) {
-  return syncBucketLabels[key] ?? key.split("_").join(" ");
+  return syncBucketDefinitions[key]?.label ?? key.split("_").join(" ");
+}
+
+function normalizeSyncBucketKey(key: string) {
+  return syncTableToBucketKey.get(key) ?? key;
+}
+
+function getTablesForSyncBucketKeys(keys: string[]) {
+  return [...new Set(keys.flatMap((key) => syncBucketDefinitions[key]?.tables ?? [key]))];
+}
+
+function groupSyncBuckets(
+  buckets: Array<{ key: string; label: string; count: number }>
+): SyncConflictBucket[] {
+  const grouped = new Map<string, SyncConflictBucket>();
+
+  buckets.forEach((bucket) => {
+    const normalizedKey = normalizeSyncBucketKey(bucket.key);
+    const existing = grouped.get(normalizedKey);
+    if (existing) {
+      existing.count += bucket.count;
+      return;
+    }
+
+    grouped.set(normalizedKey, {
+      key: normalizedKey,
+      label: getSyncBucketLabel(normalizedKey),
+      count: bucket.count,
+    });
+  });
+
+  return [...grouped.values()].sort(
+    (left, right) => right.count - left.count || left.label.localeCompare(right.label, "fr", { sensitivity: "base" })
+  );
 }
 
 function buildSyncBucketsFromAuditLogs(
@@ -1340,7 +1379,7 @@ function buildSyncBucketsFromAuditLogs(
       return;
     }
 
-    const key = row.target_table ?? "autre";
+    const key = normalizeSyncBucketKey(row.target_table ?? "autre");
     counts.set(key, (counts.get(key) ?? 0) + 1);
 
     if (createdAt && (!latestChangedAt || new Date(createdAt).getTime() > new Date(latestChangedAt).getTime())) {
@@ -1422,8 +1461,8 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
     throw new Error("Apercu de conflit reserve a l'application desktop.");
   }
 
-  const [localSnapshot, cloudAuditLogsResult] = await Promise.all([
-    window.desktopApi.exportSyncSnapshot(),
+  const [localOverview, cloudAuditLogsResult] = await Promise.all([
+    window.desktopApi.getPendingSyncOverview(),
     getSupabaseClient()
       .from("audit_logs")
       .select("target_table, created_at")
@@ -1431,22 +1470,107 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
       .limit(500),
   ]);
 
-  const localAuditLogs = (localSnapshot as SyncSnapshot).auditLogs as Array<{ target_table?: string | null; created_at?: string | null }>;
   const cloudAuditLogs = ensureData(cloudAuditLogsResult.data, cloudAuditLogsResult.error) as Array<{
     target_table?: string | null;
     created_at?: string | null;
   }>;
 
-  const localSummary = buildSyncBucketsFromAuditLogs(localAuditLogs, localStatus.lastSyncedAt);
   const cloudSummary = buildSyncBucketsFromAuditLogs(cloudAuditLogs, localStatus.lastSyncedAt);
+  const groupedLocalBuckets = groupSyncBuckets(localOverview.buckets);
 
   return {
     localPendingChanges: localStatus.pendingChanges,
-    localLastChangeAt: localSummary.latestChangedAt,
+    localLastChangeAt: localOverview.latestChangedAt,
     cloudLastChangeAt: cloudSummary.latestChangedAt ?? cloudLastChangeAt,
-    localBuckets: localSummary.buckets,
+    localBuckets: groupedLocalBuckets,
     cloudBuckets: cloudSummary.buckets,
   };
+}
+
+function createEmptySyncSnapshot(): SyncSnapshot {
+  return {
+    users: [],
+    products: [],
+    services: [],
+    clients: [],
+    expenses: [],
+    initialStocks: [],
+    replenishments: [],
+    sales: [],
+    saleItems: [],
+    saleServiceItems: [],
+    stockMovements: [],
+    auditLogs: [],
+    invoiceSequences: [],
+    inventoryCycles: [],
+  };
+}
+
+function filterSyncSnapshot(snapshot: SyncSnapshot, selectedTables: string[] | null): SyncSnapshot {
+  if (!selectedTables || selectedTables.length === 0) {
+    return snapshot;
+  }
+
+  const included = new Set(selectedTables);
+  const filtered = createEmptySyncSnapshot();
+
+  if (included.has("users")) filtered.users = snapshot.users ?? [];
+  if (included.has("products")) filtered.products = snapshot.products ?? [];
+  if (included.has("services")) filtered.services = snapshot.services ?? [];
+  if (included.has("clients")) filtered.clients = snapshot.clients ?? [];
+  if (included.has("expenses")) filtered.expenses = snapshot.expenses ?? [];
+  if (included.has("initial_stocks")) filtered.initialStocks = snapshot.initialStocks ?? [];
+  if (included.has("replenishments")) filtered.replenishments = snapshot.replenishments ?? [];
+  if (included.has("sales")) filtered.sales = snapshot.sales ?? [];
+  if (included.has("sale_items")) filtered.saleItems = snapshot.saleItems ?? [];
+  if (included.has("sale_service_items")) filtered.saleServiceItems = snapshot.saleServiceItems ?? [];
+  if (included.has("stock_movements")) filtered.stockMovements = snapshot.stockMovements ?? [];
+  if (included.has("invoice_sequences")) filtered.invoiceSequences = snapshot.invoiceSequences ?? [];
+  if (included.has("inventory_cycles")) filtered.inventoryCycles = snapshot.inventoryCycles ?? [];
+
+  filtered.auditLogs = (snapshot.auditLogs ?? []).filter((row) => {
+    const targetTable = String(row.target_table ?? "");
+    return included.has(targetTable);
+  });
+
+  return filtered;
+}
+
+async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTables: string[] | null, canSyncUsers: boolean) {
+  const included = selectedTables ? new Set(selectedTables) : null;
+  const hasTable = (table: string) => !included || included.has(table);
+
+  if (hasTable("sale_items")) await deleteSupabaseRows("sale_items");
+  if (hasTable("sale_service_items")) await deleteSupabaseRows("sale_service_items");
+  if (hasTable("stock_movements")) await deleteSupabaseRows("stock_movements");
+  if (hasTable("sales")) await deleteSupabaseRows("sales");
+  if (hasTable("replenishments")) await deleteSupabaseRows("replenishments");
+  if (hasTable("initial_stocks")) await deleteSupabaseRows("initial_stocks");
+  if (hasTable("audit_logs")) await deleteSupabaseRows("audit_logs");
+  if (hasTable("expenses")) await deleteSupabaseRows("expenses");
+  if (hasTable("services")) await deleteSupabaseRows("services");
+  if (hasTable("clients")) await deleteSupabaseRows("clients");
+  if (hasTable("products")) await deleteSupabaseRows("products");
+  if (hasTable("inventory_cycles")) await deleteSupabaseRows("inventory_cycles");
+  if (hasTable("invoice_sequences")) await deleteSupabaseRows("invoice_sequences");
+
+  if (canSyncUsers && hasTable("users")) {
+    await syncUsersToSupabase(syncSnapshot.users ?? []);
+  }
+
+  if (hasTable("products")) await insertSupabaseRows("products", syncSnapshot.products);
+  if (hasTable("services")) await insertSupabaseRows("services", syncSnapshot.services);
+  if (hasTable("clients")) await insertSupabaseRows("clients", syncSnapshot.clients);
+  if (hasTable("expenses")) await insertSupabaseRows("expenses", syncSnapshot.expenses ?? []);
+  if (hasTable("inventory_cycles")) await insertSupabaseRows("inventory_cycles", syncSnapshot.inventoryCycles);
+  if (hasTable("invoice_sequences")) await insertSupabaseRows("invoice_sequences", syncSnapshot.invoiceSequences);
+  if (hasTable("initial_stocks")) await insertSupabaseRows("initial_stocks", syncSnapshot.initialStocks);
+  if (hasTable("replenishments")) await insertSupabaseRows("replenishments", syncSnapshot.replenishments);
+  if (hasTable("sales")) await insertSupabaseRows("sales", syncSnapshot.sales);
+  if (hasTable("sale_items")) await insertSupabaseRows("sale_items", syncSnapshot.saleItems);
+  if (hasTable("sale_service_items")) await insertSupabaseRows("sale_service_items", syncSnapshot.saleServiceItems);
+  if (hasTable("stock_movements")) await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
+  if (hasTable("audit_logs")) await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
 }
 
 async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>) {
@@ -1889,6 +2013,21 @@ export const repository = {
     };
   },
 
+  async getPendingSyncOverview(): Promise<SyncPendingOverview> {
+    if (!window.desktopApi) {
+      return {
+        buckets: [],
+        latestChangedAt: null,
+      };
+    }
+
+    const overview = await window.desktopApi.getPendingSyncOverview();
+    return {
+      ...overview,
+      buckets: groupSyncBuckets(overview.buckets),
+    };
+  },
+
   async getSyncConflictPreview(): Promise<SyncConflictPreview> {
     try {
       if (!window.desktopApi) {
@@ -1912,7 +2051,7 @@ export const repository = {
     }
   },
 
-  async syncDesktopToCloud(forcePush = false): Promise<SyncStatus> {
+  async syncDesktopToCloud(forcePush = false, selectedBucketKeys?: string[]): Promise<SyncStatus> {
     try {
       if (!window.desktopApi) {
         throw new Error("La synchronisation locale est reservee a l'application desktop.");
@@ -1930,6 +2069,8 @@ export const repository = {
       const syncCredentials = (await window.desktopApi.getCurrentSyncCredentials()) as DesktopSyncCredentials;
       const canSyncUsers = syncCredentials.role === "Super admin";
       const localStatus = await window.desktopApi.getSyncStatus();
+      const selectedTables =
+        selectedBucketKeys && selectedBucketKeys.length > 0 ? getTablesForSyncBucketKeys(selectedBucketKeys) : null;
       const cloudLastChangeAt = await getCloudLastChangeAt();
       const cloudHasChanges = Boolean(
         cloudLastChangeAt &&
@@ -1948,43 +2089,33 @@ export const repository = {
       }
 
       const snapshot = await window.desktopApi.exportSyncSnapshot();
-      const syncSnapshot = snapshot as SyncSnapshot;
+      const syncSnapshot = filterSyncSnapshot(snapshot as SyncSnapshot, selectedTables);
+      const changedTables = selectedTables ?? [
+        "users",
+        "products",
+        "services",
+        "clients",
+        "expenses",
+        "inventory_cycles",
+        "invoice_sequences",
+        "initial_stocks",
+        "replenishments",
+        "sales",
+        "sale_items",
+        "sale_service_items",
+        "stock_movements",
+        "audit_logs",
+      ];
 
-      await deleteSupabaseRows("sale_items");
-      await deleteSupabaseRows("sale_service_items");
-      await deleteSupabaseRows("stock_movements");
-      await deleteSupabaseRows("sales");
-      await deleteSupabaseRows("replenishments");
-      await deleteSupabaseRows("initial_stocks");
-      await deleteSupabaseRows("audit_logs");
-      await deleteSupabaseRows("expenses");
-      await deleteSupabaseRows("services");
-      await deleteSupabaseRows("clients");
-      await deleteSupabaseRows("products");
-      await deleteSupabaseRows("inventory_cycles");
-      await deleteSupabaseRows("invoice_sequences");
-
-      if (canSyncUsers) {
-        await syncUsersToSupabase(syncSnapshot.users ?? []);
-      }
-
-      await insertSupabaseRows("products", syncSnapshot.products);
-      await insertSupabaseRows("services", syncSnapshot.services);
-      await insertSupabaseRows("clients", syncSnapshot.clients);
-      await insertSupabaseRows("expenses", syncSnapshot.expenses ?? []);
-      await insertSupabaseRows("inventory_cycles", syncSnapshot.inventoryCycles);
-      await insertSupabaseRows("invoice_sequences", syncSnapshot.invoiceSequences);
-      await insertSupabaseRows("initial_stocks", syncSnapshot.initialStocks);
-      await insertSupabaseRows("replenishments", syncSnapshot.replenishments);
-      await insertSupabaseRows("sales", syncSnapshot.sales);
-      await insertSupabaseRows("sale_items", syncSnapshot.saleItems);
-      await insertSupabaseRows("sale_service_items", syncSnapshot.saleServiceItems);
-      await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
-      await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
+      await replaceSupabaseSyncTables(syncSnapshot, selectedTables ? [...selectedTables, "audit_logs"] : null, canSyncUsers);
       await syncSupabaseIdentitySequences();
 
       const syncedAt = new Date().toISOString();
-      await window.desktopApi.markSyncComplete(syncedAt);
+      if (selectedTables && selectedTables.length > 0) {
+        await window.desktopApi.markSyncBucketsComplete(changedTables, syncedAt);
+      } else {
+        await window.desktopApi.markSyncComplete(syncedAt);
+      }
       return this.getSyncStatus();
     } catch (error) {
       throw normalizeSupabaseSyncError(error);

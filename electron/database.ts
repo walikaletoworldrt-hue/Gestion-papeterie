@@ -26,6 +26,8 @@ import type {
   SaleServiceItemDraft,
   SaleDraft,
   SaleRecord,
+  SyncConflictBucket,
+  SyncPendingOverview,
   SyncSnapshot,
   SyncStatus,
   StockRow,
@@ -429,6 +431,7 @@ export class LocalDatabase {
         source_device TEXT,
         source_platform TEXT,
         created_at TEXT NOT NULL,
+        synced_at TEXT,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
       );
 
@@ -542,6 +545,20 @@ export class LocalDatabase {
 
     if (!names.has("source_platform")) {
       this.db.exec("ALTER TABLE audit_logs ADD COLUMN source_platform TEXT");
+    }
+
+    if (!names.has("synced_at")) {
+      this.db.exec("ALTER TABLE audit_logs ADD COLUMN synced_at TEXT");
+      const syncRow = this.db
+        .prepare("SELECT last_synced_at FROM sync_settings WHERE id = 1")
+        .get() as { last_synced_at: string | null } | undefined;
+      const lastSyncedAt = syncRow?.last_synced_at ?? null;
+
+      if (lastSyncedAt) {
+        this.db
+          .prepare("UPDATE audit_logs SET synced_at = created_at WHERE synced_at IS NULL AND created_at <= ?")
+          .run(lastSyncedAt);
+      }
     }
   }
 
@@ -957,17 +974,51 @@ export class LocalDatabase {
       .prepare("SELECT last_synced_at FROM sync_settings WHERE id = 1")
       .get() as { last_synced_at: string | null } | undefined;
     const lastSyncedAt = row?.last_synced_at ?? null;
-    const pendingRow = lastSyncedAt
-      ? (this.db
-          .prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE created_at > ?")
-          .get(lastSyncedAt) as { count: number })
-      : (this.db.prepare("SELECT COUNT(*) AS count FROM audit_logs").get() as { count: number });
+    const pendingRow = this.db
+      .prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE synced_at IS NULL")
+      .get() as { count: number };
 
     return {
       available: true,
       online: true,
       lastSyncedAt,
       pendingChanges: pendingRow.count,
+    };
+  }
+
+  getPendingSyncOverview(): SyncPendingOverview {
+    const rows = this.db
+      .prepare(
+        `
+          SELECT target_table, COUNT(*) AS count, MAX(created_at) AS latest_changed_at
+          FROM audit_logs
+          WHERE synced_at IS NULL
+          GROUP BY target_table
+        `
+      )
+      .all() as Array<{ target_table: string; count: number; latest_changed_at: string | null }>;
+
+    const buckets: SyncConflictBucket[] = rows.map((row) => ({
+      key: row.target_table,
+      label: row.target_table,
+      count: row.count,
+    }));
+
+    const latestChangedAt = rows.reduce<string | null>((latest, row) => {
+      if (!row.latest_changed_at) {
+        return latest;
+      }
+
+      if (!latest || new Date(row.latest_changed_at).getTime() > new Date(latest).getTime()) {
+        return row.latest_changed_at;
+      }
+
+      return latest;
+    }, null);
+
+    return {
+      buckets,
+      latestChangedAt,
     };
   }
 
@@ -1053,8 +1104,8 @@ export class LocalDatabase {
         VALUES (@id, @product_id, @movement_type, @quantity, @source_table, @source_id, @movement_date, @cycle_id, @user_id)
       `);
       const insertAuditLogs = this.db.prepare(`
-        INSERT INTO audit_logs (id, user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at)
-        VALUES (@id, @user_id, @action, @target_table, @target_id, @details, @actor_name, @actor_username, @source_device, @source_platform, @created_at)
+        INSERT INTO audit_logs (id, user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at, synced_at)
+        VALUES (@id, @user_id, @action, @target_table, @target_id, @details, @actor_name, @actor_username, @source_device, @source_platform, @created_at, @synced_at)
       `);
       const insertInvoiceSequences = this.db.prepare(`
         INSERT INTO invoice_sequence_settings (id, current_year, series_index, next_number, updated_at)
@@ -1078,7 +1129,8 @@ export class LocalDatabase {
       (snapshot.saleItems ?? []).forEach((row) => insertSaleItems.run(row));
       (snapshot.saleServiceItems ?? []).forEach((row) => insertSaleServiceItems.run(row));
       (snapshot.stockMovements ?? []).forEach((row) => insertStockMovements.run(row));
-      (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run(row));
+      const importedAt = new Date().toISOString();
+      (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run({ ...row, synced_at: importedAt }));
     });
 
     replaceTransaction();
@@ -1087,6 +1139,24 @@ export class LocalDatabase {
   markSyncComplete(syncedAt?: string) {
     this.ensureSyncSettings();
     const timestamp = syncedAt ?? new Date().toISOString();
+    this.db.prepare("UPDATE audit_logs SET synced_at = ? WHERE synced_at IS NULL").run(timestamp);
+    this.db
+      .prepare("UPDATE sync_settings SET last_synced_at = ?, updated_at = ? WHERE id = 1")
+      .run(timestamp, new Date().toISOString());
+  }
+
+  markSyncBucketsComplete(targetTables: string[], syncedAt?: string) {
+    this.ensureSyncSettings();
+    const timestamp = syncedAt ?? new Date().toISOString();
+    const normalizedTables = [...new Set(targetTables.map((table) => table.trim()).filter(Boolean))];
+
+    if (normalizedTables.length > 0) {
+      const placeholders = normalizedTables.map(() => "?").join(", ");
+      this.db
+        .prepare(`UPDATE audit_logs SET synced_at = ? WHERE synced_at IS NULL AND target_table IN (${placeholders})`)
+        .run(timestamp, ...normalizedTables);
+    }
+
     this.db
       .prepare("UPDATE sync_settings SET last_synced_at = ?, updated_at = ? WHERE id = 1")
       .run(timestamp, new Date().toISOString());
@@ -1978,8 +2048,8 @@ export class LocalDatabase {
     const actor = userId ? this.getUserRowById(userId) : undefined;
     this.db
       .prepare(`
-        INSERT INTO audit_logs (user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO audit_logs (user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         userId,
@@ -1991,7 +2061,8 @@ export class LocalDatabase {
         actor?.username ?? null,
         this.getSourceDeviceLabel(),
         "desktop",
-        new Date().toISOString()
+        new Date().toISOString(),
+        null
       );
   }
 

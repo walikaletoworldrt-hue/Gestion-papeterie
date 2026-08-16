@@ -427,6 +427,21 @@ button {
   border: 1px solid rgba(232, 194, 94, 0.85);
 }
 
+.status-chip-button {
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.status-chip-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(15, 35, 65, 0.12);
+}
+
+.status-chip-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .topbar-action-btn {
   min-height: 2.6rem;
   padding: 0.55rem 1rem;
@@ -607,6 +622,31 @@ h2 {
   margin: 0;
   color: var(--muted);
   line-height: 1.75;
+}
+
+.hero-story-note {
+  margin-top: 0.85rem !important;
+  color: #35527c !important;
+}
+
+.hero-activity-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 1rem;
+}
+
+.hero-activity-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.9rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  background: #edf4ff;
+  border: 1px solid #cfe0f7;
+  color: #214a84;
+  font-size: 0.77rem;
+  font-weight: 700;
 }
 
 .hero-feature-list {
@@ -1630,6 +1670,53 @@ h2 {
 .confirm-stack {
   display: grid;
   gap: 1rem;
+}
+
+.sync-selection-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.sync-selection-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.sync-selection-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid #d9e4f2;
+  border-radius: 1rem;
+  background: #fbfdff;
+  cursor: pointer;
+}
+
+.sync-selection-row.selected {
+  border-color: #a9c6ea;
+  background: #f3f8ff;
+  box-shadow: 0 8px 18px rgba(15, 35, 65, 0.04);
+}
+
+.sync-selection-row input {
+  margin-top: 0.2rem;
+  accent-color: var(--brand);
+}
+
+.sync-selection-copy {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.sync-selection-copy strong {
+  color: #16324f;
+}
+
+.sync-selection-copy small {
+  color: #60799a;
+  font-size: 0.82rem;
 }
 
 .expense-report-sheet {

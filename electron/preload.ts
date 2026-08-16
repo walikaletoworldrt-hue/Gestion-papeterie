@@ -72,9 +72,12 @@ contextBridge.exposeInMainWorld("desktopApi", {
   advanceInvoiceSeries: (): Promise<InvoiceSeriesInfo> => ipcRenderer.invoke("sales:advance-series"),
   resetInventoryCycle: (): Promise<void> => ipcRenderer.invoke("inventory:reset-cycle"),
   getSyncStatus: (): Promise<SyncStatus> => ipcRenderer.invoke("sync:status"),
+  getPendingSyncOverview: () => ipcRenderer.invoke("sync:pending-overview"),
   exportSyncSnapshot: (): Promise<SyncSnapshot> => ipcRenderer.invoke("sync:snapshot"),
   importSyncSnapshot: (snapshot: SyncSnapshot): Promise<void> => ipcRenderer.invoke("sync:import", snapshot),
   markSyncComplete: (syncedAt?: string | null): Promise<void> => ipcRenderer.invoke("sync:complete", syncedAt),
+  markSyncBucketsComplete: (tables: string[], syncedAt?: string | null): Promise<void> =>
+    ipcRenderer.invoke("sync:complete-buckets", tables, syncedAt),
   createBackup: (): Promise<string | null> => ipcRenderer.invoke("backup:create"),
   restoreBackup: (): Promise<string | null> => ipcRenderer.invoke("backup:restore"),
 });
