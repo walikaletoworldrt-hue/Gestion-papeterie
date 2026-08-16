@@ -2832,13 +2832,41 @@ export default function App() {
         {activeTab === "dashboard" && (
           <>
             <section className="hero-card">
-              <div>
+              <div className="hero-overview">
                 <p className="eyebrow">Vue d'ensemble</p>
                 <h1>Pilotage central de votre papeterie</h1>
                 <p className="hero-copy">
                   Retrouvez dans un seul espace le suivi des produits, des clients, du stock,
                   des ventes, des utilisateurs et des activites recentes.
                 </p>
+
+                <div className="hero-story-grid">
+                  <article className="hero-story-card">
+                    <span className="hero-story-label">A propos de l'entreprise</span>
+                    <h3>Walikale to World accompagne la gestion quotidienne de la papeterie.</h3>
+                    <p>
+                      La boutique centralise la vente des fournitures, les services, les depenses,
+                      le stock et le suivi des utilisateurs depuis un espace unique, simple et clair.
+                    </p>
+                  </article>
+
+                  <article className="hero-story-card accent">
+                    <span className="hero-story-label">Ce que fait l'application</span>
+                    <ul className="hero-feature-list">
+                      <li>Suivre les produits, les quantites, les seuils d'alerte et les mouvements de stock.</li>
+                      <li>Enregistrer les ventes, les services, les clients et les approvisionnements.</li>
+                      <li>Controler les depenses, les utilisateurs et l'historique des activites.</li>
+                      <li>Travailler en local sur desktop puis synchroniser avec Supabase quand Internet revient.</li>
+                    </ul>
+                  </article>
+                </div>
+
+                <div className="hero-pill-row">
+                  <span className="hero-pill">Papeterie</span>
+                  <span className="hero-pill">Stock & ventes</span>
+                  <span className="hero-pill">Mode hors ligne</span>
+                  <span className="hero-pill">Synchronisation cloud</span>
+                </div>
               </div>
 
               <div className="dashboard-summary">
