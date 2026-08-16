@@ -761,6 +761,7 @@ export class LocalDatabase {
 
   saveProduct(draft: ProductDraft): Product[] {
     this.requirePermission("manage_inventory");
+    const actor = this.requireAuthenticatedUser();
     const now = new Date().toISOString();
     const userId = this.getActorUserId();
     const cycleId = this.getCurrentInventoryCycleId();
@@ -777,10 +778,36 @@ export class LocalDatabase {
     };
 
     const existing = this.db
-      .prepare("SELECT id FROM products WHERE LOWER(name) = LOWER(?)")
-      .get(normalizedDraft.name) as { id: number } | undefined;
+      .prepare("SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier FROM products WHERE LOWER(name) = LOWER(?)")
+      .get(normalizedDraft.name) as
+      | {
+          id: number;
+          code: string;
+          name: string;
+          category: string;
+          purchase_price: number;
+          selling_price: number;
+          unit: string;
+          alert_threshold: number;
+          supplier: string;
+        }
+      | undefined;
 
     if (existing) {
+      const isMetadataChanged =
+        existing.code !== normalizedDraft.code ||
+        existing.name !== normalizedDraft.name ||
+        existing.category !== normalizedDraft.category ||
+        Number(existing.purchase_price) !== Number(normalizedDraft.purchasePrice) ||
+        Number(existing.selling_price) !== Number(normalizedDraft.sellingPrice) ||
+        existing.unit !== normalizedDraft.unit ||
+        Number(existing.alert_threshold) !== Number(normalizedDraft.alertThreshold) ||
+        existing.supplier !== normalizedDraft.supplier;
+
+      if (isMetadataChanged && actor.role !== "Super admin") {
+        throw new Error("Seul le super administrateur peut modifier un produit existant.");
+      }
+
       this.db
         .prepare(`
           UPDATE products
@@ -876,7 +903,7 @@ export class LocalDatabase {
   }
 
   deleteProduct(id: number): Product[] {
-    this.requirePermission("manage_inventory");
+    this.requireSuperAdminAccess("Seul le super administrateur peut supprimer un produit.");
     this.db.prepare("DELETE FROM products WHERE id = ?").run(id);
     this.logAction(this.getActorUserId(), "delete", "products", id, "Suppression produit");
     return this.listProducts();

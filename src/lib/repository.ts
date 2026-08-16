@@ -1363,6 +1363,11 @@ function groupSyncBuckets(
   );
 }
 
+function sumSelectedSyncBuckets(buckets: SyncConflictBucket[], selectedBucketKeys: string[]) {
+  const selected = new Set(selectedBucketKeys);
+  return buckets.reduce((total, bucket) => (selected.has(bucket.key) ? total + bucket.count : total), 0);
+}
+
 function buildSyncBucketsFromAuditLogs(
   rows: Array<{ target_table?: string | null; created_at?: string | null }>,
   since: string | null
@@ -1485,6 +1490,21 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
     localBuckets: groupedLocalBuckets,
     cloudBuckets: cloudSummary.buckets,
   };
+}
+
+async function getCloudSyncOverview(since: string | null) {
+  const cloudAuditLogsResult = await getSupabaseClient()
+    .from("audit_logs")
+    .select("target_table, created_at")
+    .order("created_at", { ascending: false })
+    .limit(500);
+
+  const cloudAuditLogs = ensureData(cloudAuditLogsResult.data, cloudAuditLogsResult.error) as Array<{
+    target_table?: string | null;
+    created_at?: string | null;
+  }>;
+
+  return buildSyncBucketsFromAuditLogs(cloudAuditLogs, since);
 }
 
 function createEmptySyncSnapshot(): SyncSnapshot {
@@ -1988,6 +2008,28 @@ async function ensureSuperAdminAccessForInventoryCycle() {
   }
 }
 
+async function ensureSuperAdminAccess(message: string) {
+  if (window.desktopApi) {
+    return;
+  }
+
+  if (isSupabaseEnabled()) {
+    const profile = await getSupabaseSessionProfile();
+    if (profile?.role !== "Super admin") {
+      throw new Error(message);
+    }
+    return;
+  }
+
+  const activeUserId = Number(localStorage.getItem(webSessionStorageKey) ?? "0");
+  const users = loadJson("walikale-web-users", webSeedUsers);
+  const activeUser = users.find((user) => user.id === activeUserId) ?? null;
+
+  if (activeUser?.role !== "Super admin") {
+    throw new Error(message);
+  }
+}
+
 export const repository = {
   isDesktop: Boolean(window.desktopApi),
   hasSupabaseConfig,
@@ -2069,19 +2111,26 @@ export const repository = {
       const syncCredentials = (await window.desktopApi.getCurrentSyncCredentials()) as DesktopSyncCredentials;
       const canSyncUsers = syncCredentials.role === "Super admin";
       const localStatus = await window.desktopApi.getSyncStatus();
+      const localOverview = groupSyncBuckets((await window.desktopApi.getPendingSyncOverview()).buckets);
       const selectedTables =
         selectedBucketKeys && selectedBucketKeys.length > 0 ? getTablesForSyncBucketKeys(selectedBucketKeys) : null;
-      const cloudLastChangeAt = await getCloudLastChangeAt();
+      const cloudOverview = await getCloudSyncOverview(localStatus.lastSyncedAt);
+      const cloudLastChangeAt = cloudOverview.latestChangedAt ?? (await getCloudLastChangeAt());
       const cloudHasChanges = Boolean(
-        cloudLastChangeAt &&
-          (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
+        selectedBucketKeys && selectedBucketKeys.length > 0
+          ? sumSelectedSyncBuckets(cloudOverview.buckets, selectedBucketKeys) > 0
+          : cloudLastChangeAt &&
+            (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
       );
+      const localPendingChanges = selectedBucketKeys && selectedBucketKeys.length > 0
+        ? sumSelectedSyncBuckets(localOverview, selectedBucketKeys)
+        : localStatus.pendingChanges;
 
-      if (!forcePush && localStatus.pendingChanges > 0 && cloudHasChanges) {
+      if (!forcePush && localPendingChanges > 0 && cloudHasChanges) {
         throw new Error("Conflit detecte : le cloud et ce poste ont tous les deux des changements non synchronises.");
       }
 
-      if (!forcePush && localStatus.pendingChanges === 0 && cloudHasChanges) {
+      if (!forcePush && localPendingChanges === 0 && cloudHasChanges) {
         const cloudSnapshot = await getCloudSnapshot();
         await window.desktopApi.importSyncSnapshot(cloudSnapshot);
         await window.desktopApi.markSyncComplete(cloudLastChangeAt);
@@ -2179,6 +2228,7 @@ export const repository = {
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
+      const profile = await getSupabaseSessionProfile();
       try {
         const sequenceSyncResult = await client.rpc("sync_identity_sequences");
         ensureOptionalData(sequenceSyncResult.data, sequenceSyncResult.error);
@@ -2201,16 +2251,40 @@ export const repository = {
 
       const existingResult = await client
         .from("products")
-        .select("id, name")
+        .select("id, name, code, category, purchase_price, selling_price, unit, alert_threshold, supplier")
         .ilike("name", trimmedName)
         .limit(1)
         .maybeSingle();
       if (existingResult.error) {
         throw new Error(existingResult.error.message || "Impossible de verifier le produit existant.");
       }
-      const existing = existingResult.data as { id: number; name: string } | null;
+      const existing = existingResult.data as {
+        id: number;
+        name: string;
+        code: string;
+        category: string;
+        purchase_price: number;
+        selling_price: number;
+        unit: string;
+        alert_threshold: number;
+        supplier: string;
+      } | null;
 
       if (existing) {
+        const isMetadataChanged =
+          existing.code !== normalizedProduct.code ||
+          existing.name !== normalizedProduct.name ||
+          existing.category !== normalizedProduct.category ||
+          Number(existing.purchase_price) !== Number(normalizedProduct.purchase_price) ||
+          Number(existing.selling_price) !== Number(normalizedProduct.selling_price) ||
+          existing.unit !== normalizedProduct.unit ||
+          Number(existing.alert_threshold) !== Number(normalizedProduct.alert_threshold) ||
+          existing.supplier !== normalizedProduct.supplier;
+
+        if (isMetadataChanged && profile?.role !== "Super admin") {
+          throw new Error("Seul le super administrateur peut modifier un produit existant.");
+        }
+
         const updateResult = await client
           .from("products")
           .update(normalizedProduct)
@@ -2292,9 +2366,25 @@ export const repository = {
     const products = loadJson("walikale-web-products", webSeedProducts);
     const history = loadJson("walikale-web-history", webSeedHistory);
     const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
+    const activeUserId = Number(localStorage.getItem(webSessionStorageKey) ?? "0");
+    const webUsers = loadJson("walikale-web-users", webSeedUsers);
+    const activeUser = webUsers.find((user) => user.id === activeUserId) ?? null;
     const existing = products.find((item) => item.name.toLowerCase() === draft.name.toLowerCase());
 
     if (existing) {
+      const isMetadataChanged =
+        existing.code !== (draft.code || existing.code) ||
+        existing.category !== (draft.category || existing.category) ||
+        Number(existing.purchasePrice) !== Number(draft.purchasePrice) ||
+        Number(existing.sellingPrice) !== Number(draft.sellingPrice) ||
+        existing.unit !== (draft.unit || existing.unit) ||
+        Number(existing.alertThreshold) !== Number(draft.alertThreshold ?? existing.alertThreshold) ||
+        existing.supplier !== draft.supplier;
+
+      if (isMetadataChanged && activeUser?.role !== "Super admin") {
+        throw new Error("Seul le super administrateur peut modifier un produit existant.");
+      }
+
       existing.code = draft.code || existing.code;
       existing.category = draft.category || existing.category;
       existing.purchasePrice = draft.purchasePrice;
@@ -2351,6 +2441,7 @@ export const repository = {
     }
 
     if (isSupabaseEnabled()) {
+      await ensureSuperAdminAccess("Seul le super administrateur peut supprimer un produit.");
       const client = getSupabaseClient();
       await insertSupabaseAuditLog(client, {
         action: "delete",
@@ -2364,6 +2455,7 @@ export const repository = {
       return this.listProducts();
     }
 
+    await ensureSuperAdminAccess("Seul le super administrateur peut supprimer un produit.");
     const products = loadJson("walikale-web-products", webSeedProducts).filter((item) => item.id !== id);
     const history = loadJson("walikale-web-history", webSeedHistory);
     const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);

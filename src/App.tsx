@@ -975,6 +975,9 @@ export default function App() {
   const isAdministrator = currentUser?.role === "Administrateur";
   const canManageUsers = isSuperAdmin;
   const canManageInventory = isSuperAdmin || isAdministrator;
+  const canCreateInventory = isSuperAdmin || isAdministrator;
+  const canEditInventory = isSuperAdmin;
+  const canDeleteInventory = isSuperAdmin;
   const canManageInventoryCycles = isSuperAdmin;
   const canManageExpenses = isSuperAdmin || isAdministrator;
   const canCreateClients = Boolean(currentUser);
@@ -1341,7 +1344,7 @@ export default function App() {
   }
 
   function openProductCreateModal() {
-    if (!canManageInventory) {
+    if (!canCreateInventory) {
       showAccessDenied("Votre profil ne permet pas d'ajouter un produit.");
       return;
     }
@@ -1352,7 +1355,7 @@ export default function App() {
   }
 
   function openServiceModal() {
-    if (!canManageInventory) {
+    if (!canCreateInventory) {
       showAccessDenied("Votre profil ne permet pas d'enregistrer un service.");
       return;
     }
@@ -1402,7 +1405,7 @@ export default function App() {
   }
 
   function openReplenishmentModal(product?: Product) {
-    if (!canManageInventory) {
+    if (!canCreateInventory) {
       showAccessDenied("Votre profil ne permet pas d'enregistrer un approvisionnement.");
       return;
     }
@@ -1598,8 +1601,13 @@ export default function App() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canManageInventory) {
-      showAccessDenied("Votre profil ne permet pas de gerer les produits.");
+    if (productModalMode === "edit" && !canEditInventory) {
+      showAccessDenied("Seul le super administrateur peut modifier un produit.");
+      return;
+    }
+
+    if (productModalMode !== "edit" && !canCreateInventory) {
+      showAccessDenied("Votre profil ne permet pas d'ajouter un produit.");
       return;
     }
 
@@ -1624,8 +1632,8 @@ export default function App() {
   }
 
   async function handleDelete(id: number) {
-    if (!canManageInventory) {
-      showAccessDenied("Votre profil ne permet pas de supprimer un produit.");
+    if (!canDeleteInventory) {
+      showAccessDenied("Seul le super administrateur peut supprimer un produit.");
       return;
     }
 
@@ -1635,8 +1643,8 @@ export default function App() {
   }
 
   function handleEdit(product: Product) {
-    if (!canManageInventory) {
-      showAccessDenied("Votre profil ne permet pas de modifier un produit.");
+    if (!canEditInventory) {
+      showAccessDenied("Seul le super administrateur peut modifier un produit.");
       return;
     }
 
@@ -1682,7 +1690,7 @@ export default function App() {
   async function handleServiceSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!canManageInventory) {
+    if (!canCreateInventory) {
       showToast("error", "Votre profil ne permet pas d'enregistrer un service.");
       return;
     }
@@ -1701,7 +1709,7 @@ export default function App() {
   async function handleReplenishmentSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!canManageInventory) {
+    if (!canCreateInventory) {
       showAccessDenied("Votre profil ne permet pas d'enregistrer un approvisionnement.");
       return;
     }
@@ -3169,7 +3177,7 @@ export default function App() {
             <div className="panel-header">
               <h2>Produits</h2>
               <div className="panel-header-actions">
-                {canManageInventory ? (
+                {canCreateInventory ? (
                   <button className="primary-btn" type="button" onClick={openProductCreateModal}>
                     Nouveau produit
                   </button>
@@ -3264,11 +3272,14 @@ export default function App() {
                           </span>
                         </td>
                         <td className="actions-cell">
-                          {canManageInventory ? (
+                          {canEditInventory || canDeleteInventory ? (
                             <>
+                              {canEditInventory ? (
                               <button className="warn-btn" onClick={() => handleEdit(item)} type="button">
                                 Modifier
                               </button>
+                              ) : null}
+                              {canDeleteInventory ? (
                               <button
                                 className="danger-btn"
                                 onClick={() =>
@@ -3284,6 +3295,7 @@ export default function App() {
                               >
                                 Supprimer
                               </button>
+                              ) : null}
                             </>
                           ) : (
                             <span className="section-count">Lecture seule</span>
@@ -3303,7 +3315,7 @@ export default function App() {
             <div className="panel-header">
               <h2>Services</h2>
               <div className="panel-header-actions">
-                {canManageInventory ? (
+                {canCreateInventory ? (
                   <button className="primary-btn" type="button" onClick={openServiceModal}>
                     Nouveau service
                   </button>
@@ -3595,7 +3607,7 @@ export default function App() {
             <div className="panel-header supply-header">
               <h2>Reapprovisionnements</h2>
               <div className="action-strip">
-                {canManageInventory ? (
+                {canCreateInventory ? (
                   <button className="primary-btn" type="button" onClick={() => openReplenishmentModal()}>
                     Nouvel approvisionnement
                   </button>
@@ -3652,11 +3664,9 @@ export default function App() {
                         <td>{item.quantity}</td>
                       <td>{item.supplier}</td>
                       <td className="actions-cell">
-                        {canManageInventory ? (
+                        {canEditInventory || canDeleteInventory ? (
                           <>
-                              <button className="primary-btn" onClick={() => openReplenishmentModal(item)} type="button">
-                                Approvisionner
-                              </button>
+                              {canEditInventory ? (
                               <button
                                 className="warn-btn"
                                 onClick={() => handleEdit(item)}
@@ -3664,6 +3674,8 @@ export default function App() {
                               >
                                 Modifier
                               </button>
+                              ) : null}
+                              {canDeleteInventory ? (
                               <button
                                 className="danger-btn"
                                 onClick={() =>
@@ -3679,6 +3691,7 @@ export default function App() {
                               >
                                 Supprimer
                               </button>
+                              ) : null}
                             </>
                           ) : (
                             <span className="section-count">Lecture seule</span>
