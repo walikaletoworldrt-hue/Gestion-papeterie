@@ -1541,14 +1541,40 @@ export class LocalDatabase {
   saveClient(draft: ClientDraft): Client[] {
     this.requirePermission("manage_clients");
     const now = new Date().toISOString();
-    const result = this.db
-      .prepare(`
-        INSERT INTO clients (name, phone, address, email, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `)
-      .run(draft.name.trim(), draft.phone.trim(), draft.address.trim(), draft.email.trim(), now);
+    const trimmedName = draft.name.trim();
+    const trimmedPhone = draft.phone.trim();
+    const trimmedAddress = draft.address.trim();
+    const trimmedEmail = draft.email.trim();
 
-    this.logAction(this.getActorUserId(), "create", "clients", Number(result.lastInsertRowid), `Creation client ${draft.name.trim()}`);
+    if (draft.id) {
+      this.requireSuperAdminAccess("Seul le super administrateur peut modifier un client.");
+      this.db
+        .prepare(`
+          UPDATE clients
+          SET name = ?, phone = ?, address = ?, email = ?
+          WHERE id = ?
+        `)
+        .run(trimmedName, trimmedPhone, trimmedAddress, trimmedEmail, draft.id);
+
+      this.logAction(this.getActorUserId(), "update", "clients", draft.id, `Mise a jour client ${trimmedName}`);
+    } else {
+      const result = this.db
+        .prepare(`
+          INSERT INTO clients (name, phone, address, email, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `)
+        .run(trimmedName, trimmedPhone, trimmedAddress, trimmedEmail, now);
+
+      this.logAction(this.getActorUserId(), "create", "clients", Number(result.lastInsertRowid), `Creation client ${trimmedName}`);
+    }
+
+    return this.listClients();
+  }
+
+  deleteClient(id: number): Client[] {
+    this.requireSuperAdminAccess("Seul le super administrateur peut supprimer un client.");
+    this.db.prepare("DELETE FROM clients WHERE id = ?").run(id);
+    this.logAction(this.getActorUserId(), "delete", "clients", id, "Suppression client");
     return this.listClients();
   }
 

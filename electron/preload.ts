@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   getDashboardMetrics: (): Promise<DashboardMetrics> => ipcRenderer.invoke("dashboard:metrics"),
   listClients: (): Promise<Client[]> => ipcRenderer.invoke("clients:list"),
   saveClient: (draft: ClientDraft): Promise<Client[]> => ipcRenderer.invoke("clients:save", draft),
+  deleteClient: (id: number): Promise<Client[]> => ipcRenderer.invoke("clients:delete", id),
   listUsers: (): Promise<AppUser[]> => ipcRenderer.invoke("users:list"),
   saveUser: (draft: UserDraft): Promise<AppUser[]> => ipcRenderer.invoke("users:save", draft),
   linkCloudUserProfile: (draft: CloudDesktopSessionDraft): Promise<AppUser[]> =>

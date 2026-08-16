@@ -167,6 +167,7 @@ export type Client = {
 };
 
 export type ClientDraft = {
+  id?: number;
   name: string;
   phone: string;
   address: string;
@@ -305,6 +306,7 @@ export type DesktopApi = {
   getDashboardMetrics: () => Promise<DashboardMetrics>;
   listClients: () => Promise<Client[]>;
   saveClient: (draft: ClientDraft) => Promise<Client[]>;
+  deleteClient: (id: number) => Promise<Client[]>;
   listUsers: () => Promise<AppUser[]>;
   saveUser: (draft: UserDraft) => Promise<AppUser[]>;
   linkCloudUserProfile: (draft: CloudDesktopSessionDraft) => Promise<AppUser[]>;

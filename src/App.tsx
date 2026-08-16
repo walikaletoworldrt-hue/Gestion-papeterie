@@ -913,7 +913,9 @@ export default function App() {
   });
   const [draft, setDraft] = useState<ProductDraft>(emptyDraft);
   const [serviceDraft, setServiceDraft] = useState<ServiceDraft>(emptyServiceDraft);
+  const [serviceModalMode, setServiceModalMode] = useState<"create" | "edit">("create");
   const [clientDraft, setClientDraft] = useState<ClientDraft>(emptyClientDraft);
+  const [clientModalMode, setClientModalMode] = useState<"create" | "edit">("create");
   const [userDraft, setUserDraft] = useState<UserDraft>(emptyUserDraft);
   const [expenseDraft, setExpenseDraft] = useState<ExpenseDraft>(emptyExpenseDraft);
   const [expenseReport, setExpenseReport] = useState<ExpenseReportState | null>(null);
@@ -1360,7 +1362,25 @@ export default function App() {
       return;
     }
 
+    setServiceModalMode("create");
     setServiceDraft(emptyServiceDraft);
+    setActiveModal("service");
+  }
+
+  function openServiceEditModal(service: Service) {
+    if (!canCreateInventory) {
+      showAccessDenied("Votre profil ne permet pas de modifier un service.");
+      return;
+    }
+
+    setServiceModalMode("edit");
+    setServiceDraft({
+      name: service.name,
+      category: service.category,
+      unitPrice: service.unitPrice,
+      description: service.description,
+      active: service.active,
+    });
     setActiveModal("service");
   }
 
@@ -1370,7 +1390,25 @@ export default function App() {
       return;
     }
 
+    setClientModalMode("create");
     setClientDraft(emptyClientDraft);
+    setActiveModal("client");
+  }
+
+  function openClientEditModal(client: Client) {
+    if (!isSuperAdmin) {
+      showAccessDenied("Seul le super administrateur peut modifier un client.");
+      return;
+    }
+
+    setClientModalMode("edit");
+    setClientDraft({
+      id: client.id,
+      name: client.name,
+      phone: client.phone,
+      address: client.address,
+      email: client.email,
+    });
     setActiveModal("client");
   }
 
@@ -1665,7 +1703,12 @@ export default function App() {
 
   async function handleClientSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canCreateClients) {
+    if (clientModalMode === "edit" && !isSuperAdmin) {
+      showAccessDenied("Seul le super administrateur peut modifier un client.");
+      return;
+    }
+
+    if (clientModalMode !== "edit" && !canCreateClients) {
       showAccessDenied("Votre profil ne permet pas d'ajouter un client.");
       return;
     }
@@ -1675,6 +1718,7 @@ export default function App() {
     }
 
     const nextClients = await repository.saveClient({
+      id: clientDraft.id,
       name: clientDraft.name.trim(),
       phone: clientDraft.phone,
       address: clientDraft.address,
@@ -1682,9 +1726,21 @@ export default function App() {
     });
 
     setClients(nextClients);
+    setClientModalMode("create");
     setClientDraft(emptyClientDraft);
     closeModal();
-    showToast("success", "Client enregistre avec succes.");
+    showToast("success", clientModalMode === "edit" ? "Client mis a jour avec succes." : "Client enregistre avec succes.");
+  }
+
+  async function handleDeleteClient(client: Client) {
+    if (!isSuperAdmin) {
+      showAccessDenied("Seul le super administrateur peut supprimer un client.");
+      return;
+    }
+
+    const nextClients = await repository.deleteClient(client.id);
+    setClients(nextClients);
+    showToast("success", "Client supprime avec succes.");
   }
 
   async function handleServiceSubmit(event: FormEvent<HTMLFormElement>) {
@@ -1698,9 +1754,10 @@ export default function App() {
     try {
       const nextServices = await repository.saveService(serviceDraft);
       setServices(nextServices);
+      setServiceModalMode("create");
       setServiceDraft(emptyServiceDraft);
       setActiveModal(null);
-      showToast("success", "Service enregistre avec succes.");
+      showToast("success", serviceModalMode === "edit" ? "Service mis a jour avec succes." : "Service enregistre avec succes.");
     } catch (error) {
       showToast("error", error instanceof Error ? error.message : "Impossible d'enregistrer ce service.");
     }
@@ -3362,6 +3419,7 @@ export default function App() {
                       <th>Prix unitaire</th>
                       <th>Description</th>
                       <th>Etat</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3375,6 +3433,15 @@ export default function App() {
                           <span className={`products-threshold-badge ${item.active ? "success" : "warning"}`}>
                             {item.active ? "Actif" : "Inactif"}
                           </span>
+                        </td>
+                        <td className="actions-cell">
+                          {canCreateInventory ? (
+                            <button className="warn-btn" type="button" onClick={() => openServiceEditModal(item)}>
+                              Modifier
+                            </button>
+                          ) : (
+                            <span className="section-count">Lecture seule</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -3436,6 +3503,7 @@ export default function App() {
                       <th>Telephone</th>
                       <th>Adresse</th>
                       <th>E-mail</th>
+                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3445,6 +3513,32 @@ export default function App() {
                         <td>{client.phone || "-"}</td>
                         <td>{client.address}</td>
                         <td className="clients-email-cell">{client.email || "-"}</td>
+                        <td className="actions-cell">
+                          {isSuperAdmin ? (
+                            <>
+                              <button className="warn-btn" type="button" onClick={() => openClientEditModal(client)}>
+                                Modifier
+                              </button>
+                              <button
+                                className="danger-btn"
+                                type="button"
+                                onClick={() =>
+                                  askConfirmation({
+                                    title: "Supprimer ce client",
+                                    message: `Le client ${client.name} sera retire de la liste. Cette action est irreversible.`,
+                                    actionLabel: "Supprimer le client",
+                                    tone: "danger",
+                                    onConfirm: () => handleDeleteClient(client),
+                                  })
+                                }
+                              >
+                                Supprimer
+                              </button>
+                            </>
+                          ) : (
+                            <span className="section-count">Lecture seule</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -4269,7 +4363,7 @@ export default function App() {
       ) : null}
 
       {activeModal === "client" ? (
-        <Modal title="Nouveau client" onClose={closeModal}>
+        <Modal title={clientModalMode === "edit" ? "Modifier le client" : "Nouveau client"} onClose={closeModal}>
           <form className="modal-form modal-form-stack" onSubmit={handleClientSubmit}>
             <label>
               Nom
@@ -4305,7 +4399,7 @@ export default function App() {
                 Annuler
               </button>
               <button className="primary-btn" type="submit">
-                Enregistrer le client
+                {clientModalMode === "edit" ? "Mettre a jour" : "Enregistrer le client"}
               </button>
             </div>
           </form>
@@ -4313,13 +4407,14 @@ export default function App() {
       ) : null}
 
       {activeModal === "service" ? (
-        <Modal title="Nouveau service" onClose={closeModal}>
+        <Modal title={serviceModalMode === "edit" ? "Modifier le service" : "Nouveau service"} onClose={closeModal}>
           <form className="modal-form modal-form-stack" onSubmit={handleServiceSubmit}>
             <label>
               Nom du service
               <input
                 value={serviceDraft.name}
                 onChange={(event) => setServiceDraft((current) => ({ ...current, name: event.target.value }))}
+                disabled={serviceModalMode === "edit"}
                 required
               />
             </label>
@@ -4367,7 +4462,7 @@ export default function App() {
                 Annuler
               </button>
               <button className="primary-btn" type="submit">
-                Enregistrer le service
+                {serviceModalMode === "edit" ? "Mettre a jour" : "Enregistrer le service"}
               </button>
             </div>
           </form>

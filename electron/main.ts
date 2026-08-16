@@ -194,6 +194,7 @@ function registerIpc() {
   ipcMain.handle("dashboard:metrics", () => database.getDashboardMetrics());
   ipcMain.handle("clients:list", () => database.listClients());
   ipcMain.handle("clients:save", (_event, draft: ClientDraft) => database.saveClient(draft));
+  ipcMain.handle("clients:delete", (_event, id: number) => database.deleteClient(id));
   ipcMain.handle("users:list", () => database.listUsers());
   ipcMain.handle("users:save", (_event, draft: UserDraft) => database.saveUser(draft));
   ipcMain.handle("users:link-cloud-profile", (_event, draft: CloudDesktopSessionDraft) =>

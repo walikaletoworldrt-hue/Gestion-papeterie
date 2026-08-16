@@ -3310,40 +3310,110 @@ export const repository = {
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
-      const insertResult = await client.from("clients").insert({
+      const payload = {
         name: draft.name.trim(),
         phone: draft.phone.trim(),
         address: draft.address.trim(),
         email: draft.email.trim(),
-      });
-      ensureData(insertResult.data ?? [], insertResult.error);
+      };
 
-      await insertSupabaseAuditLog(client, {
-        action: "create",
-        target_table: "clients",
-        details: `Creation client ${draft.name.trim()}`,
-      });
+      if (draft.id) {
+        await ensureSuperAdminAccess("Seul le super administrateur peut modifier un client.");
+        const updateResult = await client.from("clients").update(payload).eq("id", draft.id);
+        ensureData(updateResult.data ?? [], updateResult.error);
+
+        await insertSupabaseAuditLog(client, {
+          action: "update",
+          target_table: "clients",
+          target_id: draft.id,
+          details: `Mise a jour client ${payload.name}`,
+        });
+      } else {
+        const insertResult = await client.from("clients").insert(payload);
+        ensureData(insertResult.data ?? [], insertResult.error);
+
+        await insertSupabaseAuditLog(client, {
+          action: "create",
+          target_table: "clients",
+          details: `Creation client ${payload.name}`,
+        });
+      }
 
       return this.listClients();
     }
 
     const clients = loadJson("walikale-web-clients", webSeedClients);
-    clients.unshift({
-      id: Date.now(),
+    const payload = {
       name: draft.name.trim(),
       phone: draft.phone.trim(),
       address: draft.address.trim(),
       email: draft.email.trim(),
-      createdAt: new Date().toISOString(),
-    });
+    };
+
+    if (draft.id) {
+      await ensureSuperAdminAccess("Seul le super administrateur peut modifier un client.");
+      const existing = clients.find((item) => item.id === draft.id);
+      if (existing) {
+        existing.name = payload.name;
+        existing.phone = payload.phone;
+        existing.address = payload.address;
+        existing.email = payload.email;
+      }
+    } else {
+      clients.unshift({
+        id: Date.now(),
+        name: payload.name,
+        phone: payload.phone,
+        address: payload.address,
+        email: payload.email,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
     localStorage.setItem("walikale-web-clients", JSON.stringify(clients));
     const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
     activityHistory.unshift({
       id: Date.now(),
       date: new Date().toLocaleString("fr-FR"),
-      action: "Creation",
-      target: "Client",
-      details: `Creation client ${draft.name.trim()}`,
+      action: draft.id ? "Mise a jour" : "Creation",
+      target: draft.id ? `Client #${draft.id}` : "Client",
+      details: `${draft.id ? "Mise a jour" : "Creation"} client ${payload.name}`,
+      user: "Utilisateur web",
+    });
+    persistWebActivityHistory(activityHistory);
+    return clients;
+  },
+
+  async deleteClient(id: number): Promise<Client[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.deleteClient(id);
+    }
+
+    if (isSupabaseEnabled()) {
+      await ensureSuperAdminAccess("Seul le super administrateur peut supprimer un client.");
+      const client = getSupabaseClient();
+      await insertSupabaseAuditLog(client, {
+        action: "delete",
+        target_table: "clients",
+        target_id: id,
+        details: "Suppression client",
+      });
+
+      const deleteResult = await client.from("clients").delete().eq("id", id);
+      ensureData(deleteResult.data ?? [], deleteResult.error);
+      return this.listClients();
+    }
+
+    await ensureSuperAdminAccess("Seul le super administrateur peut supprimer un client.");
+    const clients = loadJson("walikale-web-clients", webSeedClients).filter((item) => item.id !== id);
+    localStorage.setItem("walikale-web-clients", JSON.stringify(clients));
+    const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
+    activityHistory.unshift({
+      id: Date.now(),
+      date: new Date().toLocaleString("fr-FR"),
+      action: "Suppression",
+      target: `Client #${id}`,
+      details: "Suppression client",
       user: "Utilisateur web",
     });
     persistWebActivityHistory(activityHistory);
