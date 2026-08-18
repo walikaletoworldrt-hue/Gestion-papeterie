@@ -1368,6 +1368,15 @@ function sumSelectedSyncBuckets(buckets: SyncConflictBucket[], selectedBucketKey
   return buckets.reduce((total, bucket) => (selected.has(bucket.key) ? total + bucket.count : total), 0);
 }
 
+function getSyncBucketKeysWithChanges(buckets: SyncConflictBucket[]) {
+  return buckets.filter((bucket) => bucket.count > 0).map((bucket) => bucket.key);
+}
+
+function hasSyncBucketOverlap(leftKeys: string[], rightKeys: string[]) {
+  const rightSet = new Set(rightKeys);
+  return leftKeys.some((key) => rightSet.has(key));
+}
+
 function buildSyncBucketsFromAuditLogs(
   rows: Array<{ target_table?: string | null; created_at?: string | null }>,
   since: string | null
@@ -1554,6 +1563,87 @@ function filterSyncSnapshot(snapshot: SyncSnapshot, selectedTables: string[] | n
   });
 
   return filtered;
+}
+
+function mergeAuditLogsForSync(
+  cloudRows: Array<Record<string, unknown>>,
+  localRows: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  const merged = new Map<string, Record<string, unknown>>();
+
+  [...cloudRows, ...localRows].forEach((row) => {
+    const key = [
+      String(row.created_at ?? ""),
+      String(row.action ?? ""),
+      String(row.target_table ?? ""),
+      String(row.target_id ?? ""),
+      String(row.details ?? ""),
+      String(row.actor_username ?? ""),
+      String(row.source_device ?? ""),
+      String(row.source_platform ?? ""),
+    ].join("|");
+
+    merged.set(key, {
+      user_id: row.user_id ?? null,
+      action: row.action ?? null,
+      target_table: row.target_table ?? null,
+      target_id: row.target_id ?? null,
+      details: row.details ?? null,
+      actor_name: row.actor_name ?? null,
+      actor_username: row.actor_username ?? null,
+      source_device: row.source_device ?? null,
+      source_platform: row.source_platform ?? null,
+      created_at: row.created_at ?? new Date().toISOString(),
+    });
+  });
+
+  return [...merged.values()].sort((left, right) =>
+    String(left.created_at ?? "").localeCompare(String(right.created_at ?? ""))
+  );
+}
+
+function mergeSnapshotsForCloudSync(
+  cloudSnapshot: SyncSnapshot,
+  localSnapshot: SyncSnapshot,
+  localTablesToApply: string[]
+): SyncSnapshot {
+  const merged: SyncSnapshot = {
+    users: cloudSnapshot.users ?? [],
+    products: cloudSnapshot.products ?? [],
+    services: cloudSnapshot.services ?? [],
+    clients: cloudSnapshot.clients ?? [],
+    expenses: cloudSnapshot.expenses ?? [],
+    initialStocks: cloudSnapshot.initialStocks ?? [],
+    replenishments: cloudSnapshot.replenishments ?? [],
+    sales: cloudSnapshot.sales ?? [],
+    saleItems: cloudSnapshot.saleItems ?? [],
+    saleServiceItems: cloudSnapshot.saleServiceItems ?? [],
+    stockMovements: cloudSnapshot.stockMovements ?? [],
+    auditLogs: cloudSnapshot.auditLogs ?? [],
+    invoiceSequences: cloudSnapshot.invoiceSequences ?? [],
+    inventoryCycles: cloudSnapshot.inventoryCycles ?? [],
+  };
+
+  const included = new Set(localTablesToApply);
+
+  if (included.has("users")) merged.users = localSnapshot.users ?? [];
+  if (included.has("products")) merged.products = localSnapshot.products ?? [];
+  if (included.has("services")) merged.services = localSnapshot.services ?? [];
+  if (included.has("clients")) merged.clients = localSnapshot.clients ?? [];
+  if (included.has("expenses")) merged.expenses = localSnapshot.expenses ?? [];
+  if (included.has("initial_stocks")) merged.initialStocks = localSnapshot.initialStocks ?? [];
+  if (included.has("replenishments")) merged.replenishments = localSnapshot.replenishments ?? [];
+  if (included.has("sales")) merged.sales = localSnapshot.sales ?? [];
+  if (included.has("sale_items")) merged.saleItems = localSnapshot.saleItems ?? [];
+  if (included.has("sale_service_items")) merged.saleServiceItems = localSnapshot.saleServiceItems ?? [];
+  if (included.has("stock_movements")) merged.stockMovements = localSnapshot.stockMovements ?? [];
+  if (included.has("invoice_sequences")) merged.invoiceSequences = localSnapshot.invoiceSequences ?? [];
+  if (included.has("inventory_cycles")) merged.inventoryCycles = localSnapshot.inventoryCycles ?? [];
+
+  const localAuditRows = (localSnapshot.auditLogs ?? []).filter((row) => included.has(String(row.target_table ?? "")));
+  merged.auditLogs = mergeAuditLogsForSync(cloudSnapshot.auditLogs ?? [], localAuditRows);
+
+  return merged;
 }
 
 async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTables: string[] | null, canSyncUsers: boolean) {
@@ -2112,9 +2202,11 @@ export const repository = {
       const canSyncUsers = syncCredentials.role === "Super admin";
       const localStatus = await window.desktopApi.getSyncStatus();
       const localOverview = groupSyncBuckets((await window.desktopApi.getPendingSyncOverview()).buckets);
+      const localBucketKeys = selectedBucketKeys && selectedBucketKeys.length > 0 ? selectedBucketKeys : getSyncBucketKeysWithChanges(localOverview);
       const selectedTables =
         selectedBucketKeys && selectedBucketKeys.length > 0 ? getTablesForSyncBucketKeys(selectedBucketKeys) : null;
       const cloudOverview = await getCloudSyncOverview(localStatus.lastSyncedAt);
+      const cloudBucketKeys = getSyncBucketKeysWithChanges(cloudOverview.buckets);
       const cloudLastChangeAt = cloudOverview.latestChangedAt ?? (await getCloudLastChangeAt());
       const cloudHasChanges = Boolean(
         selectedBucketKeys && selectedBucketKeys.length > 0
@@ -2125,8 +2217,9 @@ export const repository = {
       const localPendingChanges = selectedBucketKeys && selectedBucketKeys.length > 0
         ? sumSelectedSyncBuckets(localOverview, selectedBucketKeys)
         : localStatus.pendingChanges;
+      const hasOverlappingChanges = hasSyncBucketOverlap(localBucketKeys, cloudBucketKeys);
 
-      if (!forcePush && localPendingChanges > 0 && cloudHasChanges) {
+      if (!forcePush && localPendingChanges > 0 && cloudHasChanges && hasOverlappingChanges) {
         throw new Error("Conflit detecte : le cloud et ce poste ont tous les deux des changements non synchronises.");
       }
 
@@ -2156,12 +2249,35 @@ export const repository = {
         "audit_logs",
       ];
 
-      await replaceSupabaseSyncTables(syncSnapshot, selectedTables ? [...selectedTables, "audit_logs"] : null, canSyncUsers);
+      const effectiveChangedTables = canSyncUsers ? changedTables : changedTables.filter((table) => table !== "users");
+
+      if (!forcePush && localPendingChanges > 0 && cloudHasChanges && !hasOverlappingChanges) {
+        const mergedSnapshot = mergeSnapshotsForCloudSync(
+          await getCloudSnapshot(),
+          snapshot as SyncSnapshot,
+          effectiveChangedTables.filter((table) => table !== "audit_logs")
+        );
+
+        await replaceSupabaseSyncTables(mergedSnapshot, null, canSyncUsers);
+        await syncSupabaseIdentitySequences();
+
+        const syncedAt = new Date().toISOString();
+        if (selectedTables && selectedTables.length > 0) {
+          await window.desktopApi.markSyncBucketsComplete(effectiveChangedTables, syncedAt);
+        } else {
+          await window.desktopApi.importSyncSnapshot(mergedSnapshot);
+          await window.desktopApi.markSyncComplete(syncedAt);
+        }
+
+        return this.getSyncStatus();
+      }
+
+      await replaceSupabaseSyncTables(syncSnapshot, selectedTables ? [...effectiveChangedTables, "audit_logs"] : null, canSyncUsers);
       await syncSupabaseIdentitySequences();
 
       const syncedAt = new Date().toISOString();
       if (selectedTables && selectedTables.length > 0) {
-        await window.desktopApi.markSyncBucketsComplete(changedTables, syncedAt);
+        await window.desktopApi.markSyncBucketsComplete(effectiveChangedTables, syncedAt);
       } else {
         await window.desktopApi.markSyncComplete(syncedAt);
       }
