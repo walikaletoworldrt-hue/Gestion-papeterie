@@ -2903,6 +2903,46 @@ export const repository = {
     return null;
   },
 
+  async pruneActivityHistory(months: number): Promise<number> {
+    if (window.desktopApi) {
+      return window.desktopApi.pruneActivityHistory(months);
+    }
+
+    const normalizedMonths = Math.max(1, Math.floor(months));
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - normalizedMonths);
+    cutoffDate.setHours(0, 0, 0, 0);
+    const cutoffIso = cutoffDate.toISOString();
+
+    if (isSupabaseEnabled()) {
+      await ensureSuperAdminAccess("Seul le super administrateur peut nettoyer l'historique.");
+
+      const client = getSupabaseClient();
+      const selectResult = await client.from("audit_logs").select("id").lt("created_at", cutoffIso);
+      const rows = ensureData(selectResult.data, selectResult.error) as { id: number }[];
+
+      if (rows.length === 0) {
+        return 0;
+      }
+
+      const deleteResult = await client.from("audit_logs").delete().lt("created_at", cutoffIso);
+      ensureData(deleteResult.data, deleteResult.error);
+      return rows.length;
+    }
+
+    await ensureSuperAdminAccess("Seul le super administrateur peut nettoyer l'historique.");
+    const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
+    const nextActivityHistory = activityHistory.filter((item) => {
+      if (!item.timestamp) {
+        return true;
+      }
+      return item.timestamp >= cutoffIso;
+    });
+
+    persistWebActivityHistory(nextActivityHistory);
+    return activityHistory.length - nextActivityHistory.length;
+  },
+
   async createSale(draft: SaleDraft): Promise<SaleRecord[]> {
     if (window.desktopApi) {
       return window.desktopApi.createSale(draft);
@@ -3273,6 +3313,7 @@ export const repository = {
       return rows.map((row) => ({
         id: row.id,
         date: formatFrenchDateTime(row.created_at),
+        timestamp: row.created_at,
         action:
           row.action === "create" ? "Creation" : row.action === "update" ? "Mise a jour" : row.action === "delete" ? "Suppression" : row.action,
         target: row.target_id ? `${row.target_table} #${row.target_id}` : row.target_table,

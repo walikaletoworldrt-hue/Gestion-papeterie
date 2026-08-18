@@ -867,6 +867,39 @@ h2 {
   font-weight: 600;
 }
 
+.history-maintenance-card {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border: 1px solid #dce7f5;
+  border-radius: 1rem;
+  background: linear-gradient(180deg, #fbfdff 0%, #f4f8ff 100%);
+}
+
+.history-maintenance-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.9rem;
+  align-items: end;
+}
+
+.history-maintenance-grid label {
+  min-width: 220px;
+  flex: 1 1 220px;
+}
+
+.history-maintenance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.history-maintenance-note {
+  margin: 0.85rem 0 0;
+  color: #5c7290;
+  line-height: 1.6;
+}
+
 .products-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

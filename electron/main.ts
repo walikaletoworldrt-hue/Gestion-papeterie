@@ -189,6 +189,7 @@ function registerIpc() {
   });
   ipcMain.handle("history:supply", () => database.getSupplyHistory());
   ipcMain.handle("history:activity", () => database.getActivityHistory());
+  ipcMain.handle("history:prune", (_event, months: number) => database.pruneActivityHistory(months));
   ipcMain.handle("expenses:list", () => database.listExpenses());
   ipcMain.handle("expenses:save", (_event, draft: ExpenseDraft) => database.saveExpense(draft));
   ipcMain.handle("dashboard:metrics", () => database.getDashboardMetrics());

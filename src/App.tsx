@@ -118,9 +118,12 @@ type PasswordModalState = {
 };
 
 type ExpenseReportState = {
+  periodLabel: string;
   totalSalesAmount: number;
   totalExpensesAmount: number;
   netBalance: number;
+  expenseCount: number;
+  expenseItems: ExpenseItem[];
   conclusion: string;
   conclusionTone: "neutral" | "danger" | "warning" | "success";
   productLines: Array<{
@@ -165,6 +168,9 @@ type SalesTrendPoint = {
   start: Date;
 };
 type SalesPeriodPreset = "all" | "today" | "7d" | "30d" | "90d" | "month" | "year" | "custom";
+type ExpenseReportPeriodPreset = "today" | "30d" | "month" | "year" | "all" | "custom";
+type HistoryVisibilityPreset = "3m" | "6m" | "12m" | "all";
+type HistoryCleanupPreset = 6 | 12 | 24;
 
 function formatCurrency(value: number) {
   const safeValue = Number.isFinite(value) ? value : 0;
@@ -184,6 +190,7 @@ function buildExpenseReportPrintHtml(options: {
   logoSrc: string;
   generatedAt: string;
   generatedBy: string;
+  periodLabel: string;
   totalSalesAmount: number;
   totalExpensesAmount: number;
   netBalance: number;
@@ -489,6 +496,7 @@ function buildExpenseReportPrintHtml(options: {
             <div class="meta">
               <span>Genere le ${escapeHtml(options.generatedAt)}</span>
               <span>Par ${escapeHtml(options.generatedBy)}</span>
+              <span>Periode: ${escapeHtml(options.periodLabel)}</span>
             </div>
           </div>
 
@@ -643,11 +651,25 @@ function startOfYear(date: Date) {
   return new Date(date.getFullYear(), 0, 1);
 }
 
+function subtractMonths(date: Date, months: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() - months);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
 function toInputDateValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatDateOnly(value: string) {
+  const parsed = parseSaleDate(value);
+  return parsed
+    ? parsed.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" })
+    : value;
 }
 
 function getTrendLabel(date: Date, grouping: SalesTrendGrouping) {
@@ -952,7 +974,13 @@ export default function App() {
   const [stockStatusFilter, setStockStatusFilter] = useState("Tous");
   const [userSearch, setUserSearch] = useState("");
   const [expenseSearch, setExpenseSearch] = useState("");
+  const [expenseReportPeriodPreset, setExpenseReportPeriodPreset] = useState<ExpenseReportPeriodPreset>("month");
+  const [expenseReportPeriodStart, setExpenseReportPeriodStart] = useState(() => toInputDateValue(startOfMonth(new Date())));
+  const [expenseReportPeriodEnd, setExpenseReportPeriodEnd] = useState(() => toInputDateValue(new Date()));
   const [historySearch, setHistorySearch] = useState("");
+  const [historyVisibilityPreset, setHistoryVisibilityPreset] = useState<HistoryVisibilityPreset>("12m");
+  const [historyCleanupPreset, setHistoryCleanupPreset] = useState<HistoryCleanupPreset>(12);
+  const [historyCleanupBusy, setHistoryCleanupBusy] = useState(false);
   const [supplyHistorySearch, setSupplyHistorySearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [startupIssue, setStartupIssue] = useState("");
@@ -1481,7 +1509,66 @@ export default function App() {
   async function openExpenseReportModal() {
     try {
       setExpenseReportBusy(true);
-      const saleDetails = await Promise.all(sales.map((sale) => repository.getSaleDetail(sale.id)));
+      const reportToday = startOfDay(new Date());
+      let reportRangeStart = startOfMonth(reportToday);
+      let reportRangeEnd = endOfDay(reportToday);
+
+      if (expenseReportPeriodPreset === "today") {
+        reportRangeStart = reportToday;
+        reportRangeEnd = endOfDay(reportToday);
+      } else if (expenseReportPeriodPreset === "30d") {
+        reportRangeStart = addDays(reportToday, -29);
+        reportRangeEnd = endOfDay(reportToday);
+      } else if (expenseReportPeriodPreset === "year") {
+        reportRangeStart = startOfYear(reportToday);
+        reportRangeEnd = endOfDay(reportToday);
+      } else if (expenseReportPeriodPreset === "all") {
+        reportRangeStart = new Date(2000, 0, 1);
+        reportRangeEnd = endOfDay(reportToday);
+      } else if (expenseReportPeriodPreset === "custom") {
+        const customStart = expenseReportPeriodStart ? parseSaleDate(expenseReportPeriodStart) : null;
+        const customEnd = expenseReportPeriodEnd ? parseSaleDate(expenseReportPeriodEnd) : null;
+        reportRangeStart = customStart ? startOfDay(customStart) : startOfMonth(reportToday);
+        reportRangeEnd = customEnd ? endOfDay(customEnd) : endOfDay(reportToday);
+      }
+
+      if (reportRangeStart.getTime() > reportRangeEnd.getTime()) {
+        showToast("error", "La date de debut du rapport doit etre avant la date de fin.");
+        return;
+      }
+
+      const filteredSales = sales.filter((sale) => {
+        const saleDate = parseSaleDate(sale.date);
+        if (!saleDate) {
+          return false;
+        }
+
+        const normalized = startOfDay(saleDate);
+        return normalized.getTime() >= reportRangeStart.getTime() && normalized.getTime() <= reportRangeEnd.getTime();
+      });
+      const filteredExpenses = expenses.filter((item) => {
+        const expenseDate = parseSaleDate(item.date);
+        if (!expenseDate) {
+          return false;
+        }
+
+        const normalized = startOfDay(expenseDate);
+        return normalized.getTime() >= reportRangeStart.getTime() && normalized.getTime() <= reportRangeEnd.getTime();
+      });
+      const periodLabel =
+        expenseReportPeriodPreset === "today"
+          ? "Aujourd'hui"
+          : expenseReportPeriodPreset === "30d"
+            ? "30 derniers jours"
+            : expenseReportPeriodPreset === "month"
+              ? "Mois en cours"
+              : expenseReportPeriodPreset === "year"
+                ? "Annee en cours"
+                : expenseReportPeriodPreset === "all"
+                  ? "Toutes les periodes"
+                  : `Du ${formatDateOnly(expenseReportPeriodStart)} au ${formatDateOnly(expenseReportPeriodEnd)}`;
+
+      const saleDetails = await Promise.all(filteredSales.map((sale) => repository.getSaleDetail(sale.id)));
       const productTotals = new Map<number, { productId: number; productName: string; category: string; quantity: number; amount: number }>();
       const serviceTotals = new Map<string, { category: string; quantity: number; amount: number }>();
 
@@ -1511,8 +1598,8 @@ export default function App() {
         });
       });
 
-      const totalSalesAmount = sales.reduce((sum, sale) => sum + sale.amount, 0);
-      const totalExpensesAmount = expenses.reduce((sum, item) => sum + item.amount, 0);
+      const totalSalesAmount = filteredSales.reduce((sum, sale) => sum + sale.amount, 0);
+      const totalExpensesAmount = filteredExpenses.reduce((sum, item) => sum + item.amount, 0);
       const netBalance = totalSalesAmount - totalExpensesAmount;
       const expenseRatio = totalSalesAmount > 0 ? totalExpensesAmount / totalSalesAmount : totalExpensesAmount > 0 ? Infinity : 0;
       const topProduct = [...productTotals.values()].sort((left, right) => right.amount - left.amount)[0] ?? null;
@@ -1551,8 +1638,8 @@ export default function App() {
         );
       }
 
-      if (expenses.length > 0) {
-        insights.push(`La depense moyenne par operation est de ${formatCurrency(totalExpensesAmount / expenses.length)}.`);
+      if (filteredExpenses.length > 0) {
+        insights.push(`La depense moyenne par operation est de ${formatCurrency(totalExpensesAmount / filteredExpenses.length)}.`);
       }
 
       let comparativeConclusion = "Conclusion: activite stable, mais les indicateurs restent insuffisants pour une interpretation comparative detaillee.";
@@ -1591,9 +1678,12 @@ export default function App() {
       insights.push(comparativeConclusion);
 
       setExpenseReport({
+        periodLabel,
         totalSalesAmount,
         totalExpensesAmount,
         netBalance,
+        expenseCount: filteredExpenses.length,
+        expenseItems: filteredExpenses,
         conclusion: comparativeConclusion,
         conclusionTone: comparativeConclusionTone,
         productLines: [...productTotals.values()].sort((left, right) => right.amount - left.amount),
@@ -2027,6 +2117,39 @@ export default function App() {
       const message = error instanceof Error ? error.message : "Impossible de restaurer cette sauvegarde.";
       setUserError(message);
       showToast("error", message);
+    }
+  }
+
+  async function handlePruneHistory() {
+    setUserError("");
+    setUserMessage("");
+
+    if (!isSuperAdmin) {
+      const message = "Seul le super administrateur peut nettoyer l'historique.";
+      setUserError(message);
+      showToast("error", message);
+      return;
+    }
+
+    setHistoryCleanupBusy(true);
+
+    try {
+      const deletedCount = await repository.pruneActivityHistory(historyCleanupPreset);
+      const refreshedHistory = await repository.getActivityHistory();
+      setActivityHistory(refreshedHistory);
+
+      const message =
+        deletedCount > 0
+          ? `${deletedCount} journal(aux) d'activite de plus de ${historyCleanupPreset} mois ont ete supprimes.`
+          : `Aucun journal d'activite de plus de ${historyCleanupPreset} mois a supprimer.`;
+      setUserMessage(message);
+      showToast(deletedCount > 0 ? "success" : "info", message);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Impossible de nettoyer l'historique.";
+      setUserError(message);
+      showToast("error", message);
+    } finally {
+      setHistoryCleanupBusy(false);
     }
   }
 
@@ -2557,6 +2680,7 @@ export default function App() {
       logoSrc: absoluteLogoSrc,
       generatedAt: expenseReportGeneratedAt,
       generatedBy: currentUser?.fullName ?? "Utilisateur",
+      periodLabel: expenseReport.periodLabel,
       totalSalesAmount: expenseReport.totalSalesAmount,
       totalExpensesAmount: expenseReport.totalExpensesAmount,
       netBalance: expenseReport.netBalance,
@@ -2570,15 +2694,15 @@ export default function App() {
       topCategoryMeta: expenseReportTopCategory
         ? `${expenseReportTopCategory.quantity} unite(s) - ${formatCurrency(expenseReportTopCategory.amount)}`
         : "Aucune repartition disponible",
-      expensesCount: expenses.length,
+      expensesCount: expenseReport.expenseCount,
       expensesAverageLabel:
-        expenses.length > 0
-          ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenses.length)}`
+        expenseReport.expenseCount > 0
+          ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenseReport.expenseCount)}`
           : "Aucune depense enregistree",
       insights: expenseReport.insights,
       productLines: expenseReport.productLines,
       serviceLines: expenseReport.serviceLines,
-      expenses,
+      expenses: expenseReport.expenseItems,
     });
   }
 
@@ -2718,6 +2842,19 @@ export default function App() {
   const activeUsersCount = filteredUsers.filter((item) => item.active).length;
 
   const filteredHistory = activityHistory.filter((item) => {
+    if (historyVisibilityPreset !== "all" && item.timestamp) {
+      const cutoff =
+        historyVisibilityPreset === "3m"
+          ? subtractMonths(new Date(), 3)
+          : historyVisibilityPreset === "6m"
+            ? subtractMonths(new Date(), 6)
+            : subtractMonths(new Date(), 12);
+
+      if (new Date(item.timestamp) < cutoff) {
+        return false;
+      }
+    }
+
     const query = normalizeText(historySearch);
     if (!query) return true;
     return [item.action, item.target, item.details, item.user, item.date].some((value) =>
@@ -3563,6 +3700,42 @@ export default function App() {
                 </button>
               </div>
             </div>
+            <div className="sales-trends-toolbar">
+              <label>
+                <span>Periode du rapport</span>
+                <select
+                  value={expenseReportPeriodPreset}
+                  onChange={(event) => setExpenseReportPeriodPreset(event.target.value as ExpenseReportPeriodPreset)}
+                >
+                  <option value="today">Aujourd'hui</option>
+                  <option value="30d">30 derniers jours</option>
+                  <option value="month">Mois en cours</option>
+                  <option value="year">Annee en cours</option>
+                  <option value="all">Toutes les periodes</option>
+                  <option value="custom">Personnalisee</option>
+                </select>
+              </label>
+              {expenseReportPeriodPreset === "custom" ? (
+                <>
+                  <label>
+                    <span>Date debut</span>
+                    <input
+                      type="date"
+                      value={expenseReportPeriodStart}
+                      onChange={(event) => setExpenseReportPeriodStart(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>Date fin</span>
+                    <input
+                      type="date"
+                      value={expenseReportPeriodEnd}
+                      onChange={(event) => setExpenseReportPeriodEnd(event.target.value)}
+                    />
+                  </label>
+                </>
+              ) : null}
+            </div>
             <div className="sales-summary compact-summary">
               <div className="sales-indicator warning">
                 <span>Total des depenses</span>
@@ -4222,6 +4395,59 @@ export default function App() {
             <div className="panel-header">
               <h2>Historique</h2>
             </div>
+            <div className="history-maintenance-card">
+              <div className="history-maintenance-grid">
+                <label>
+                  Historique visible
+                  <select
+                    value={historyVisibilityPreset}
+                    onChange={(event) => setHistoryVisibilityPreset(event.target.value as HistoryVisibilityPreset)}
+                  >
+                    <option value="3m">3 derniers mois</option>
+                    <option value="6m">6 derniers mois</option>
+                    <option value="12m">12 derniers mois</option>
+                    <option value="all">Toutes les periodes</option>
+                  </select>
+                </label>
+                <label>
+                  Nettoyage des anciens logs
+                  <select
+                    value={String(historyCleanupPreset)}
+                    onChange={(event) => setHistoryCleanupPreset(Number(event.target.value) as HistoryCleanupPreset)}
+                  >
+                    <option value="6">Supprimer les logs de plus de 6 mois</option>
+                    <option value="12">Supprimer les logs de plus de 12 mois</option>
+                    <option value="24">Supprimer les logs de plus de 24 mois</option>
+                  </select>
+                </label>
+                <div className="history-maintenance-actions">
+                  <button type="button" className="secondary-btn" onClick={handleCreateBackup}>
+                    Sauvegarder avant nettoyage
+                  </button>
+                  <button
+                    type="button"
+                    className="danger-btn"
+                    disabled={historyCleanupBusy}
+                    onClick={() =>
+                      askConfirmation({
+                        title: "Nettoyer l'historique",
+                        message:
+                          "Cette action supprime uniquement les journaux d'activite anciens. Les ventes, depenses, produits, clients et stocks ne seront pas effaces.",
+                        actionLabel: "Nettoyer maintenant",
+                        tone: "danger",
+                        onConfirm: handlePruneHistory,
+                      })
+                    }
+                  >
+                    {historyCleanupBusy ? "Nettoyage..." : "Nettoyer ancien historique"}
+                  </button>
+                </div>
+              </div>
+              <p className="history-maintenance-note">
+                Conservez un historique visible plus court pour garder l'application legere. Le nettoyage agit
+                seulement sur les journaux d'activite, pas sur les donnees de gestion.
+              </p>
+            </div>
             <div className="section-tools">
               <input
                 className="table-search-input"
@@ -4556,6 +4782,7 @@ export default function App() {
                 <p className="expense-report-subtitle">
                   Document de synthese pour lecture a l'ecran, impression papier ou export PDF.
                 </p>
+                <p className="expense-report-subtitle">Periode analysee: {expenseReport.periodLabel}</p>
               </div>
               <div className="expense-report-meta">
                 <span>Genere le {expenseReportGeneratedAt}</span>
@@ -4606,10 +4833,10 @@ export default function App() {
                 </div>
                 <div className="expense-report-highlight">
                   <span>Nombre de depenses</span>
-                  <strong>{expenses.length}</strong>
+                  <strong>{expenseReport.expenseCount}</strong>
                   <small>
-                    {expenses.length > 0
-                      ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenses.length)}`
+                    {expenseReport.expenseCount > 0
+                      ? `Depense moyenne: ${formatCurrency(expenseReport.totalExpensesAmount / expenseReport.expenseCount)}`
                       : "Aucune depense enregistree"}
                   </small>
                 </div>
@@ -4716,7 +4943,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {expenses.map((item) => (
+                    {expenseReport.expenseItems.map((item) => (
                       <tr key={item.id}>
                         <td>{item.date}</td>
                         <td>{item.nature}</td>

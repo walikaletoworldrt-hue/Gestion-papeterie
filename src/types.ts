@@ -71,6 +71,7 @@ export type SupplyHistoryItem = {
 export type ActivityHistoryItem = {
   id: number;
   date: string;
+  timestamp?: string;
   action: string;
   target: string;
   details: string;
@@ -301,6 +302,7 @@ export type DesktopApi = {
   exportExpenseReportPdf: (html: string, fileName: string) => Promise<string | null>;
   getSupplyHistory: () => Promise<SupplyHistoryItem[]>;
   getActivityHistory: () => Promise<ActivityHistoryItem[]>;
+  pruneActivityHistory: (months: number) => Promise<number>;
   listExpenses: () => Promise<ExpenseItem[]>;
   saveExpense: (draft: ExpenseDraft) => Promise<ExpenseItem[]>;
   getDashboardMetrics: () => Promise<DashboardMetrics>;

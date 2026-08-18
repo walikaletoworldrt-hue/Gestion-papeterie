@@ -1432,11 +1432,40 @@ export class LocalDatabase {
     return rows.map((row) => ({
       id: row.id,
       date: this.formatDateTime(row.created_at),
+      timestamp: row.created_at,
       action: this.formatActionLabel(row.action),
       target: this.formatTargetLabel(row.target_table, row.target_id),
       details: row.details ?? "",
       user: this.formatAuditActorLabel(row),
     }));
+  }
+
+  pruneActivityHistory(months: number): number {
+    this.requireSuperAdminAccess("Seul le super administrateur peut nettoyer l'historique.");
+
+    const normalizedMonths = Math.max(1, Math.floor(months));
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - normalizedMonths);
+    cutoffDate.setHours(0, 0, 0, 0);
+
+    const result = this.db
+      .prepare(
+        `
+          DELETE FROM audit_logs
+          WHERE datetime(created_at) < datetime(?)
+        `
+      )
+      .run(cutoffDate.toISOString());
+
+    this.logAction(
+      this.getActorUserId(),
+      "delete",
+      "audit_logs",
+      0,
+      `Nettoyage de l'historique: ${result.changes} journal(aux) supprime(s) avant ${cutoffDate.toISOString()}.`
+    );
+
+    return result.changes;
   }
 
   listExpenses(): ExpenseItem[] {

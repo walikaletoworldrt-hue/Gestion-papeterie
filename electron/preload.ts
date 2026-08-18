@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
     ipcRenderer.invoke("reports:export-expense-pdf", html, fileName),
   getSupplyHistory: (): Promise<SupplyHistoryItem[]> => ipcRenderer.invoke("history:supply"),
   getActivityHistory: (): Promise<ActivityHistoryItem[]> => ipcRenderer.invoke("history:activity"),
+  pruneActivityHistory: (months: number): Promise<number> => ipcRenderer.invoke("history:prune", months),
   listExpenses: (): Promise<ExpenseItem[]> => ipcRenderer.invoke("expenses:list"),
   saveExpense: (draft: ExpenseDraft): Promise<ExpenseItem[]> => ipcRenderer.invoke("expenses:save", draft),
   getDashboardMetrics: (): Promise<DashboardMetrics> => ipcRenderer.invoke("dashboard:metrics"),
