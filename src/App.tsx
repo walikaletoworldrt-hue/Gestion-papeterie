@@ -167,6 +167,12 @@ type SalesTrendPoint = {
   count: number;
   start: Date;
 };
+type MonthlyComparisonPoint = {
+  key: string;
+  label: string;
+  salesAmount: number;
+  expensesAmount: number;
+};
 type SalesPeriodPreset = "all" | "today" | "7d" | "30d" | "90d" | "month" | "year" | "custom";
 type ExpenseReportPeriodPreset = "today" | "30d" | "month" | "year" | "all" | "custom";
 type HistoryVisibilityPreset = "3m" | "6m" | "12m" | "all";
@@ -987,6 +993,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [loginIdentifier, setLoginIdentifier] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
   const [passwordModalState, setPasswordModalState] = useState<PasswordModalState | null>(null);
@@ -2478,6 +2485,60 @@ export default function App() {
     (current, item) => (!current || item.amount > current.amount ? item : current),
     null
   );
+  const monthlyComparisonData: MonthlyComparisonPoint[] = Array.from({ length: 6 }, (_, index) => {
+    const monthDate = new Date(salesTrendToday.getFullYear(), salesTrendToday.getMonth() - (5 - index), 1);
+    return {
+      key: `${monthDate.getFullYear()}-${monthDate.getMonth() + 1}`,
+      label: monthDate.toLocaleDateString("fr-FR", { month: "short", year: "2-digit" }),
+      salesAmount: 0,
+      expensesAmount: 0,
+    };
+  });
+  const monthlyComparisonMap = new Map(monthlyComparisonData.map((item) => [item.key, item]));
+
+  for (const sale of sales) {
+    const saleDate = parseSaleDate(sale.date);
+    if (!saleDate) {
+      continue;
+    }
+
+    const key = `${saleDate.getFullYear()}-${saleDate.getMonth() + 1}`;
+    const bucket = monthlyComparisonMap.get(key);
+    if (bucket) {
+      bucket.salesAmount += sale.amount;
+    }
+  }
+
+  for (const expense of expenses) {
+    const expenseDate = parseSaleDate(expense.date);
+    if (!expenseDate) {
+      continue;
+    }
+
+    const key = `${expenseDate.getFullYear()}-${expenseDate.getMonth() + 1}`;
+    const bucket = monthlyComparisonMap.get(key);
+    if (bucket) {
+      bucket.expensesAmount += expense.amount;
+    }
+  }
+
+  const monthlyComparisonMax = monthlyComparisonData.reduce(
+    (max, item) => Math.max(max, item.salesAmount, item.expensesAmount),
+    0
+  );
+  const topClients = Array.from(
+    sales.reduce((map, sale) => {
+      const current = map.get(sale.clientName) ?? { clientName: sale.clientName, amount: 0, count: 0 };
+      current.amount += sale.amount;
+      current.count += 1;
+      map.set(sale.clientName, current);
+      return map;
+    }, new Map<string, { clientName: string; amount: number; count: number }>())
+  )
+    .map(([, value]) => value)
+    .sort((left, right) => right.amount - left.amount)
+    .slice(0, 5);
+  const topClientsMaxAmount = topClients.reduce((max, item) => Math.max(max, item.amount), 0);
 
   const stockRows = currentStock.map((item) => {
     const product = products.find((entry) => entry.id === item.productId);
@@ -2935,13 +2996,23 @@ export default function App() {
             </label>
             <label>
               Mot de passe
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(event) => setLoginPassword(event.target.value)}
-                placeholder="Votre mot de passe"
-                autoComplete="current-password"
-              />
+              <div className="password-input-wrap">
+                <input
+                  type={showLoginPassword ? "text" : "password"}
+                  value={loginPassword}
+                  onChange={(event) => setLoginPassword(event.target.value)}
+                  placeholder="Votre mot de passe"
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  className="password-toggle-btn"
+                  onClick={() => setShowLoginPassword((current) => !current)}
+                  aria-label={showLoginPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+                >
+                  {showLoginPassword ? "Masquer" : "Afficher"}
+                </button>
+              </div>
             </label>
 
             {loginError ? <p className="error-text">{loginError}</p> : null}
@@ -3356,6 +3427,84 @@ export default function App() {
                           />
                           <span>{item.label}</span>
                           <small>{item.count} vente(s)</small>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
+
+              <article className="panel-card">
+                <div className="panel-header">
+                  <h2>Ventes vs depenses</h2>
+                </div>
+                <p className="history-maintenance-note">Comparaison mensuelle sur les 6 derniers mois pour suivre l'equilibre de l'activite.</p>
+                {monthlyComparisonMax === 0 ? (
+                  <EmptyState
+                    title="Aucune donnee exploitable"
+                    description="Ajoutez des ventes ou des depenses pour alimenter ce graphique comparatif."
+                  />
+                ) : (
+                  <div className="comparison-chart" aria-label="Comparaison mensuelle des ventes et des depenses">
+                    {monthlyComparisonData.map((item) => {
+                      const salesHeight =
+                        monthlyComparisonMax > 0 ? Math.max((item.salesAmount / monthlyComparisonMax) * 100, item.salesAmount > 0 ? 10 : 0) : 0;
+                      const expensesHeight =
+                        monthlyComparisonMax > 0
+                          ? Math.max((item.expensesAmount / monthlyComparisonMax) * 100, item.expensesAmount > 0 ? 10 : 0)
+                          : 0;
+
+                      return (
+                        <div className="comparison-chart-item" key={item.key}>
+                          <strong>{item.label}</strong>
+                          <div className="comparison-chart-bars">
+                            <div
+                              className="comparison-bar sales"
+                              style={{ height: `${salesHeight}%` }}
+                              title={`Ventes ${item.label}: ${formatCurrency(item.salesAmount)}`}
+                            />
+                            <div
+                              className="comparison-bar expenses"
+                              style={{ height: `${expensesHeight}%` }}
+                              title={`Depenses ${item.label}: ${formatCurrency(item.expensesAmount)}`}
+                            />
+                          </div>
+                          <small>V {formatCurrency(item.salesAmount)}</small>
+                          <small>D {formatCurrency(item.expensesAmount)}</small>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </article>
+
+              <article className="panel-card">
+                <div className="panel-header">
+                  <h2>Top clients</h2>
+                </div>
+                <p className="history-maintenance-note">Les 5 clients qui ont genere le plus de chiffre d'affaires sur les ventes enregistrees.</p>
+                {topClients.length === 0 ? (
+                  <EmptyState
+                    title="Aucun classement disponible"
+                    description="Les meilleurs clients apparaitront ici des que les ventes seront enregistrees."
+                  />
+                ) : (
+                  <div className="ranking-list" aria-label="Classement des meilleurs clients">
+                    {topClients.map((item, index) => {
+                      const width = topClientsMaxAmount > 0 ? Math.max((item.amount / topClientsMaxAmount) * 100, 16) : 16;
+                      return (
+                        <div className="ranking-item" key={`${item.clientName}-${index}`}>
+                          <div className="ranking-head">
+                            <span className="ranking-index">{index + 1}</span>
+                            <div className="ranking-copy">
+                              <strong>{item.clientName}</strong>
+                              <small>{item.count} vente(s)</small>
+                            </div>
+                            <span className="ranking-value">{formatCurrency(item.amount)}</span>
+                          </div>
+                          <div className="ranking-track">
+                            <div className="ranking-fill" style={{ width: `${width}%` }} />
+                          </div>
                         </div>
                       );
                     })}

@@ -228,6 +228,30 @@ button {
   background: #fff;
 }
 
+.password-input-wrap {
+  position: relative;
+}
+
+.password-input-wrap input {
+  width: 100%;
+  padding-right: 6.5rem;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  top: 50%;
+  right: 0.55rem;
+  transform: translateY(-50%);
+  min-height: 2.3rem;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid #d8e2f0;
+  border-radius: 999px;
+  background: #f8fbff;
+  color: #1f4f8f;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .login-submit-btn {
   min-height: 3.15rem;
   margin-top: 0.25rem;
@@ -2507,6 +2531,120 @@ tbody td:first-child {
   font-size: 0.74rem;
   color: #7488a6;
   text-align: center;
+}
+
+.comparison-chart {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.9rem;
+  align-items: end;
+  min-height: 290px;
+  padding-top: 1rem;
+}
+
+.comparison-chart-item {
+  display: grid;
+  gap: 0.45rem;
+  justify-items: center;
+  color: var(--muted);
+}
+
+.comparison-chart-item strong {
+  font-size: 0.82rem;
+  color: #16335b;
+}
+
+.comparison-chart-bars {
+  display: flex;
+  align-items: end;
+  justify-content: center;
+  gap: 0.45rem;
+  width: 100%;
+  min-height: 180px;
+}
+
+.comparison-bar {
+  width: 42%;
+  min-height: 0;
+  border-radius: 0.95rem 0.95rem 0.35rem 0.35rem;
+}
+
+.comparison-bar.sales {
+  background: linear-gradient(180deg, #58b0ff, #1d7ae6);
+}
+
+.comparison-bar.expenses {
+  background: linear-gradient(180deg, #ffb257, #f97316);
+}
+
+.comparison-chart-item small {
+  font-size: 0.74rem;
+  color: #7488a6;
+  text-align: center;
+}
+
+.ranking-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.ranking-item {
+  padding: 0.9rem 1rem;
+  border: 1px solid #dce7f5;
+  border-radius: 1rem;
+  background: linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+}
+
+.ranking-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.8rem;
+  align-items: center;
+  margin-bottom: 0.7rem;
+}
+
+.ranking-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: #eaf2ff;
+  color: #1657c1;
+  font-weight: 800;
+}
+
+.ranking-copy {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.ranking-copy strong {
+  color: #16335b;
+}
+
+.ranking-copy small,
+.ranking-value {
+  color: #6b7f99;
+}
+
+.ranking-value {
+  font-weight: 700;
+}
+
+.ranking-track {
+  width: 100%;
+  height: 0.7rem;
+  border-radius: 999px;
+  background: #e9f0f8;
+  overflow: hidden;
+}
+
+.ranking-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #1d7ae6, #62a9ff);
 }
 
 .summary-block + .summary-block {
