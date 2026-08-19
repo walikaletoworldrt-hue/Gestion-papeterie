@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS replenishments (
   quantity INTEGER NOT NULL,
   purchase_price REAL NOT NULL,
   supplier TEXT NOT NULL,
+  lot_number TEXT,
+  transport_total REAL NOT NULL DEFAULT 0,
   replenished_at TEXT NOT NULL,
   user_id INTEGER,
   note TEXT,

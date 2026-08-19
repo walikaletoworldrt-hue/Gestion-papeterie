@@ -85,6 +85,8 @@ create table if not exists public.replenishments (
   quantity integer not null,
   purchase_price numeric(12, 2) not null,
   supplier text not null,
+  lot_number text,
+  transport_total numeric(12, 2) not null default 0,
   replenished_at timestamptz not null default timezone('utc', now()),
   cycle_id bigint,
   user_id bigint references public.users(id) on delete set null,

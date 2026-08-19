@@ -43,10 +43,44 @@ const tabs: { id: TabId; label: string }[] = [
   { id: "history", label: "Historique" },
 ];
 
+const stockWeeklyLaborCostStorageKey = "walikale-stock-weekly-labor-cost";
+
+const productCategoryOptions = [
+  "Papeterie",
+  "Cahiers et registres",
+  "Stylos et ecriture",
+  "Papier et impressions",
+  "Classement et archivage",
+  "Fournitures scolaires",
+  "Informatique et accessoires",
+  "Impression et photocopie",
+  "Boissons fraiches",
+  "Biscuits et snacks",
+  "Confiserie",
+  "Hygiéne et entretien",
+  "Divers boutique",
+];
+
+const productCategoryCodeMap: Record<string, string> = {
+  Papeterie: "PAP",
+  "Cahiers et registres": "CAH",
+  "Stylos et ecriture": "STY",
+  "Papier et impressions": "IMP",
+  "Classement et archivage": "CLA",
+  "Fournitures scolaires": "SCO",
+  "Informatique et accessoires": "INF",
+  "Impression et photocopie": "PHO",
+  "Boissons fraiches": "BOI",
+  "Biscuits et snacks": "SNK",
+  Confiserie: "CNF",
+  "Hygiéne et entretien": "HYG",
+  "Divers boutique": "DIV",
+};
+
 const emptyDraft: ProductDraft = {
   code: "",
   name: "",
-  category: "General",
+  category: productCategoryOptions[0],
   purchasePrice: 0,
   sellingPrice: 0,
   quantity: 0,
@@ -156,6 +190,8 @@ type ReplenishmentDraft = {
   purchasePrice: number;
   sellingPrice: number;
   supplier: string;
+  lotNumber: string;
+  transportTotal: number;
 };
 
 type SalesTrendPreset = "7d" | "30d" | "90d" | "month" | "year" | "custom";
@@ -664,6 +700,41 @@ function subtractMonths(date: Date, months: number) {
   return next;
 }
 
+function getProductCategoryCode(category: string) {
+  const directCode = productCategoryCodeMap[category];
+  if (directCode) {
+    return directCode;
+  }
+
+  const normalized = category
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9 ]/g, " ")
+    .trim();
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0] + (words[2]?.[0] ?? "X")).toUpperCase();
+  }
+
+  return normalized.slice(0, 3).toUpperCase().padEnd(3, "X") || "PRD";
+}
+
+function buildNextProductCode(category: string, products: Product[]) {
+  const prefix = `PAP-${getProductCategoryCode(category)}-`;
+  const nextIndex =
+    products.reduce((max, product) => {
+      if (!product.code.startsWith(prefix)) {
+        return max;
+      }
+
+      const numericPart = Number(product.code.slice(prefix.length));
+      return Number.isFinite(numericPart) ? Math.max(max, numericPart) : max;
+    }, 0) + 1;
+
+  return `${prefix}${String(nextIndex).padStart(3, "0")}`;
+}
+
 function toInputDateValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -819,6 +890,13 @@ function downloadCsv(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
+function buildReplenishmentTemplateCsvContent() {
+  return [
+    "product_code,product_name,quantity,purchase_price,selling_price,supplier,lot_number,transport_total",
+    "PAP-PAP-001,Classeur,10,4.2,6,Papeterie Kivu,LOT-AOUT-001,35000",
+  ].join("\n");
+}
+
 function getRoleBadgeClass(role: string) {
   if (role === "Super admin") {
     return "user-role-badge super-admin";
@@ -854,6 +932,8 @@ function createEmptyReplenishmentDraft(products: Product[]): ReplenishmentDraft 
     purchasePrice: firstProduct?.purchasePrice ?? 0,
     sellingPrice: firstProduct?.sellingPrice ?? 0,
     supplier: firstProduct?.supplier ?? "",
+    lotNumber: "",
+    transportTotal: 0,
   };
 }
 
@@ -1008,8 +1088,15 @@ export default function App() {
   const [syncSelectionState, setSyncSelectionState] = useState<SyncSelectionState>(null);
   const [pendingSyncRequestKeys, setPendingSyncRequestKeys] = useState<string[] | null>(null);
   const [expenseReportBusy, setExpenseReportBusy] = useState(false);
+  const [stockWeeklyLaborCost, setStockWeeklyLaborCost] = useState(50000);
+  const currentDraftCategory = draft.category ?? productCategoryOptions[0];
+  const visibleProductCategoryOptions = productCategoryOptions.includes(currentDraftCategory)
+    ? productCategoryOptions
+    : [currentDraftCategory, ...productCategoryOptions];
+  const suggestedProductCode = buildNextProductCode(currentDraftCategory, products);
   const isSuperAdmin = currentUser?.role === "Super admin";
   const isAdministrator = currentUser?.role === "Administrateur";
+  const canViewReplenishmentAmounts = isSuperAdmin;
   const canManageUsers = isSuperAdmin;
   const canManageInventory = isSuperAdmin || isAdministrator;
   const canCreateInventory = isSuperAdmin || isAdministrator;
@@ -1037,6 +1124,29 @@ export default function App() {
       setActiveTab(visibleTabs[0].id);
     }
   }, [activeTab, visibleTabs]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const savedWeeklyLaborCost = window.localStorage.getItem(stockWeeklyLaborCostStorageKey);
+
+    if (savedWeeklyLaborCost !== null) {
+      const parsedWeeklyLaborCost = Number(savedWeeklyLaborCost);
+      if (Number.isFinite(parsedWeeklyLaborCost)) {
+        setStockWeeklyLaborCost(parsedWeeklyLaborCost);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(stockWeeklyLaborCostStorageKey, String(stockWeeklyLaborCost));
+  }, [stockWeeklyLaborCost]);
 
   async function loadData() {
     setLoading(true);
@@ -1495,6 +1605,8 @@ export default function App() {
       purchasePrice: selectedProduct.purchasePrice,
       sellingPrice: selectedProduct.sellingPrice,
       supplier: selectedProduct.supplier,
+      lotNumber: "",
+      transportTotal: 0,
     });
     setActiveModal("replenishment");
   }
@@ -1752,6 +1864,7 @@ export default function App() {
 
     await repository.saveProduct({
       ...draft,
+      code: productModalMode === "create" ? suggestedProductCode : draft.code,
       name: draft.name.trim(),
       supplier: draft.supplier.trim(),
       quantity: Number(draft.quantity),
@@ -1892,6 +2005,8 @@ export default function App() {
       unit: selectedProduct.unit,
       alertThreshold: selectedProduct.alertThreshold,
       supplier: replenishmentDraft.supplier.trim() || selectedProduct.supplier,
+      replenishmentLotNumber: replenishmentDraft.lotNumber.trim(),
+      replenishmentTransportTotal: Number(replenishmentDraft.transportTotal || 0),
     });
 
     await loadData();
@@ -2539,6 +2654,16 @@ export default function App() {
     .sort((left, right) => right.amount - left.amount)
     .slice(0, 5);
   const topClientsMaxAmount = topClients.reduce((max, item) => Math.max(max, item.amount), 0);
+  const replenishmentLotMetrics = supplyHistory
+    .filter((entry) => entry.movementType === "reapprovisionnement" && entry.lotNumber)
+    .reduce((map, entry) => {
+      const key = entry.lotNumber ?? "";
+      const current = map.get(key) ?? { quantity: 0, transportTotal: 0 };
+      current.quantity += entry.quantity;
+      current.transportTotal = Math.max(current.transportTotal, Number(entry.transportTotal ?? 0));
+      map.set(key, current);
+      return map;
+    }, new Map<string, { quantity: number; transportTotal: number }>());
 
   const stockRows = currentStock.map((item) => {
     const product = products.find((entry) => entry.id === item.productId);
@@ -2551,8 +2676,26 @@ export default function App() {
     const salesUnits = supplyHistory
       .filter((entry) => entry.product === item.productName && entry.movementType === "vente")
       .reduce((sum, entry) => sum + entry.quantity, 0);
+    const replenishmentEntries = supplyHistory.filter(
+      (entry) => entry.product === item.productName && entry.movementType === "reapprovisionnement"
+    );
+    const transportCostAllocated = replenishmentEntries.reduce((sum, entry) => {
+      const lotNumber = entry.lotNumber ?? "";
+      if (!lotNumber) {
+        return sum;
+      }
+
+      const lotMetrics = replenishmentLotMetrics.get(lotNumber);
+      if (!lotMetrics || lotMetrics.quantity <= 0) {
+        return sum;
+      }
+
+      return sum + entry.quantity * (lotMetrics.transportTotal / lotMetrics.quantity);
+    }, 0);
+    const transportCostPerUnit = replenishments > 0 ? transportCostAllocated / replenishments : 0;
     const status =
       item.currentStock <= 0 ? "Rupture" : item.currentStock <= item.alertThreshold ? "Stock faible" : "OK";
+    const transportCostTotal = item.currentStock * transportCostPerUnit;
 
     return {
       ...item,
@@ -2565,6 +2708,8 @@ export default function App() {
       stockValue: item.currentStock * (product?.purchasePrice ?? 0),
       potentialRevenue: item.currentStock * (product?.sellingPrice ?? 0),
       potentialMargin: item.currentStock * ((product?.sellingPrice ?? 0) - (product?.purchasePrice ?? 0)),
+      transportCostPerUnit,
+      transportCostTotal,
       unit: product?.unit ?? "piece",
       status,
     };
@@ -2587,6 +2732,13 @@ export default function App() {
   const stockValueTotal = filteredStockRows.reduce((sum, item) => sum + item.stockValue, 0);
   const stockPotentialRevenueTotal = filteredStockRows.reduce((sum, item) => sum + item.potentialRevenue, 0);
   const stockPotentialMarginTotal = filteredStockRows.reduce((sum, item) => sum + item.potentialMargin, 0);
+  const stockTransportCostTotal = filteredStockRows.reduce((sum, item) => sum + item.transportCostTotal, 0);
+  const stockLaborCostPerUnit = stockUnitsTotal > 0 ? stockWeeklyLaborCost / stockUnitsTotal : 0;
+  const stockNetPotentialProfitTotal = filteredStockRows.reduce(
+    (sum, item) =>
+      sum + item.currentStock * (item.sellingPrice - item.averagePurchasePrice - item.transportCostPerUnit - stockLaborCostPerUnit),
+    0
+  );
   const replenishmentSpendTotal = supplyHistory
     .filter((entry) => entry.movementType === "reapprovisionnement")
     .reduce((sum, entry) => sum + entry.amount, 0);
@@ -2601,6 +2753,7 @@ export default function App() {
         "Ventes",
         "Stock actuel",
         ...(isSuperAdmin ? ["P.A. moyen", "Valeur du stock"] : []),
+        ...(isSuperAdmin ? ["Transport total", "Benefice net estime"] : []),
         "Unite",
         "Seuil",
         "Statut",
@@ -2614,6 +2767,15 @@ export default function App() {
           item.salesUnits,
           item.currentStock,
           ...(isSuperAdmin ? [item.averagePurchasePrice.toFixed(2), item.stockValue.toFixed(2)] : []),
+          ...(isSuperAdmin
+            ? [
+                item.transportCostTotal.toFixed(2),
+                (
+                  item.currentStock *
+                  (item.sellingPrice - item.averagePurchasePrice - item.transportCostPerUnit - stockLaborCostPerUnit)
+                ).toFixed(2),
+              ]
+            : []),
           item.unit,
           item.alertThreshold,
           item.status,
@@ -2623,6 +2785,54 @@ export default function App() {
 
     downloadCsv("stock-actuel.csv", rows);
     showToast("success", "Export CSV du stock genere.");
+  }
+
+  async function handleExportReplenishmentTemplate() {
+    try {
+      if (window.desktopApi) {
+        const result = await repository.exportReplenishmentTemplateCsv();
+        showToast(result ? "success" : "info", result ? `Modele exporte: ${result}` : "Export du modele annule.");
+        return;
+      }
+
+      downloadCsv("modele-approvisionnement.csv", buildReplenishmentTemplateCsvContent());
+      showToast("success", "Modele CSV compatible Excel genere.");
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'exporter le modele.");
+    }
+  }
+
+  async function handleExportReplenishmentHistory() {
+    try {
+      const result = await repository.exportReplenishmentHistoryCsv();
+      showToast(result ? "success" : "info", result ? `Export genere: ${result}` : "Export annule.");
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'exporter les approvisionnements.");
+    }
+  }
+
+  async function handleImportReplenishmentCsv() {
+    if (!canCreateInventory) {
+      showAccessDenied("Votre profil ne permet pas d'importer des approvisionnements.");
+      return;
+    }
+
+    try {
+      const result = await repository.importReplenishmentCsv();
+      if (!result) {
+        showToast("info", "Import annule.");
+        return;
+      }
+
+      await loadData();
+      const message =
+        result.errors.length > 0
+          ? `Import termine: ${result.imported} ligne(s) importee(s), ${result.skipped} ignoree(s).`
+          : `Import termine: ${result.imported} ligne(s) importee(s).`;
+      showToast(result.imported > 0 ? "success" : "info", message);
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'importer le fichier.");
+    }
   }
 
   async function handleAdvanceInvoiceSeries() {
@@ -3010,7 +3220,7 @@ export default function App() {
                   onClick={() => setShowLoginPassword((current) => !current)}
                   aria-label={showLoginPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
                 >
-                  {showLoginPassword ? "Masquer" : "Afficher"}
+                  <span aria-hidden="true">{showLoginPassword ? "◐" : "◉"}</span>
                 </button>
               </div>
             </label>
@@ -4031,13 +4241,13 @@ export default function App() {
                 <button className="ghost-btn" type="button" onClick={openSupplyHistoryModal}>
                   Historique d'approvisionnement
                 </button>
-                <button className="ghost-btn" type="button">
+                <button className="ghost-btn" type="button" onClick={() => void handleImportReplenishmentCsv()}>
                   Importer Excel
                 </button>
-                <button className="ghost-btn success" type="button">
+                <button className="ghost-btn success" type="button" onClick={() => void handleExportReplenishmentHistory()}>
                   Exporter Excel
                 </button>
-                <button className="ghost-btn muted" type="button">
+                <button className="ghost-btn muted" type="button" onClick={() => void handleExportReplenishmentTemplate()}>
                   Modele Excel
                 </button>
               </div>
@@ -4298,6 +4508,24 @@ export default function App() {
                   <strong>{formatCurrency(stockPotentialMarginTotal)}</strong>
                 </div>
               ) : null}
+              {isSuperAdmin ? (
+                <div className="stock-indicator warning">
+                  <span>Transport estime sur le stock</span>
+                  <strong>{formatCurrency(stockTransportCostTotal)}</strong>
+                </div>
+              ) : null}
+              {isSuperAdmin ? (
+                <div className="stock-indicator neutral">
+                  <span>Charge travailleurs / semaine</span>
+                  <strong>{formatCurrency(stockWeeklyLaborCost)}</strong>
+                </div>
+              ) : null}
+              {isSuperAdmin ? (
+                <div className="stock-indicator success">
+                  <span>Benefice potentiel net</span>
+                  <strong>{formatCurrency(stockNetPotentialProfitTotal)}</strong>
+                </div>
+              ) : null}
               <div className="stock-indicator success">
                 <span>Stock correct</span>
                 <strong>{stockHealthyCount}</strong>
@@ -4334,11 +4562,28 @@ export default function App() {
                   value={stockSearch}
                   onChange={(event) => setStockSearch(event.target.value)}
                 />
+                {isSuperAdmin ? (
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={stockWeeklyLaborCost}
+                    onChange={(event) => setStockWeeklyLaborCost(Number(event.target.value) || 0)}
+                    placeholder="Travailleurs / semaine"
+                  />
+                ) : null}
                 <button className="ghost-btn" type="button" onClick={handleExportStockCsv}>
                   Exporter CSV
                 </button>
               </div>
             </div>
+            {isSuperAdmin ? (
+              <p className="history-maintenance-note">
+                Calcul estime: benefice net = prix de vente - prix d'achat - transport moyen calcule depuis les lots
+                d'approvisionnement - part hebdomadaire travailleurs. La charge travailleurs est repartie sur les
+                unites encore en stock.
+              </p>
+            ) : null}
             {currentStock.length === 0 ? (
               <EmptyState
                 title="Aucun stock disponible"
@@ -4360,6 +4605,8 @@ export default function App() {
                     <th>Stock actuel</th>
                     {isSuperAdmin ? <th>P.A. moyen</th> : null}
                     {isSuperAdmin ? <th>Valeur stock (achat)</th> : null}
+                    {isSuperAdmin ? <th>Transport</th> : null}
+                    {isSuperAdmin ? <th>Benefice net</th> : null}
                     <th>Unite</th>
                     <th>Seuil</th>
                     <th>Alerte</th>
@@ -4379,6 +4626,15 @@ export default function App() {
                       <td className="stock-current-cell">{item.currentStock}</td>
                       {isSuperAdmin ? <td>{formatCurrency(item.averagePurchasePrice)}</td> : null}
                       {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(item.stockValue)}</td> : null}
+                      {isSuperAdmin ? <td>{formatCurrency(item.transportCostTotal)}</td> : null}
+                      {isSuperAdmin ? (
+                        <td className="stock-value-cell">
+                          {formatCurrency(
+                            item.currentStock *
+                              (item.sellingPrice - item.averagePurchasePrice - item.transportCostPerUnit - stockLaborCostPerUnit)
+                          )}
+                        </td>
+                      ) : null}
                       <td>{item.unit}</td>
                       <td>{item.alertThreshold}</td>
                       <td>
@@ -4393,6 +4649,8 @@ export default function App() {
                     <td className="stock-current-cell">{stockUnitsTotal}</td>
                     {isSuperAdmin ? <td>-</td> : null}
                     {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(stockValueTotal)}</td> : null}
+                    {isSuperAdmin ? <td>{formatCurrency(stockTransportCostTotal)}</td> : null}
+                    {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(stockNetPotentialProfitTotal)}</td> : null}
                     <td colSpan={isSuperAdmin ? 3 : 4}></td>
                   </tr>
                 </tbody>
@@ -4650,8 +4908,8 @@ export default function App() {
             <label>
               Code
               <input
-                value={draft.code}
-                onChange={(event) => setDraft((current) => ({ ...current, code: event.target.value }))}
+                value={productModalMode === "create" ? suggestedProductCode : draft.code}
+                readOnly
               />
             </label>
             <label>
@@ -4664,10 +4922,16 @@ export default function App() {
             </label>
             <label>
               Categorie
-              <input
+              <select
                 value={draft.category}
                 onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}
-              />
+              >
+                {visibleProductCategoryOptions.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
             </label>
             <label>
               Prix achat
@@ -5166,6 +5430,26 @@ export default function App() {
               />
             </label>
             <label>
+              LOT commande
+              <input
+                value={replenishmentDraft.lotNumber}
+                onChange={(event) => setReplenishmentDraft((current) => ({ ...current, lotNumber: event.target.value }))}
+                placeholder="Ex: LOT-AOUT-001"
+              />
+            </label>
+            <label>
+              Transport global du lot
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={replenishmentDraft.transportTotal}
+                onChange={(event) =>
+                  setReplenishmentDraft((current) => ({ ...current, transportTotal: Number(event.target.value) || 0 }))
+                }
+              />
+            </label>
+            <label>
               Prix d'achat
               <input
                 type="number"
@@ -5579,10 +5863,12 @@ export default function App() {
                 <span className="stock-stat-title">Total approvisionne</span>
                 <strong>{replenishmentHistoryUnits}</strong>
               </article>
-              <article className="stock-stat-card">
-                <span className="stock-stat-title">Valeur cumulee</span>
-                <strong>{formatCurrency(replenishmentHistoryAmount)}</strong>
-              </article>
+              {canViewReplenishmentAmounts ? (
+                <article className="stock-stat-card">
+                  <span className="stock-stat-title">Valeur cumulee</span>
+                  <strong>{formatCurrency(replenishmentHistoryAmount)}</strong>
+                </article>
+              ) : null}
             </div>
             {filteredReplenishmentHistory.length === 0 ? (
               <EmptyState
@@ -5596,11 +5882,13 @@ export default function App() {
                     <tr>
                       <th>Date</th>
                       <th>Produit</th>
+                      <th>LOT</th>
                       <th>Quantite</th>
                       <th>Prix d'achat</th>
                       <th>Prix de vente</th>
                       <th>Fournisseur</th>
-                      <th>Montant</th>
+                      {canViewReplenishmentAmounts ? <th>Transport lot</th> : null}
+                      {canViewReplenishmentAmounts ? <th>Montant</th> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -5608,11 +5896,13 @@ export default function App() {
                       <tr key={item.id}>
                         <td>{item.date}</td>
                         <td>{item.product}</td>
+                        <td>{item.lotNumber || "-"}</td>
                         <td>{item.quantity}</td>
                         <td>{formatCurrency(item.purchasePrice)}</td>
                         <td>{formatCurrency(item.sellingPrice)}</td>
                         <td>{item.supplier}</td>
-                        <td>{formatCurrency(item.amount)}</td>
+                        {canViewReplenishmentAmounts ? <td>{formatCurrency(item.transportTotal ?? 0)}</td> : null}
+                        {canViewReplenishmentAmounts ? <td>{formatCurrency(item.amount)}</td> : null}
                       </tr>
                     ))}
                   </tbody>

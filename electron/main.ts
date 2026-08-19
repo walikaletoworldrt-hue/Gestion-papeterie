@@ -230,6 +230,9 @@ function registerIpc() {
   ipcMain.handle("sync:complete-buckets", (_event, tables: string[], syncedAt?: string | null) => {
     database.markSyncBucketsComplete(tables, syncedAt ?? undefined);
   });
+  ipcMain.handle("replenishments:template-export", async () => exportReplenishmentTemplateCsv());
+  ipcMain.handle("replenishments:history-export", async () => exportReplenishmentHistoryCsv());
+  ipcMain.handle("replenishments:import", async () => importReplenishmentCsv());
   ipcMain.handle("backup:create", async () => createManualBackup());
   ipcMain.handle("backup:restore", async () => restoreBackupFromDialog());
 }
@@ -348,6 +351,152 @@ async function restoreBackupFromDialog() {
   database.importSyncSnapshot(payload.snapshot);
   database.markSyncComplete(payload.lastSyncedAt ?? undefined);
   return filePath;
+}
+
+function escapeCsvCell(value: string | number) {
+  const text = String(value ?? "");
+  if (/[",\n;]/.test(text)) {
+    return `"${text.replace(/"/g, "\"\"")}"`;
+  }
+
+  return text;
+}
+
+function parseCsvLine(line: string) {
+  const result: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+
+    if (char === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  result.push(current);
+  return result.map((cell) => cell.trim());
+}
+
+function buildReplenishmentTemplateCsvContent() {
+  const rows = [
+    ["product_code", "product_name", "quantity", "purchase_price", "selling_price", "supplier", "lot_number", "transport_total"],
+    ["PAP-PAP-001", "Classeur", "10", "4.2", "6", "Papeterie Kivu", "LOT-AOUT-001", "35000"],
+  ];
+  return rows.map((row) => row.map(escapeCsvCell).join(",")).join("\n");
+}
+
+function buildReplenishmentHistoryCsvContent() {
+  const rows = database
+    .getSupplyHistory()
+    .filter((item) => item.movementType === "reapprovisionnement")
+    .map((item) => [item.date, item.product, item.quantity, item.purchasePrice, item.sellingPrice, item.supplier, item.lotNumber ?? "", item.transportTotal ?? 0, item.amount]);
+  const header = ["date", "product_name", "quantity", "purchase_price", "selling_price", "supplier", "lot_number", "transport_total", "amount"];
+  return [header, ...rows].map((row) => row.map(escapeCsvCell).join(",")).join("\n");
+}
+
+async function saveCsvThroughDialog(defaultFileName: string, title: string, content: string) {
+  const downloadsPath = app.getPath("downloads");
+  const defaultPath = path.join(downloadsPath, defaultFileName);
+  const dialogOwner = mainWindow ?? BrowserWindow.getFocusedWindow() ?? null;
+  const result = dialogOwner
+    ? await dialog.showSaveDialog(dialogOwner, {
+        title,
+        defaultPath,
+        filters: [{ name: "Fichier CSV compatible Excel", extensions: ["csv"] }],
+      })
+    : await dialog.showSaveDialog({
+        title,
+        defaultPath,
+        filters: [{ name: "Fichier CSV compatible Excel", extensions: ["csv"] }],
+      });
+
+  if (result.canceled || !result.filePath) {
+    return null;
+  }
+
+  await fs.writeFile(result.filePath, content, "utf-8");
+  shell.showItemInFolder(result.filePath);
+  return result.filePath;
+}
+
+async function exportReplenishmentTemplateCsv() {
+  return saveCsvThroughDialog(
+    "modele-approvisionnement.csv",
+    "Enregistrer le modele d'approvisionnement",
+    buildReplenishmentTemplateCsvContent()
+  );
+}
+
+async function exportReplenishmentHistoryCsv() {
+  return saveCsvThroughDialog(
+    "approvisionnements.csv",
+    "Exporter les approvisionnements",
+    buildReplenishmentHistoryCsvContent()
+  );
+}
+
+async function importReplenishmentCsv() {
+  const downloadsPath = app.getPath("downloads");
+  const dialogOwner = mainWindow ?? BrowserWindow.getFocusedWindow() ?? null;
+  const result = dialogOwner
+    ? await dialog.showOpenDialog(dialogOwner, {
+        title: "Importer un fichier d'approvisionnement",
+        defaultPath: downloadsPath,
+        properties: ["openFile"],
+        filters: [{ name: "Fichier CSV compatible Excel", extensions: ["csv"] }],
+      })
+    : await dialog.showOpenDialog({
+        title: "Importer un fichier d'approvisionnement",
+        defaultPath: downloadsPath,
+        properties: ["openFile"],
+        filters: [{ name: "Fichier CSV compatible Excel", extensions: ["csv"] }],
+      });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+
+  const raw = await fs.readFile(result.filePaths[0], "utf-8");
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length <= 1) {
+    throw new Error("Le fichier CSV est vide ou ne contient aucune ligne d'approvisionnement.");
+  }
+
+  const rows = lines.slice(1).map((line) => {
+    const [productCode = "", productName = "", quantity = "", purchasePrice = "", sellingPrice = "", supplier = "", lotNumber = "", transportTotal = "0"] = parseCsvLine(line);
+    return {
+      productCode,
+      productName,
+      quantity: Number(quantity),
+      purchasePrice: Number(purchasePrice),
+      sellingPrice: Number(sellingPrice),
+      supplier,
+      lotNumber,
+      transportTotal: Number(transportTotal),
+    };
+  });
+
+  return database.importReplenishmentRows(rows);
 }
 
 async function createDocumentWindow(

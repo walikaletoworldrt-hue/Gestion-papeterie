@@ -70,6 +70,8 @@ type SupplyHistoryRow = {
   purchase_price: number;
   selling_price: number;
   amount: number;
+  lot_number: string | null;
+  transport_total: number | null;
   movement_type: "stock_initial" | "reapprovisionnement" | "vente";
 };
 
@@ -322,7 +324,7 @@ export class LocalDatabase {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         code TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL UNIQUE,
-        category TEXT NOT NULL DEFAULT 'General',
+        category TEXT NOT NULL DEFAULT 'Papeterie',
         purchase_price REAL NOT NULL,
         selling_price REAL NOT NULL,
         unit TEXT NOT NULL DEFAULT 'piece',
@@ -362,6 +364,8 @@ export class LocalDatabase {
         quantity INTEGER NOT NULL,
         purchase_price REAL NOT NULL,
         supplier TEXT NOT NULL,
+        lot_number TEXT,
+        transport_total REAL NOT NULL DEFAULT 0,
         replenished_at TEXT NOT NULL,
         cycle_id INTEGER,
         user_id INTEGER,
@@ -475,6 +479,7 @@ export class LocalDatabase {
 
     this.ensureUserColumns();
     this.ensureCycleColumns();
+    this.ensureReplenishmentLotColumns();
     this.ensureAuditLogColumns();
     this.ensureInventoryCycleSeed();
     this.ensureInvoiceSequenceSettings();
@@ -524,6 +529,19 @@ export class LocalDatabase {
 
     if (!new Set(movementColumns.map((column) => column.name)).has("cycle_id")) {
       this.db.exec("ALTER TABLE stock_movements ADD COLUMN cycle_id INTEGER");
+    }
+  }
+
+  private ensureReplenishmentLotColumns() {
+    const replenishmentColumns = this.db.prepare("PRAGMA table_info(replenishments)").all() as Array<{ name: string }>;
+    const names = new Set(replenishmentColumns.map((column) => column.name));
+
+    if (!names.has("lot_number")) {
+      this.db.exec("ALTER TABLE replenishments ADD COLUMN lot_number TEXT");
+    }
+
+    if (!names.has("transport_total")) {
+      this.db.exec("ALTER TABLE replenishments ADD COLUMN transport_total REAL NOT NULL DEFAULT 0");
     }
   }
 
@@ -766,15 +784,17 @@ export class LocalDatabase {
     const userId = this.getActorUserId();
     const cycleId = this.getCurrentInventoryCycleId();
     const normalizedDraft = {
-      code: draft.code?.trim() || this.generateCode(draft.name),
+      code: draft.code?.trim() || this.generateProductCode(draft.category?.trim() || "Papeterie"),
       name: draft.name.trim(),
-      category: draft.category?.trim() || "General",
+      category: draft.category?.trim() || "Papeterie",
       purchasePrice: draft.purchasePrice,
       sellingPrice: draft.sellingPrice,
       quantity: draft.quantity,
       unit: draft.unit?.trim() || "piece",
       alertThreshold: draft.alertThreshold ?? 0,
       supplier: draft.supplier.trim(),
+      replenishmentLotNumber: draft.replenishmentLotNumber?.trim() || "",
+      replenishmentTransportTotal: Number(draft.replenishmentTransportTotal ?? 0),
     };
 
     const existing = this.db
@@ -828,7 +848,15 @@ export class LocalDatabase {
           existing.id
         );
 
-      this.recordReplenishment(existing.id, normalizedDraft.quantity, normalizedDraft.purchasePrice, normalizedDraft.supplier, userId);
+      this.recordReplenishment(
+        existing.id,
+        normalizedDraft.quantity,
+        normalizedDraft.purchasePrice,
+        normalizedDraft.supplier,
+        userId,
+        normalizedDraft.replenishmentLotNumber,
+        normalizedDraft.replenishmentTransportTotal
+      );
       this.logAction(userId, "update", "products", existing.id, `Mise a jour produit ${normalizedDraft.name}`);
     } else {
       const result = this.db
@@ -1057,7 +1085,7 @@ export class LocalDatabase {
       expenses: this.db.prepare("SELECT id, detail, nature, amount, expense_date, user_id, approved_by, purpose FROM expenses ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       services: this.db.prepare("SELECT id, name, category, unit_price, description, active, created_at, updated_at FROM services ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       initialStocks: this.db.prepare("SELECT id, product_id, quantity, purchase_price, stock_date, cycle_id, NULL as user_id, note FROM initial_stocks ORDER BY id ASC").all() as Array<Record<string, unknown>>,
-      replenishments: this.db.prepare("SELECT id, product_id, quantity, purchase_price, supplier, replenished_at, cycle_id, NULL as user_id, note FROM replenishments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      replenishments: this.db.prepare("SELECT id, product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, NULL as user_id, note FROM replenishments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       sales: this.db.prepare("SELECT id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, NULL as user_id FROM sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleServiceItems: this.db.prepare("SELECT id, sale_id, service_id, quantity, unit_price, line_total FROM sale_service_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1111,8 +1139,8 @@ export class LocalDatabase {
         VALUES (@id, @product_id, @quantity, @purchase_price, @stock_date, @cycle_id, @user_id, @note)
       `);
       const insertReplenishments = this.db.prepare(`
-        INSERT INTO replenishments (id, product_id, quantity, purchase_price, supplier, replenished_at, cycle_id, user_id, note)
-        VALUES (@id, @product_id, @quantity, @purchase_price, @supplier, @replenished_at, @cycle_id, @user_id, @note)
+        INSERT INTO replenishments (id, product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, user_id, note)
+        VALUES (@id, @product_id, @quantity, @purchase_price, @supplier, @lot_number, @transport_total, @replenished_at, @cycle_id, @user_id, @note)
       `);
       const insertSales = this.db.prepare(`
         INSERT INTO sales (id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id)
@@ -1380,6 +1408,8 @@ export class LocalDatabase {
           p.purchase_price,
           p.selling_price,
           ABS(r.quantity) * CASE WHEN r.movement_type = 'vente' THEN p.selling_price ELSE p.purchase_price END AS amount,
+          rp.lot_number,
+          rp.transport_total,
           r.movement_type
         FROM stock_movements r
         INNER JOIN products p ON p.id = r.product_id
@@ -1403,6 +1433,8 @@ export class LocalDatabase {
       purchasePrice: row.purchase_price,
       sellingPrice: row.selling_price,
       amount: row.amount,
+      lotNumber: row.lot_number ?? undefined,
+      transportTotal: row.transport_total ?? undefined,
       movementType: row.movement_type,
     }));
   }
@@ -1438,6 +1470,103 @@ export class LocalDatabase {
       details: row.details ?? "",
       user: this.formatAuditActorLabel(row),
     }));
+  }
+
+  importReplenishmentRows(
+    rows: Array<{
+      productCode: string;
+      productName: string;
+      quantity: number;
+      purchasePrice: number;
+      sellingPrice: number;
+      supplier: string;
+      lotNumber?: string;
+      transportTotal?: number;
+    }>
+  ) {
+    this.requirePermission("manage_inventory");
+    const actorUserId = this.getActorUserId();
+    let imported = 0;
+    let skipped = 0;
+    const errors: string[] = [];
+
+    for (const [index, row] of rows.entries()) {
+      const lineNumber = index + 2;
+      const productCode = row.productCode.trim();
+      const productName = row.productName.trim();
+      const quantity = Number(row.quantity);
+
+      if (!productCode && !productName) {
+        skipped += 1;
+        errors.push(`Ligne ${lineNumber}: code produit ou nom produit requis.`);
+        continue;
+      }
+
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        skipped += 1;
+        errors.push(`Ligne ${lineNumber}: quantite invalide.`);
+        continue;
+      }
+
+      const product = productCode
+        ? ((this.db
+            .prepare(
+              "SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier FROM products WHERE LOWER(code) = LOWER(?) LIMIT 1"
+            )
+            .get(productCode) as ProductRow | undefined) ??
+          undefined)
+        : undefined;
+      const matchedProduct =
+        product ??
+        ((this.db
+          .prepare(
+            "SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier FROM products WHERE LOWER(name) = LOWER(?) LIMIT 1"
+          )
+          .get(productName) as ProductRow | undefined) ??
+          undefined);
+
+      if (!matchedProduct) {
+        skipped += 1;
+        errors.push(`Ligne ${lineNumber}: produit introuvable (${productCode || productName}).`);
+        continue;
+      }
+
+      const purchasePrice = Number.isFinite(Number(row.purchasePrice)) && Number(row.purchasePrice) > 0
+        ? Number(row.purchasePrice)
+        : Number(matchedProduct.purchase_price);
+      const sellingPrice = Number.isFinite(Number(row.sellingPrice)) && Number(row.sellingPrice) > 0
+        ? Number(row.sellingPrice)
+        : Number(matchedProduct.selling_price);
+      const supplier = row.supplier.trim() || matchedProduct.supplier;
+      const lotNumber = row.lotNumber?.trim() || "";
+      const transportTotal = Number.isFinite(Number(row.transportTotal)) ? Number(row.transportTotal) : 0;
+      const now = new Date().toISOString();
+
+      this.db
+        .prepare(
+          `
+            UPDATE products
+            SET purchase_price = ?, selling_price = ?, supplier = ?, updated_at = ?
+            WHERE id = ?
+          `
+        )
+        .run(purchasePrice, sellingPrice, supplier, now, matchedProduct.id);
+
+      this.recordReplenishment(matchedProduct.id, quantity, purchasePrice, supplier, actorUserId, lotNumber, transportTotal);
+      imported += 1;
+    }
+
+    if (imported > 0) {
+      this.logAction(
+        actorUserId,
+        "create",
+        "replenishments",
+        0,
+        `Import CSV d'approvisionnement: ${imported} ligne(s) importee(s), ${skipped} ignoree(s).`
+      );
+    }
+
+    return { imported, skipped, errors };
   }
 
   pruneActivityHistory(months: number): number {
@@ -2083,16 +2212,18 @@ export class LocalDatabase {
     quantity: number,
     purchasePrice: number,
     supplier: string,
-    userId: number | null
+    userId: number | null,
+    lotNumber = "",
+    transportTotal = 0
   ) {
     const now = new Date().toISOString();
     const cycleId = this.getCurrentInventoryCycleId();
     const result = this.db
       .prepare(`
-        INSERT INTO replenishments (product_id, quantity, purchase_price, supplier, replenished_at, cycle_id, user_id, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO replenishments (product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, user_id, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(productId, quantity, purchasePrice, supplier, now, cycleId, userId, "Reapprovisionnement");
+      .run(productId, quantity, purchasePrice, supplier, lotNumber || null, Number(transportTotal || 0), now, cycleId, userId, "Reapprovisionnement");
 
     this.db
       .prepare(`
@@ -2233,15 +2364,53 @@ export class LocalDatabase {
     return crypto.timingSafeEqual(Buffer.from(actualHash, "hex"), Buffer.from(expectedHash, "hex"));
   }
 
-  private generateCode(name: string) {
-    const prefix = name
-      .trim()
-      .slice(0, 3)
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, "X")
-      .padEnd(3, "X");
+  private getProductCategoryCode(category: string) {
+    const categoryCodeMap: Record<string, string> = {
+      Papeterie: "PAP",
+      "Cahiers et registres": "CAH",
+      "Stylos et ecriture": "STY",
+      "Papier et impressions": "IMP",
+      "Classement et archivage": "CLA",
+      "Fournitures scolaires": "SCO",
+      "Informatique et accessoires": "INF",
+      "Impression et photocopie": "PHO",
+      "Boissons fraiches": "BOI",
+      "Biscuits et snacks": "SNK",
+      Confiserie: "CNF",
+      "Hygiéne et entretien": "HYG",
+      "Divers boutique": "DIV",
+    };
+    const directCode = categoryCodeMap[category];
+    if (directCode) {
+      return directCode;
+    }
 
-    return `PAP-${prefix}-${Date.now().toString().slice(-4)}`;
+    const normalized = category
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^A-Za-z0-9 ]/g, " ")
+      .trim();
+    const words = normalized.split(/\s+/).filter(Boolean);
+
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0] + (words[2]?.[0] ?? "X")).toUpperCase();
+    }
+
+    return normalized.slice(0, 3).toUpperCase().padEnd(3, "X") || "PRD";
+  }
+
+  private generateProductCode(category: string) {
+    const prefix = `PAP-${this.getProductCategoryCode(category)}-`;
+    const rows = this.db
+      .prepare("SELECT code FROM products WHERE code LIKE ?")
+      .all(`${prefix}%`) as Array<{ code: string }>;
+    const nextIndex =
+      rows.reduce((max, row) => {
+        const numericPart = Number(row.code.slice(prefix.length));
+        return Number.isFinite(numericPart) ? Math.max(max, numericPart) : max;
+      }, 0) + 1;
+
+    return `${prefix}${String(nextIndex).padStart(3, "0")}`;
   }
 
   private generateSaleReference() {

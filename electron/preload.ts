@@ -13,6 +13,7 @@ import type {
   PasswordChangeDraft,
   Product,
   ProductDraft,
+  ReplenishmentImportSummary,
   SaleDetail,
   SaleDraft,
   SaleRecord,
@@ -42,6 +43,9 @@ contextBridge.exposeInMainWorld("desktopApi", {
   exportSaleReceiptPdf: (saleId: number): Promise<string | null> => ipcRenderer.invoke("sales:export-receipt-pdf", saleId),
   exportExpenseReportPdf: (html: string, fileName: string): Promise<string | null> =>
     ipcRenderer.invoke("reports:export-expense-pdf", html, fileName),
+  exportReplenishmentTemplateCsv: (): Promise<string | null> => ipcRenderer.invoke("replenishments:template-export"),
+  exportReplenishmentHistoryCsv: (): Promise<string | null> => ipcRenderer.invoke("replenishments:history-export"),
+  importReplenishmentCsv: (): Promise<ReplenishmentImportSummary | null> => ipcRenderer.invoke("replenishments:import"),
   getSupplyHistory: (): Promise<SupplyHistoryItem[]> => ipcRenderer.invoke("history:supply"),
   getActivityHistory: (): Promise<ActivityHistoryItem[]> => ipcRenderer.invoke("history:activity"),
   pruneActivityHistory: (months: number): Promise<number> => ipcRenderer.invoke("history:prune", months),

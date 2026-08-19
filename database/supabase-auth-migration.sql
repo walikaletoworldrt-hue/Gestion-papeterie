@@ -54,6 +54,12 @@ add column if not exists cycle_id bigint;
 alter table public.replenishments
 add column if not exists cycle_id bigint;
 
+alter table public.replenishments
+add column if not exists lot_number text;
+
+alter table public.replenishments
+add column if not exists transport_total numeric(12, 2) not null default 0;
+
 alter table public.sales
 add column if not exists cycle_id bigint;
 

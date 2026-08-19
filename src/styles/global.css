@@ -234,7 +234,7 @@ button {
 
 .password-input-wrap input {
   width: 100%;
-  padding-right: 6.5rem;
+  padding-right: 5rem;
 }
 
 .password-toggle-btn {
@@ -242,14 +242,15 @@ button {
   top: 50%;
   right: 0.55rem;
   transform: translateY(-50%);
-  min-height: 2.3rem;
-  padding: 0.35rem 0.8rem;
+  min-height: 1.9rem;
+  padding: 0.2rem 0.55rem;
   border: 1px solid #d8e2f0;
   border-radius: 999px;
   background: #f8fbff;
   color: #1f4f8f;
-  font-size: 0.82rem;
+  font-size: 0.74rem;
   font-weight: 700;
+  line-height: 1;
 }
 
 .login-submit-btn {

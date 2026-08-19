@@ -14,6 +14,7 @@ import type {
   PasswordChangeDraft,
   Product,
   ProductDraft,
+  ReplenishmentImportSummary,
   Service,
   ServiceDraft,
   SaleDetail,
@@ -229,6 +230,56 @@ const webSeedUsers: AppUser[] = [
   },
 ];
 
+function getProductCategoryCode(category: string) {
+  const categoryCodeMap: Record<string, string> = {
+    Papeterie: "PAP",
+    "Cahiers et registres": "CAH",
+    "Stylos et ecriture": "STY",
+    "Papier et impressions": "IMP",
+    "Classement et archivage": "CLA",
+    "Fournitures scolaires": "SCO",
+    "Informatique et accessoires": "INF",
+    "Impression et photocopie": "PHO",
+    "Boissons fraiches": "BOI",
+    "Biscuits et snacks": "SNK",
+    Confiserie: "CNF",
+    "Hygiéne et entretien": "HYG",
+    "Divers boutique": "DIV",
+  };
+  const directCode = categoryCodeMap[category];
+  if (directCode) {
+    return directCode;
+  }
+
+  const normalized = category
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9 ]/g, " ")
+    .trim();
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0] + (words[2]?.[0] ?? "X")).toUpperCase();
+  }
+
+  return normalized.slice(0, 3).toUpperCase().padEnd(3, "X") || "PRD";
+}
+
+function buildNextProductCode(category: string, products: Array<{ code: string }>) {
+  const prefix = `PAP-${getProductCategoryCode(category)}-`;
+  const nextIndex =
+    products.reduce((max, product) => {
+      if (!product.code.startsWith(prefix)) {
+        return max;
+      }
+
+      const numericPart = Number(product.code.slice(prefix.length));
+      return Number.isFinite(numericPart) ? Math.max(max, numericPart) : max;
+    }, 0) + 1;
+
+  return `${prefix}${String(nextIndex).padStart(3, "0")}`;
+}
+
 const webUserPasswords: Record<number, string> = {
   1: webDefaultPassword,
   2: webDefaultPassword,
@@ -332,6 +383,12 @@ type SupabaseHistoryRow = {
     | Array<{ name: string | null; supplier: string | null; selling_price: number | null; purchase_price: number | null }>
     | null;
   user_id?: number | null;
+};
+
+type SupabaseReplenishmentRow = {
+  id: number;
+  lot_number: string | null;
+  transport_total: number | null;
 };
 
 type SupabaseAuditLogRow = {
@@ -2355,9 +2412,9 @@ export const repository = {
       const trimmedName = draft.name.trim();
       const trimmedSupplier = draft.supplier.trim();
       const normalizedProduct = {
-        code: draft.code?.trim() || `PAP-${Date.now().toString().slice(-4)}`,
+        code: draft.code?.trim() || buildNextProductCode(draft.category?.trim() || "Papeterie", await this.listProducts()),
         name: trimmedName,
-        category: draft.category?.trim() || "General",
+        category: draft.category?.trim() || "Papeterie",
         purchase_price: Number(draft.purchasePrice),
         selling_price: Number(draft.sellingPrice),
         unit: draft.unit?.trim() || "piece",
@@ -2414,6 +2471,8 @@ export const repository = {
             quantity: Number(draft.quantity),
             purchase_price: Number(draft.purchasePrice),
             supplier: trimmedSupplier,
+            lot_number: draft.replenishmentLotNumber?.trim() || null,
+            transport_total: Number(draft.replenishmentTransportTotal ?? 0),
             cycle_id: cycleId,
             note: "Reapprovisionnement",
           })
@@ -2513,9 +2572,9 @@ export const repository = {
     } else {
       products.unshift({
         id: Date.now(),
-        code: draft.code || `PAP-${Date.now().toString().slice(-4)}`,
+        code: draft.code || buildNextProductCode(draft.category || "Papeterie", products),
         name: draft.name,
-        category: draft.category || "General",
+        category: draft.category || "Papeterie",
         purchasePrice: draft.purchasePrice,
         sellingPrice: draft.sellingPrice,
         quantity: draft.quantity,
@@ -2535,6 +2594,8 @@ export const repository = {
       purchasePrice: draft.purchasePrice,
       sellingPrice: draft.sellingPrice,
       amount: draft.purchasePrice * draft.quantity,
+      lotNumber: draft.replenishmentLotNumber?.trim() || undefined,
+      transportTotal: Number(draft.replenishmentTransportTotal ?? 0),
       movementType: existing ? "reapprovisionnement" : "stock_initial",
     });
 
@@ -2903,6 +2964,46 @@ export const repository = {
     return null;
   },
 
+  async exportReplenishmentTemplateCsv(): Promise<string | null> {
+    if (window.desktopApi) {
+      return window.desktopApi.exportReplenishmentTemplateCsv();
+    }
+
+    return "modele-approvisionnement.csv";
+  },
+
+  async exportReplenishmentHistoryCsv(): Promise<string | null> {
+    const rows = [
+      ["date", "product_name", "quantity", "purchase_price", "selling_price", "supplier", "amount"],
+      ...((await this.getSupplyHistory())
+        .filter((item) => item.movementType === "reapprovisionnement")
+        .map((item) => [item.date, item.product, item.quantity, item.purchasePrice, item.sellingPrice, item.supplier, item.amount])),
+    ];
+    const content = rows.map((row) => row.map((cell) => `"${String(cell ?? "").replace(/"/g, "\"\"")}"`).join(",")).join("\n");
+
+    if (window.desktopApi) {
+      return window.desktopApi.exportReplenishmentHistoryCsv();
+    }
+
+    const fileName = "approvisionnements.csv";
+    const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    link.click();
+    URL.revokeObjectURL(url);
+    return fileName;
+  },
+
+  async importReplenishmentCsv(): Promise<ReplenishmentImportSummary | null> {
+    if (window.desktopApi) {
+      return window.desktopApi.importReplenishmentCsv();
+    }
+
+    throw new Error("L'import CSV d'approvisionnement est disponible dans l'application desktop.");
+  },
+
   async pruneActivityHistory(months: number): Promise<number> {
     if (window.desktopApi) {
       return window.desktopApi.pruneActivityHistory(months);
@@ -3264,16 +3365,24 @@ export const repository = {
       const salesResult = await client
         .from("sales")
         .select("id, client_id, client:clients(name)");
+      const replenishmentsResult = await client
+        .from("replenishments")
+        .select("id, lot_number, transport_total")
+        .eq("cycle_id", cycleId);
       const rows = ensureData(movementsResult.data, movementsResult.error) as SupabaseHistoryRow[];
       const salesRows = ensureData(salesResult.data, salesResult.error) as Array<{
         id: number;
         client_id: number | null;
         client?: { name: string | null } | Array<{ name: string | null }> | null;
       }>;
+      const replenishmentRows = ensureData(replenishmentsResult.data, replenishmentsResult.error) as SupabaseReplenishmentRow[];
       const salesMap = new Map(salesRows.map((row) => [row.id, row]));
+      const replenishmentMap = new Map(replenishmentRows.map((row) => [row.id, row]));
 
       return rows.map((row) => {
         const sale = row.source_table === "sales" && row.source_id ? salesMap.get(row.source_id) : null;
+        const replenishment =
+          row.source_table === "replenishments" && row.source_id ? replenishmentMap.get(row.source_id) : null;
         const isSale = row.movement_type === "vente";
         const product = relationFirst(row.product);
         const saleClient = relationFirst(sale?.client);
@@ -3288,6 +3397,8 @@ export const repository = {
           purchasePrice: Number(product?.purchase_price ?? 0),
           sellingPrice: Number(product?.selling_price ?? 0),
           amount: Math.abs(row.quantity) * price,
+          lotNumber: replenishment?.lot_number ?? undefined,
+          transportTotal: replenishment?.transport_total ?? undefined,
           movementType: row.movement_type,
         };
       });

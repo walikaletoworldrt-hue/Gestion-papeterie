@@ -35,6 +35,8 @@ export type ProductDraft = {
   unit?: string;
   alertThreshold?: number;
   supplier: string;
+  replenishmentLotNumber?: string;
+  replenishmentTransportTotal?: number;
 };
 
 export type Service = {
@@ -65,7 +67,15 @@ export type SupplyHistoryItem = {
   purchasePrice: number;
   sellingPrice: number;
   amount: number;
+  lotNumber?: string;
+  transportTotal?: number;
   movementType: "stock_initial" | "reapprovisionnement" | "vente";
+};
+
+export type ReplenishmentImportSummary = {
+  imported: number;
+  skipped: number;
+  errors: string[];
 };
 
 export type ActivityHistoryItem = {
@@ -300,6 +310,9 @@ export type DesktopApi = {
   printSaleReceipt: (saleId: number) => Promise<boolean>;
   exportSaleReceiptPdf: (saleId: number) => Promise<string | null>;
   exportExpenseReportPdf: (html: string, fileName: string) => Promise<string | null>;
+  exportReplenishmentTemplateCsv: () => Promise<string | null>;
+  exportReplenishmentHistoryCsv: () => Promise<string | null>;
+  importReplenishmentCsv: () => Promise<ReplenishmentImportSummary | null>;
   getSupplyHistory: () => Promise<SupplyHistoryItem[]>;
   getActivityHistory: () => Promise<ActivityHistoryItem[]>;
   pruneActivityHistory: (months: number) => Promise<number>;
