@@ -4,129 +4,179 @@
 Walikale Papeterie
 
 ## Objet du document
-Ce document recense les fonctionnalites actuellement presentes dans l'application a partir de l'etat reel du code.
+Ce document decrit l'etat fonctionnel reel de l'application au 21 aout 2026.
 
 Il sert a :
-- decrire les modules deja operationnels
-- distinguer ce qui fonctionne en desktop, en web, ou dans les deux modes
-- relever les limites fonctionnelles encore visibles
-- fournir une base de travail fiable pour les evolutions suivantes
+- valider les fonctionnalites effectivement disponibles
+- distinguer ce qui fonctionne en mode desktop et en mode web
+- cadrer les droits par profil utilisateur
+- fournir une base fiable avant mise en production
 
-## 1. Perimetre actuel de l'application
+## 1. Presentation generale
 
-L'application couvre aujourd'hui un noyau complet de gestion commerciale pour une papeterie avec :
-- tableau de bord
-- gestion des produits
-- gestion des services
-- gestion des clients
-- gestion des depenses
-- gestion du stock initial
-- gestion du reapprovisionnement
-- gestion des ventes
-- suivi du stock actuel
-- gestion des utilisateurs
-- historique d'activite
-- impression et export de documents de vente
-- synchronisation desktop vers Supabase
+Walikale Papeterie est une application de gestion commerciale, de stock et de suivi d'activites pour la structure Walikale to World.
+
+L'application permet de gerer dans un seul espace :
+- les produits
+- les services
+- les clients
+- les depenses
+- le stock initial
+- les reapprovisionnements
+- les ventes
+- le stock actuel
+- les utilisateurs
+- l'historique d'activite
+- les rapports et impressions
+- la synchronisation entre un poste desktop et Supabase
+
+L'entreprise est presentee dans le tableau de bord comme un etablissement actif dans la technologie, l'acces internet, la formation informatique, le secretariat, la papeterie et d'autres services de proximite.
 
 ## 2. Plateformes prises en charge
 
-### 2.1 Mode desktop
+### 2.1 Mode desktop Windows
 
 Le mode desktop repose sur :
 - Electron
 - une base SQLite locale
-- des impressions et exports PDF natifs
 - le travail hors ligne
-- un mecanisme de synchronisation avec Supabase
+- la synchronisation vers Supabase
+- l'impression et l'export natifs
+- les sauvegardes et restaurations locales
+
+Le desktop est le mode principal pour :
+- travailler sans internet
+- synchroniser les donnees locales vers le cloud
+- importer et exporter certains fichiers
+- restaurer une sauvegarde complete
 
 ### 2.2 Mode web
 
 Le mode web repose sur :
 - React + Vite
-- Supabase pour la base et l'authentification
-- un fonctionnement navigateur sans Electron
+- Supabase pour l'authentification
+- Supabase pour la base de donnees centralisee
+- un acces depuis navigateur
 
-En mode web, certaines fonctions desktop ne sont pas disponibles, notamment :
-- stockage SQLite local
-- impression native Electron
-- export PDF natif Electron
-- synchronisation locale/cloud depuis un poste desktop
+Le mode web permet principalement :
+- la consultation et la saisie en ligne
+- la connexion utilisateur cloud
+- l'utilisation distante via le lien publie
 
-## 3. Profils utilisateurs
+Limites du mode web :
+- pas de base SQLite locale
+- pas de synchronisation locale vers cloud
+- pas de sauvegarde/restauration desktop
+- certaines operations techniques restent reservees a l'application desktop
 
-Les profils actuellement definis sont :
+## 3. Profils utilisateurs et droits
+
+Les profils pris en charge sont :
 - Super admin
 - Administrateur
 - Employe
 
-Les droits visibles dans l'interface sont deja differencies :
-- le Super admin accede a tous les onglets
-- l'Administrateur n'accede pas a la gestion des utilisateurs ni a l'historique complet
-- l'Employe a un acces plus limite, notamment sans administration du stock initial, du reapprovisionnement, des utilisateurs et de l'historique
+### 3.1 Super admin
 
-## 4. Modules fonctionnels existants
+Le Super admin dispose des droits complets sur l'application, notamment :
+- gerer tous les modules
+- creer, modifier, activer, desactiver et supprimer des utilisateurs
+- gerer la synchronisation desktop/cloud
+- visualiser les montants sensibles
+- reinitialiser l'inventaire et la numerotation
+- modifier les clients
+- supprimer les clients
+- modifier les produits
+- supprimer les produits
+- modifier les ventes si le flux le permet
+- acceder a l'historique complet
 
-### 4.1 Connexion et session
+### 3.2 Administrateur
+
+L'Administrateur peut exploiter l'application au quotidien avec des restrictions de securite.
+
+Il peut notamment :
+- ajouter des produits
+- enregistrer des approvisionnements via le bouton principal
+- creer des ventes
+- utiliser les services
+- consulter le stock
+- ajouter des depenses
+- modifier les services, y compris la description et le prix
+
+Il ne peut pas :
+- gerer les utilisateurs comme un Super admin
+- reinitialiser l'inventaire
+- supprimer librement les donnees sensibles
+- voir certains montants globaux sensibles dans l'approvisionnement et le stock
+
+### 3.3 Employe
+
+L'Employe dispose d'un acces plus restreint, centre sur l'exploitation courante.
+
+Les limitations dependent des autorisations metier deja appliquees dans l'application et dans la logique locale/cloud.
+
+## 4. Authentification et acces
 
 Fonctionnalites disponibles :
 - ecran de connexion dedie
-- affichage du logo de l'entreprise
 - connexion par nom d'utilisateur ou adresse e-mail
-- connexion avec mot de passe
+- connexion par mot de passe
 - restauration automatique de session
 - deconnexion
-- mise a jour de la derniere connexion
 - changement de mot de passe
+- mise a jour de la derniere connexion
+- gestion locale desktop et gestion cloud web
 
-Specificites techniques :
-- en desktop, l'authentification passe par la base locale
-- en web, l'authentification passe par Supabase Auth
-- en l'absence de configuration Supabase, un mode web local de secours existe avec stockage navigateur
+Fonctionnalites ergonomiques disponibles :
+- bouton oeil compact pour afficher ou masquer le mot de passe saisi
+- reprise de session locale apres redemarrage
+
+Specificites :
+- en desktop, la connexion peut fonctionner hors ligne sur la base locale
+- en web, la connexion passe par Supabase Auth
+- les comptes relies au cloud doivent etre correctement associes a `auth_user_id`
 
 Limites actuelles :
-- pas de recuperation de mot de passe par e-mail
+- pas de recuperation automatique du mot de passe par e-mail dans l'application
 - pas de double authentification
-- pas de gestion de verrouillage apres plusieurs echecs
 
-### 4.2 Tableau de bord
+## 5. Tableau de bord
 
-Fonctionnalites disponibles :
-- affichage du stock total
-- affichage du nombre de produits
-- affichage du nombre de ventes
-- affichage du nombre de fournisseurs
-- affichage du chiffre d'affaires total
-- affichage du total des depenses
-- affichage du solde net ventes moins depenses
-- affichage de resumes et indicateurs de suivi
-- acces rapide vers les modules principaux
+Le tableau de bord comporte :
+- une presentation de l'entreprise
+- une vue globale des activites de la papeterie
+- des indicateurs de stock
+- des indicateurs de ventes
+- des indicateurs de depenses
+- des indicateurs de solde
+- des indicateurs fournisseurs et clients comptoir
+- des alertes stock
 
 Fonctionnalites analytiques presentes :
-- filtrage temporel des ventes
-- periodes predefinies
-- plages personnalisees
-- regroupement par jour, semaine, mois ou annee pour les tendances
+- carte `Montant vendu` filtrable par periode
+- periodes predefinies : aujourd'hui, 7 jours, 30 jours, 90 jours, mois, annee, toutes periodes
+- plage personnalisee
+- graphique de tendance des ventes
+- graphique ventes vs depenses
+- graphique top clients
 
-Limites actuelles :
-- pas d'export dedie du tableau de bord
-- pas de comparaison avancee entre periodes
-- pas de prevision ou analyse statistique avancee
+Objectif du tableau de bord :
+- fournir une lecture rapide des activites
+- permettre une interpretation immediate des ventes, charges et stock
 
-### 4.3 Gestion des produits
+## 6. Gestion des produits
 
 Fonctionnalites disponibles :
 - ajout de produit
 - modification de produit
-- suppression de produit avec confirmation
-- recherche de produit
-- tri par code, nom, categorie, prix ou seuil d'alerte
-- affichage des categories
-- affichage du fournisseur
-- gestion du prix d'achat et du prix de vente
-- gestion de l'unite
+- suppression de produit selon le role
+- recherche
+- tri
 - gestion du seuil d'alerte
-- recalcul du stock a partir des mouvements
+- gestion du fournisseur
+- gestion des prix
+- recalcul du stock selon les mouvements
 
 Informations gerees :
 - code produit
@@ -134,25 +184,52 @@ Informations gerees :
 - categorie
 - prix d'achat
 - prix de vente
-- quantite initiale
 - unite
 - seuil d'alerte
 - fournisseur
-- date de mise a jour
 
-Limites actuelles :
-- pas d'image produit
-- pas de code-barres
-- pas de module fournisseur separe
+### 6.1 Categories produit
 
-### 4.4 Gestion des services
+La categorie est selectionnee via une liste deroulante.
+
+Categories actuellement prevues :
+- Papeterie
+- Cahiers et registres
+- Stylos et ecriture
+- Papier et impressions
+- Classement et archivage
+- Fournitures scolaires
+- Informatique et accessoires
+- Impression et photocopie
+- Boissons fraiches
+- Biscuits et snacks
+- Confiserie
+- Hygiene et entretien
+- Divers boutique
+
+### 6.2 Code produit
+
+Le code produit est reorganise et gere automatiquement.
+
+Caracteristiques :
+- generation automatique
+- code en lecture seule a la creation
+- prefixe par categorie
+- numerotation propre et progressive
+
+Exemple de logique :
+- `PAP-PAP-001`
+- `PAP-SNK-001`
+- `PAP-BOI-001`
+
+## 7. Gestion des services
 
 Fonctionnalites disponibles :
 - ajout de service
-- mise a jour de service
-- activation ou desactivation d'un service
-- recherche de service
-- utilisation des services dans une vente
+- modification de service
+- activation ou desactivation
+- recherche
+- utilisation dans une vente
 
 Informations gerees :
 - nom
@@ -160,20 +237,23 @@ Informations gerees :
 - prix unitaire
 - description
 - statut actif ou inactif
-- dates de creation et mise a jour
 
-Limites actuelles :
-- pas de suppression dediee de service dans l'interface constatee
-- pas de tarification complexe ou multi-prix
+Particularite importante :
+- l'Administrateur peut modifier un service
+- il peut notamment modifier la description et le prix
 
-### 4.5 Gestion des clients
+## 8. Gestion des clients
 
 Fonctionnalites disponibles :
 - ajout de client
-- affichage de la liste des clients
-- recherche de client
-- utilisation du client dans la creation d'une vente
-- support de la vente comptoir sans client selectionne
+- consultation de la liste
+- recherche
+- utilisation dans les ventes
+- prise en charge du client comptoir
+
+Fonctionnalites d'administration :
+- modification client reservee au Super admin
+- suppression client reservee au Super admin
 
 Informations gerees :
 - nom
@@ -182,21 +262,15 @@ Informations gerees :
 - e-mail
 - date de creation
 
-Limites actuelles :
-- pas de modification client constatee dans l'interface
-- pas de suppression client constatee dans l'interface
-- pas de compte client, dette ou echeancier
-- pas d'historique detaille par client
-
-### 4.6 Gestion des depenses
+## 9. Gestion des depenses
 
 Fonctionnalites disponibles :
 - ajout de depense
-- affichage de la liste des depenses
-- recherche dans les depenses
-- calcul du total des depenses
-- prise en compte des depenses dans les indicateurs globaux
-- generation d'un rapport financier imprimable
+- affichage de la liste
+- recherche
+- calcul des totaux
+- integration dans les indicateurs financiers
+- integration dans le rapport financier
 
 Informations gerees :
 - nature
@@ -206,94 +280,135 @@ Informations gerees :
 - approuve par
 - motif
 
-Limites actuelles :
-- pas de modification ou suppression de depense constatee dans l'interface
-- pas de workflow de validation multi-etapes
-- pas de piece justificative jointe
+### 9.1 Rapport des depenses et synthese financiere
 
-### 4.7 Stock initial
+Le rapport financier inclut desormais :
+- l'entete de la boutique
+- le logo
+- les informations de l'entreprise
+- les totaux de ventes et depenses
+- le solde apres depenses
+- une zone `Lecture rapide`
+- une zone `Resume et interpretation`
+- une conclusion comparative automatique
+
+La conclusion permet d'indiquer par exemple :
+- si les ventes couvrent les depenses
+- si les depenses depassent les ventes
+- si l'activite de la periode est en perte
+- si les depenses sont bien calibrees par rapport au chiffre d'affaires
+
+Le rapport de depenses peut etre filtre par periode afin d'eviter de melanger les anciennes charges avec celles du mois ou de la periode courante.
+
+## 10. Stock initial et cycle d'inventaire
 
 Fonctionnalites disponibles :
-- alimentation du stock initial
-- prise en compte du stock initial dans les mouvements de stock
-- integration dans le calcul du stock courant
-- prise en charge par cycle d'inventaire
+- enregistrement du stock initial
+- prise en compte dans le calcul du stock actuel
+- integration dans le cycle d'inventaire
 
-Limites actuelles :
-- pas de gestion documentaire associee
-- pas d'import de stock initial depuis fichier
+Fonctionnalite de reinitialisation :
+- la reinitialisation d'inventaire vide les quantites et repart sur une nouvelle serie
+- les operations associees peuvent remettre a zero le stock initial, les ventes et les approvisionnements selon le flux prevu
 
-### 4.8 Reapprovisionnement
+Restriction importante :
+- les Administrateurs et Employes ne doivent pas avoir acces a cette reinitialisation
+- cette action est reservee au Super admin
+
+## 11. Reapprovisionnement
 
 Fonctionnalites disponibles :
-- enregistrement de reapprovisionnement
-- choix du produit concerne
+- creation d'un nouvel approvisionnement
+- selection du produit
 - saisie de la quantite
-- mise a jour du prix d'achat et du prix de vente lors du mouvement
+- saisie du prix d'achat
+- saisie du prix de vente
 - saisie du fournisseur
-- impact immediat sur le stock
-- consultation de l'historique d'approvisionnement
-- affichage des quantites et montants cumules
+- enregistrement de l'historique
+- mise a jour immediate du stock
 
-Limites actuelles :
-- pas de bon de commande fournisseur
-- pas de workflow d'achat complet
-- pas de reception multi-documents
+Regle ergonomique actuelle :
+- l'approvisionnement doit passer par le bouton principal `Nouvel approvisionnement`
+- le bouton inline `Approvisionner` dans la table produit a ete retire pour eviter les doublons de flux
 
-### 4.9 Ventes et facturation
+### 11.1 Approvisionnement par lot
+
+Le flux d'approvisionnement prend maintenant en charge :
+- un numero `LOT commande`
+- un `Transport global du lot`
+
+Objectif :
+- rattacher plusieurs produits a une meme commande
+- repartir les frais de transport au niveau du lot plutot que du produit unitaire
+
+Les informations de lot sont stockees dans :
+- SQLite local
+- Supabase
+- l'historique d'approvisionnement
+- les imports/exports CSV
+
+### 11.2 Import et export
+
+Les boutons d'approvisionnement sont fonctionnels :
+- `Importer Excel`
+- `Exporter Excel`
+- `Modele Excel`
+
+Implementation actuelle :
+- fichiers CSV compatibles Excel
+- modele d'import
+- export de l'historique
+- import desktop des approvisionnements
+
+## 12. Ventes et facturation
 
 Fonctionnalites disponibles :
 - creation de vente
 - selection d'un client ou vente comptoir
-- ajout de lignes produits
-- ajout de lignes services
-- quantites par ligne
+- ajout de lignes produit
+- ajout de lignes service
+- saisie des quantites
 - calcul automatique du total
-- verification de stock avant validation
-- prise en charge de plusieurs modes de paiement
-- ajout de notes sur la vente
-- consultation de la liste des ventes
-- recherche dans les ventes
+- verification du stock avant validation
+- gestion du mode de paiement
+- consultation des ventes
 - consultation du detail d'une facture
 
 Informations gerees :
-- reference de facture
+- reference
 - client
 - date
 - mode de paiement
-- lignes produits
-- lignes services
+- lignes
 - quantites
-- montants unitaires
+- prix unitaires
 - montant total
-- statut d'affichage
 
-Fonctionnalites de facturation :
-- serie de facturation
-- numero suivant
-- reference suivante
-- derniere reference emise
-- passage a une nouvelle serie de facturation
+### 12.1 Serie de facture
 
-Limites actuelles :
-- pas d'avoir
-- pas d'annulation de vente constatee
-- pas de remise
-- pas de TVA ou fiscalite avancee
-- pas de paiement partiel
-- pas de suivi d'impayes
+Le systeme gere :
+- la serie de facturation
+- la prochaine reference
+- le passage a une nouvelle serie
 
-### 4.10 Documents de vente
+La reinitialisation de la numerotation doit rester reservee au Super admin.
+
+## 13. Factures, tickets et PDF
 
 Fonctionnalites disponibles :
-- impression de facture format A4 en desktop
-- export PDF de facture format A4 en desktop
-- impression de ticket 80 mm en desktop
-- export PDF de ticket 80 mm en desktop
+- impression facture A4
+- export PDF facture
+- impression ticket 80 mm
+- export PDF ticket
 - impression navigateur en mode web
-- affichage du logo et de l'identite visuelle sur les documents
 
-Contenu des documents :
+Ameliorations recentes :
+- la facture a ete retravaillee pour etre plus propre et moins encombrante
+- les entetes de l'entreprise ont ete harmonises
+- les exports evitent l'affichage parasite du nom Netlify dans le contenu imprime
+- les rapports financiers sont mis en page avec identite de la boutique
+
+Contenu documente :
 - logo
 - nom de l'entreprise
 - reference
@@ -303,135 +418,94 @@ Contenu des documents :
 - lignes de vente
 - total
 
-Limites actuelles :
-- les exports PDF natifs sont reserves au desktop
-- pas de modele multi-entreprise
-- pas de parametrage complet du document depuis l'interface
-
-### 4.11 Stock actuel
+## 14. Stock actuel
 
 Fonctionnalites disponibles :
 - affichage du stock courant par produit
-- calcul des entrees
-- calcul des sorties
-- affichage du stock restant
-- filtrage par categorie
-- filtrage par etat de stock
-- recherche sur le stock
+- calcul des entrees et sorties
+- alertes visuelles de stock
+- recherche
+- filtrage
 - export CSV
-- affichage des alertes visuelles
 
 Etats visibles :
 - stock correct
 - stock faible
 - rupture
 
-Limites actuelles :
-- pas de multi-depots
-- pas de correction manuelle isolee de stock constatee
-- pas de valorisation historique avancee
+### 14.1 Apercu de benefice sur stock
 
-### 4.12 Utilisateurs et administration
+Le module `Stock actuel` affiche un apercu financier du stock restant.
+
+Les calculs prennent en compte :
+- prix de vente
+- prix d'achat
+- transport du lot d'approvisionnement
+- cout hebdomadaire du personnel
 
 Fonctionnalites disponibles :
-- ajout d'utilisateur
-- affichage de la liste des utilisateurs
-- recherche utilisateur
-- changement de role
-- activation ou desactivation d'un compte
-- reinitialisation d'acces
-- suppression d'utilisateur
+- cout hebdomadaire du personnel personnalisable
+- valeur par defaut de 50000 FC
+- estimation du transport sur stock
+- benefice net potentiel
+
+Certaines valeurs sensibles restent masquees pour les profils non autorises.
+
+## 15. Utilisateurs
+
+Fonctionnalites disponibles :
+- ajout d'utilisateur depuis l'application
+- gestion du role
+- activation ou desactivation
+- suppression selon le role autorise
 - changement de mot de passe
-- restauration de session utilisateur
+- synchronisation locale/cloud du compte
+- restauration de session
 
 Informations gerees :
 - nom complet
 - nom d'utilisateur
 - e-mail
 - role
-- actif ou inactif
+- actif
 - date de creation
 - derniere connexion
 
-Limites actuelles :
-- pas de permissions fines par action metier
-- pas de journal detaille des tentatives de connexion
-- pas de workflow d'invitation utilisateur
+Objectif fonctionnel atteint :
+- creation plus simple des utilisateurs
+- possibilite de les synchroniser ensuite partout
 
-### 4.13 Historique et tracabilite
+## 16. Historique, audit et tracabilite
 
 Fonctionnalites disponibles :
 - historique general d'activite
-- historique d'approvisionnement
+- journaux d'audit
 - recherche dans l'historique
-- traces sur les creations, mises a jour et suppressions
-- traces sur les utilisateurs, ventes, produits, clients et stock
+- suivi des creations, modifications et suppressions
 
-Exemples d'evenements suivis :
-- creation produit
-- mise a jour produit
-- suppression produit
-- creation client
-- creation utilisateur
-- changement de role
-- reinitialisation d'acces
-- suppression utilisateur
-- vente enregistree
-- reapprovisionnement
+Entites tracees :
+- produits
+- clients
+- utilisateurs
+- ventes
+- reapprovisionnements
+- actions systeme
 
-Limites actuelles :
-- pas d'export dedie de l'historique
-- pas de filtres avances multi-criteres par module
-- acces volontairement limite selon le role
+### 16.1 Entretien de l'historique
 
-### 4.14 Rapport financier
+Des options d'entretien ont ete ajoutees :
+- affichage par periode
+- filtres 3 mois, 6 mois, 12 mois ou toutes periodes
+- sauvegarde avant nettoyage
+- purge des anciens journaux d'activite sur desktop
 
-Fonctionnalites disponibles :
-- generation d'un rapport financier imprime
-- synthese des ventes
-- synthese des depenses
-- calcul du solde net
-- ventilation des ventes par produit
-- ventilation des ventes par categorie de services
-- mise en avant des produits et services les plus marquants
+Objectif :
+- eviter une croissance inutile des donnees de trace
+- conserver les donnees metier essentielles
 
-Limites actuelles :
-- pas d'archivage automatique des rapports
-- pas d'export natif Excel
-- pas de programmation periodique
+## 17. Synchronisation desktop et cloud
 
-## 5. Synchronisation et donnees
-
-### 5.1 Base locale desktop
-
-Le mode desktop utilise SQLite pour :
-- stocker les donnees localement
-- permettre le travail hors ligne
-- conserver l'etat de synchronisation
-
-### 5.2 Supabase
-
-Supabase est integre pour :
-- l'authentification web
-- le stockage centralise des donnees
-- la consultation et l'ecriture depuis le mode web
-- la synchronisation des donnees desktop vers le cloud
-
-### 5.3 Synchronisation desktop/cloud
-
-Fonctionnalites disponibles :
-- lecture du statut de synchronisation
-- detection de disponibilite du cloud
-- detection de changements locaux en attente
-- export d'un snapshot local
-- import d'un snapshot cloud
-- envoi des donnees desktop vers Supabase
-- detection de conflit de synchronisation
-- apercu des conflits par blocs de donnees
-- choix entre conserver le local ou prendre le cloud
-- marquage de fin de synchronisation
-
-Entites synchronisees :
+La synchronisation concerne :
 - utilisateurs
 - produits
 - services
@@ -441,110 +515,140 @@ Entites synchronisees :
 - reapprovisionnements
 - ventes
 - lignes de vente
-- lignes de services vendus
+- services vendus
 - mouvements de stock
 - journaux d'audit
 - sequences de facture
 - cycles d'inventaire
 
-Limites actuelles :
-- la synchronisation locale/cloud est reservee au desktop
-- pas de synchronisation automatique en tache de fond constatee
-- pas de resolution intelligente fusionnee des conflits
-
-## 6. Ergonomie et experience utilisateur
-
 Fonctionnalites disponibles :
-- interface a onglets
-- fenetres modales de saisie
-- confirmations avant actions sensibles
-- messages toast de succes, erreur et information
-- etats vides
-- filtres et recherches par module
-- recherche globale dans l'interface
-- adaptation des onglets selon le role
+- detection du statut en ligne
+- affichage du nombre d'elements en attente
+- bouton `En attente` cliquable
+- choix des rubriques a synchroniser
+- synchronisation rubrique par rubrique
+- detection des conflits
+- import/export de snapshots
 
-Limites actuelles :
-- pas de pagination constatee
-- pas de personnalisation utilisateur de l'interface
-- pas de tableau de bord configurable
+### 17.1 Sens des boutons de synchronisation
 
-## 7. Structure de donnees actuellement couverte
+Les indicateurs ont une vraie fonction :
+- `En ligne` indique la disponibilite cloud
+- `En attente` affiche le volume de donnees locales non poussees
+- `Synchroniser` lance la synchronisation
 
-Les structures de donnees visibles dans le projet couvrent notamment :
-- users
-- products
-- services
-- clients
-- expenses
-- initial_stocks
-- replenishments
-- sales
-- sale_items
-- sale_service_items
-- stock_movements
-- audit_logs
-- invoice_sequences
-- inventory_cycles
+Le bouton `En attente` permet maintenant d'ouvrir une selection des blocs a synchroniser, afin d'eviter de tout pousser d'un coup.
 
-Vue presente :
-- current_stock_view
+### 17.2 Gestion des conflits
 
-## 8. Fonctions techniques deja presentes
+Le message :
+`Conflit detecte : le cloud et ce poste ont tous les deux des changements non synchronises`
+signifie que :
+- le poste local a des donnees modifiees non envoyees
+- le cloud contient aussi des modifications plus recentes ou differentes
+- l'application demande une resolution prudente pour eviter l'ecrasement
 
-Fonctionnalites techniques constatees :
-- application React en TypeScript
-- application desktop Electron
-- base SQLite locale
-- integration Supabase
-- build web Vite
-- packaging Windows
-- impression A4
-- impression ticket 80 mm
+L'approche actuellement disponible consiste a :
+- identifier la rubrique en attente
+- synchroniser bloc par bloc
+- choisir la bonne source si une resolution est proposee
+
+Limite actuelle :
+- pas encore de fusion intelligente automatique sur tous les cas
+
+## 18. Sauvegarde et restauration
+
+Fonctionnalites desktop disponibles :
+- creation manuelle de sauvegarde
+- sauvegardes automatiques
+- restauration depuis fichier
+- conservation d'un nombre limite de sauvegardes automatiques
+
+Objectif :
+- proteger les donnees avant mise a jour
+- permettre de desinstaller puis reinstaller sans perdre ventes, produits, clients et autres en cas de restauration correcte
+
+## 19. Rapports et interpretation
+
+L'application prend en charge :
+- rapport financier imprime
 - export PDF
-- export CSV
-- gestion de sessions
-- gestion de conflits de synchronisation
+- interpretation automatique des depenses et ventes
+- synthese des produits les plus vendeurs
+- synthese des services dominants
+- conclusion comparative des activites
 
-## 9. Limites fonctionnelles encore visibles
+Le rapport est concu pour :
+- aider a comprendre rapidement si l'activite est rentable
+- orienter la prise de decision du responsable
 
-Les principaux manques ou points incomplets constates a ce stade sont :
-- absence de modification et suppression client dans l'interface constatee
-- absence de workflow d'achat complet
-- absence de module fournisseur autonome
-- absence d'avoirs et d'annulation de vente
-- absence de remises et taxes
-- absence de paiements partiels
-- absence de multi-depots
-- absence d'exports metier multiplateformes sur tous les modules
-- absence de parametrage complet de l'entreprise depuis l'interface
-- absence de recuperation de mot de passe automatisee
-- absence de permissions fines par action
+## 20. Ergonomie et experience utilisateur
 
-## 10. Conclusion
+Fonctionnalites visibles :
+- interface a onglets
+- recherche globale
+- messages toast
+- fenetres modales
+- filtres par module
+- adaptation selon le role
+- version web responsive amelioree
+- ajustements sur la version portable pour limiter les zones encombrantes
 
-L'application couvre deja un perimetre fonctionnel important et coherent :
-- ventes
-- facturation
-- produits
-- services
-- clients
-- depenses
-- stock
-- utilisateurs
-- historique
-- synchronisation avec Supabase
+## 21. Structures de donnees principales
 
-Par rapport a la version precedente du cahier des charges, l'existant est plus avance que prevu, notamment sur :
-- l'authentification avec mot de passe
-- le module services
-- le module depenses
-- la gestion des roles
-- la numerotation des factures
-- l'impression ticket et PDF
-- la synchronisation desktop vers Supabase
+Les structures actuellement couvertes comprennent notamment :
+- `users`
+- `products`
+- `services`
+- `clients`
+- `expenses`
+- `initial_stocks`
+- `replenishments`
+- `sales`
+- `sale_items`
+- `sale_service_items`
+- `stock_movements`
+- `audit_logs`
+- `invoice_sequences`
+- `inventory_cycles`
 
-Ce document peut maintenant servir de reference fiable pour :
-- valider l'existant
-- cadrer les prochains correctifs
-- preparer une version 2 centree sur les manques restants
+Vue utilisee :
+- `current_stock_view`
+
+Colonnes metier importantes ajoutees ou confirmees :
+- `replenishments.lot_number`
+- `replenishments.transport_total`
+- `users.auth_user_id`
+
+## 22. Limites et points encore a venir
+
+Les points suivants restent hors perimetre ou a renforcer :
+- envoi direct de rapport par e-mail depuis l'application
+- mecanisme PWA installable depuis le navigateur pour usage hors ligne complet
+- recuperation de mot de passe automatisee
+- fusion avancee des conflits de synchronisation
+- permissions encore plus fines par action metier
+- module fournisseur autonome
+- gestion avancee des avoirs, remises et fiscalite
+
+## 23. Conclusion
+
+L'application a atteint un niveau fonctionnel avance pour une mise en exploitation dans la papeterie.
+
+Elle couvre deja de maniere coherente :
+- la vente
+- la facturation
+- les services
+- les depenses
+- le stock
+- les utilisateurs
+- le travail hors ligne
+- la synchronisation avec Supabase
+- les sauvegardes
+- les rapports de gestion
+
+Ce document peut maintenant servir comme cahier de charge actualise de l'existant pour :
+- la validation finale
+- le deploiement
+- la formation des utilisateurs
+- la preparation des prochaines evolutions

@@ -5,6 +5,10 @@ import type {
   AppUser,
   Client,
   ClientDraft,
+  CybercafeSale,
+  CybercafeSaleDraft,
+  CybercafeTariff,
+  CybercafeTariffDraft,
   DashboardMetrics,
   DesktopSyncCredentials,
   ExpenseDraft,
@@ -91,6 +95,11 @@ const webSeedServices: Service[] = [
     createdAt: now,
     updatedAt: now,
   },
+];
+
+const webSeedCybercafeTariffs: CybercafeTariff[] = [
+  { id: 1, name: "Connexion internet 30 minutes", unitPrice: 200, active: true, createdAt: now, updatedAt: now },
+  { id: 2, name: "Connexion internet 1 heure", unitPrice: 500, active: true, createdAt: now, updatedAt: now },
 ];
 
 const webSeedHistory: SupplyHistoryItem[] = [
@@ -310,6 +319,28 @@ type SupabaseServiceRow = {
   active: boolean;
   created_at: string;
   updated_at: string;
+};
+
+type SupabaseCybercafeTariffRow = {
+  id: number;
+  name: string;
+  unit_price: number;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type SupabaseCybercafeSaleRow = {
+  id: number;
+  tariff_id: number;
+  quantity: number;
+  unit_price: number;
+  total_amount: number;
+  sold_at: string;
+  payment_method: string;
+  note: string | null;
+  tariff?: { name: string | null } | Array<{ name: string | null }> | null;
+  user?: { full_name: string | null } | Array<{ full_name: string | null }> | null;
 };
 
 type SupabaseClientRow = {
@@ -1328,7 +1359,7 @@ function normalizeSupabaseSyncError(error: unknown) {
 
   if (missingRelation) {
     return new Error(
-      `Le schema Supabase est incomplet. La table ou vue '${missingRelation}' est absente. Executez database/supabase-schema.sql puis database/supabase-auth-migration.sql dans Supabase, puis relancez la synchronisation.`
+      `Le schema Supabase est incomplet. La table ou vue '${missingRelation}' est absente. Executez la migration correspondante dans database (notamment supabase-cybercafe-migration.sql pour le module Cybercafe), puis relancez la synchronisation.`
     );
   }
 
@@ -1341,6 +1372,7 @@ async function assertSupabaseSyncSchema() {
     { relation: "users", column: "id" },
     { relation: "products", column: "id" },
     { relation: "services", column: "id" },
+    { relation: "cybercafe_tariffs", column: "id" },
     { relation: "clients", column: "id" },
     { relation: "expenses", column: "id" },
     { relation: "initial_stocks", column: "id" },
@@ -1348,6 +1380,7 @@ async function assertSupabaseSyncSchema() {
     { relation: "sales", column: "id" },
     { relation: "sale_items", column: "id" },
     { relation: "sale_service_items", column: "id" },
+    { relation: "cybercafe_sales", column: "id" },
     { relation: "stock_movements", column: "id" },
     { relation: "audit_logs", column: "id" },
     { relation: "invoice_sequences", column: "id" },
@@ -1367,6 +1400,7 @@ async function assertSupabaseSyncSchema() {
 const syncBucketDefinitions: Record<string, { label: string; tables: string[] }> = {
   products: { label: "Produits", tables: ["products"] },
   services: { label: "Services", tables: ["services"] },
+  cybercafe: { label: "Cybercafe", tables: ["cybercafe_tariffs", "cybercafe_sales"] },
   clients: { label: "Clients", tables: ["clients"] },
   expenses: { label: "Depenses", tables: ["expenses"] },
   initial_stocks: { label: "Stock initial", tables: ["initial_stocks"] },
@@ -1478,6 +1512,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     users,
     products,
     services,
+    cybercafeTariffs,
     clients,
     expenses,
     initialStocks,
@@ -1485,6 +1520,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     sales,
     saleItems,
     saleServiceItems,
+    cybercafeSales,
     stockMovements,
     auditLogs,
     invoiceSequences,
@@ -1493,6 +1529,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     client.from("users").select("id, auth_user_id, full_name, username, email, password_hash, role, active, created_at, last_login_at").order("id", { ascending: true }),
     client.from("products").select("id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at").order("id", { ascending: true }),
     client.from("services").select("id, name, category, unit_price, description, active, created_at, updated_at").order("id", { ascending: true }),
+    client.from("cybercafe_tariffs").select("id, name, unit_price, active, created_at, updated_at").order("id", { ascending: true }),
     client.from("clients").select("id, name, phone, address, email, created_at").order("id", { ascending: true }),
     client.from("expenses").select("id, detail, nature, amount, expense_date, user_id, approved_by, purpose").order("id", { ascending: true }),
     client.from("initial_stocks").select("id, product_id, quantity, purchase_price, stock_date, cycle_id, user_id, note").order("id", { ascending: true }),
@@ -1500,6 +1537,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     client.from("sales").select("id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id").order("id", { ascending: true }),
     client.from("sale_items").select("id, sale_id, product_id, quantity, unit_price, line_total").order("id", { ascending: true }),
     client.from("sale_service_items").select("id, sale_id, service_id, quantity, unit_price, line_total").order("id", { ascending: true }),
+    client.from("cybercafe_sales").select("id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id").order("id", { ascending: true }),
     client.from("stock_movements").select("id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, user_id").order("id", { ascending: true }),
     client.from("audit_logs").select("id, user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at").order("id", { ascending: true }),
     client.from("invoice_sequences").select("id, current_year, series_index, next_number, updated_at").order("id", { ascending: true }),
@@ -1510,6 +1548,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     users: ensureData(users.data, users.error) as Array<Record<string, unknown>>,
     products: ensureData(products.data, products.error) as Array<Record<string, unknown>>,
     services: ensureData(services.data, services.error) as Array<Record<string, unknown>>,
+    cybercafeTariffs: ensureData(cybercafeTariffs.data, cybercafeTariffs.error) as Array<Record<string, unknown>>,
     clients: ensureData(clients.data, clients.error) as Array<Record<string, unknown>>,
     expenses: ensureData(expenses.data, expenses.error) as Array<Record<string, unknown>>,
     initialStocks: ensureData(initialStocks.data, initialStocks.error) as Array<Record<string, unknown>>,
@@ -1517,6 +1556,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     sales: ensureData(sales.data, sales.error) as Array<Record<string, unknown>>,
     saleItems: ensureData(saleItems.data, saleItems.error) as Array<Record<string, unknown>>,
     saleServiceItems: ensureData(saleServiceItems.data, saleServiceItems.error) as Array<Record<string, unknown>>,
+    cybercafeSales: ensureData(cybercafeSales.data, cybercafeSales.error) as Array<Record<string, unknown>>,
     stockMovements: ensureData(stockMovements.data, stockMovements.error) as Array<Record<string, unknown>>,
     auditLogs: ensureData(auditLogs.data, auditLogs.error) as Array<Record<string, unknown>>,
     invoiceSequences: ensureData(invoiceSequences.data, invoiceSequences.error) as Array<Record<string, unknown>>,
@@ -1578,6 +1618,7 @@ function createEmptySyncSnapshot(): SyncSnapshot {
     users: [],
     products: [],
     services: [],
+    cybercafeTariffs: [],
     clients: [],
     expenses: [],
     initialStocks: [],
@@ -1585,6 +1626,7 @@ function createEmptySyncSnapshot(): SyncSnapshot {
     sales: [],
     saleItems: [],
     saleServiceItems: [],
+    cybercafeSales: [],
     stockMovements: [],
     auditLogs: [],
     invoiceSequences: [],
@@ -1603,6 +1645,7 @@ function filterSyncSnapshot(snapshot: SyncSnapshot, selectedTables: string[] | n
   if (included.has("users")) filtered.users = snapshot.users ?? [];
   if (included.has("products")) filtered.products = snapshot.products ?? [];
   if (included.has("services")) filtered.services = snapshot.services ?? [];
+  if (included.has("cybercafe_tariffs")) filtered.cybercafeTariffs = snapshot.cybercafeTariffs ?? [];
   if (included.has("clients")) filtered.clients = snapshot.clients ?? [];
   if (included.has("expenses")) filtered.expenses = snapshot.expenses ?? [];
   if (included.has("initial_stocks")) filtered.initialStocks = snapshot.initialStocks ?? [];
@@ -1610,6 +1653,7 @@ function filterSyncSnapshot(snapshot: SyncSnapshot, selectedTables: string[] | n
   if (included.has("sales")) filtered.sales = snapshot.sales ?? [];
   if (included.has("sale_items")) filtered.saleItems = snapshot.saleItems ?? [];
   if (included.has("sale_service_items")) filtered.saleServiceItems = snapshot.saleServiceItems ?? [];
+  if (included.has("cybercafe_sales")) filtered.cybercafeSales = snapshot.cybercafeSales ?? [];
   if (included.has("stock_movements")) filtered.stockMovements = snapshot.stockMovements ?? [];
   if (included.has("invoice_sequences")) filtered.invoiceSequences = snapshot.invoiceSequences ?? [];
   if (included.has("inventory_cycles")) filtered.inventoryCycles = snapshot.inventoryCycles ?? [];
@@ -1668,6 +1712,7 @@ function mergeSnapshotsForCloudSync(
     users: cloudSnapshot.users ?? [],
     products: cloudSnapshot.products ?? [],
     services: cloudSnapshot.services ?? [],
+    cybercafeTariffs: cloudSnapshot.cybercafeTariffs ?? [],
     clients: cloudSnapshot.clients ?? [],
     expenses: cloudSnapshot.expenses ?? [],
     initialStocks: cloudSnapshot.initialStocks ?? [],
@@ -1675,6 +1720,7 @@ function mergeSnapshotsForCloudSync(
     sales: cloudSnapshot.sales ?? [],
     saleItems: cloudSnapshot.saleItems ?? [],
     saleServiceItems: cloudSnapshot.saleServiceItems ?? [],
+    cybercafeSales: cloudSnapshot.cybercafeSales ?? [],
     stockMovements: cloudSnapshot.stockMovements ?? [],
     auditLogs: cloudSnapshot.auditLogs ?? [],
     invoiceSequences: cloudSnapshot.invoiceSequences ?? [],
@@ -1686,6 +1732,7 @@ function mergeSnapshotsForCloudSync(
   if (included.has("users")) merged.users = localSnapshot.users ?? [];
   if (included.has("products")) merged.products = localSnapshot.products ?? [];
   if (included.has("services")) merged.services = localSnapshot.services ?? [];
+  if (included.has("cybercafe_tariffs")) merged.cybercafeTariffs = localSnapshot.cybercafeTariffs ?? [];
   if (included.has("clients")) merged.clients = localSnapshot.clients ?? [];
   if (included.has("expenses")) merged.expenses = localSnapshot.expenses ?? [];
   if (included.has("initial_stocks")) merged.initialStocks = localSnapshot.initialStocks ?? [];
@@ -1693,6 +1740,7 @@ function mergeSnapshotsForCloudSync(
   if (included.has("sales")) merged.sales = localSnapshot.sales ?? [];
   if (included.has("sale_items")) merged.saleItems = localSnapshot.saleItems ?? [];
   if (included.has("sale_service_items")) merged.saleServiceItems = localSnapshot.saleServiceItems ?? [];
+  if (included.has("cybercafe_sales")) merged.cybercafeSales = localSnapshot.cybercafeSales ?? [];
   if (included.has("stock_movements")) merged.stockMovements = localSnapshot.stockMovements ?? [];
   if (included.has("invoice_sequences")) merged.invoiceSequences = localSnapshot.invoiceSequences ?? [];
   if (included.has("inventory_cycles")) merged.inventoryCycles = localSnapshot.inventoryCycles ?? [];
@@ -1709,6 +1757,7 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
 
   if (hasTable("sale_items")) await deleteSupabaseRows("sale_items");
   if (hasTable("sale_service_items")) await deleteSupabaseRows("sale_service_items");
+  if (hasTable("cybercafe_sales")) await deleteSupabaseRows("cybercafe_sales");
   if (hasTable("stock_movements")) await deleteSupabaseRows("stock_movements");
   if (hasTable("sales")) await deleteSupabaseRows("sales");
   if (hasTable("replenishments")) await deleteSupabaseRows("replenishments");
@@ -1716,6 +1765,7 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
   if (hasTable("audit_logs")) await deleteSupabaseRows("audit_logs");
   if (hasTable("expenses")) await deleteSupabaseRows("expenses");
   if (hasTable("services")) await deleteSupabaseRows("services");
+  if (hasTable("cybercafe_tariffs")) await deleteSupabaseRows("cybercafe_tariffs");
   if (hasTable("clients")) await deleteSupabaseRows("clients");
   if (hasTable("products")) await deleteSupabaseRows("products");
   if (hasTable("inventory_cycles")) await deleteSupabaseRows("inventory_cycles");
@@ -1727,6 +1777,7 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
 
   if (hasTable("products")) await insertSupabaseRows("products", syncSnapshot.products);
   if (hasTable("services")) await insertSupabaseRows("services", syncSnapshot.services);
+  if (hasTable("cybercafe_tariffs")) await insertSupabaseRows("cybercafe_tariffs", syncSnapshot.cybercafeTariffs);
   if (hasTable("clients")) await insertSupabaseRows("clients", syncSnapshot.clients);
   if (hasTable("expenses")) await insertSupabaseRows("expenses", syncSnapshot.expenses ?? []);
   if (hasTable("inventory_cycles")) await insertSupabaseRows("inventory_cycles", syncSnapshot.inventoryCycles);
@@ -1736,6 +1787,7 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
   if (hasTable("sales")) await insertSupabaseRows("sales", syncSnapshot.sales);
   if (hasTable("sale_items")) await insertSupabaseRows("sale_items", syncSnapshot.saleItems);
   if (hasTable("sale_service_items")) await insertSupabaseRows("sale_service_items", syncSnapshot.saleServiceItems);
+  if (hasTable("cybercafe_sales")) await insertSupabaseRows("cybercafe_sales", syncSnapshot.cybercafeSales);
   if (hasTable("stock_movements")) await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
   if (hasTable("audit_logs")) await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
 }
@@ -2293,6 +2345,7 @@ export const repository = {
         "users",
         "products",
         "services",
+        "cybercafe_tariffs",
         "clients",
         "expenses",
         "inventory_cycles",
@@ -2302,6 +2355,7 @@ export const repository = {
         "sales",
         "sale_items",
         "sale_service_items",
+        "cybercafe_sales",
         "stock_movements",
         "audit_logs",
       ];
@@ -2777,6 +2831,149 @@ export const repository = {
     });
     persistWebActivityHistory(activityHistory);
     return services;
+  },
+
+  async listCybercafeTariffs(): Promise<CybercafeTariff[]> {
+    if (window.desktopApi) return window.desktopApi.listCybercafeTariffs();
+
+    if (isSupabaseEnabled()) {
+      const result = await getSupabaseClient()
+        .from("cybercafe_tariffs")
+        .select("id, name, unit_price, active, created_at, updated_at")
+        .order("active", { ascending: false })
+        .order("unit_price", { ascending: true });
+      const rows = ensureData(result.data, result.error) as SupabaseCybercafeTariffRow[];
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        unitPrice: Number(row.unit_price),
+        active: row.active,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+    }
+
+    return loadJson("walikale-web-cybercafe-tariffs", webSeedCybercafeTariffs);
+  },
+
+  async saveCybercafeTariff(draft: CybercafeTariffDraft): Promise<CybercafeTariff[]> {
+    if (window.desktopApi) return window.desktopApi.saveCybercafeTariff(draft);
+
+    const name = draft.name.trim();
+    const unitPrice = Number(draft.unitPrice);
+    if (!name) throw new Error("Le nom du tarif cybercafe est obligatoire.");
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) throw new Error("Le prix du tarif doit etre superieur a zero.");
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      let tariffId = draft.id;
+      if (draft.id) {
+        const result = await client
+          .from("cybercafe_tariffs")
+          .update({ name, unit_price: unitPrice, active: draft.active !== false })
+          .eq("id", draft.id);
+        ensureData(result.data ?? [], result.error);
+      } else {
+        const result = await client
+          .from("cybercafe_tariffs")
+          .insert({ name, unit_price: unitPrice, active: draft.active !== false })
+          .select("id")
+          .single();
+        tariffId = (ensureData(result.data, result.error) as { id: number }).id;
+      }
+      await insertSupabaseAuditLog(client, {
+        action: draft.id ? "update" : "create",
+        target_table: "cybercafe_tariffs",
+        target_id: tariffId ?? 0,
+        details: `${draft.id ? "Mise a jour" : "Creation"} tarif cybercafe ${name}`,
+      });
+      return this.listCybercafeTariffs();
+    }
+
+    const tariffs = loadJson("walikale-web-cybercafe-tariffs", webSeedCybercafeTariffs);
+    const existing = tariffs.find((item) => item.id === draft.id);
+    if (existing) {
+      existing.name = name;
+      existing.unitPrice = unitPrice;
+      existing.active = draft.active !== false;
+      existing.updatedAt = new Date().toISOString();
+    } else {
+      tariffs.unshift({ id: Date.now(), name, unitPrice, active: draft.active !== false, createdAt: now, updatedAt: now });
+    }
+    localStorage.setItem("walikale-web-cybercafe-tariffs", JSON.stringify(tariffs));
+    return tariffs;
+  },
+
+  async listCybercafeSales(): Promise<CybercafeSale[]> {
+    if (window.desktopApi) return window.desktopApi.listCybercafeSales();
+
+    if (isSupabaseEnabled()) {
+      const result = await getSupabaseClient()
+        .from("cybercafe_sales")
+        .select("id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, tariff:cybercafe_tariffs(name), user:users(full_name)")
+        .order("sold_at", { ascending: false })
+        .order("id", { ascending: false });
+      const rows = ensureData(result.data, result.error) as SupabaseCybercafeSaleRow[];
+      return rows.map((row) => ({
+        id: row.id,
+        tariffId: row.tariff_id,
+        tariffName: relationFirst(row.tariff)?.name ?? "Tarif cybercafe",
+        unitPrice: Number(row.unit_price),
+        quantity: row.quantity,
+        amount: Number(row.total_amount),
+        date: formatFrenchDate(row.sold_at),
+        paymentMethod: row.payment_method,
+        note: row.note ?? "",
+        userName: relationFirst(row.user)?.full_name ?? "Utilisateur",
+      }));
+    }
+
+    return loadJson<CybercafeSale[]>("walikale-web-cybercafe-sales", []);
+  },
+
+  async createCybercafeSale(draft: CybercafeSaleDraft): Promise<CybercafeSale[]> {
+    if (window.desktopApi) return window.desktopApi.createCybercafeSale(draft);
+
+    const tariffId = Number(draft.tariffId);
+    const quantity = Number(draft.quantity);
+    if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("Le nombre de connexions doit etre superieur a zero.");
+    const tariffs = await this.listCybercafeTariffs();
+    const tariff = tariffs.find((item) => item.id === tariffId && item.active);
+    if (!tariff) throw new Error("Selectionnez un tarif cybercafe actif.");
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const result = await client
+        .from("cybercafe_sales")
+        .insert({
+          tariff_id: tariff.id,
+          quantity,
+          unit_price: tariff.unitPrice,
+          total_amount: tariff.unitPrice * quantity,
+          sold_at: `${draft.date || new Date().toISOString().slice(0, 10)}T12:00:00.000Z`,
+          payment_method: draft.paymentMethod || "Especes",
+          note: draft.note.trim() || null,
+        })
+        .select("id")
+        .single();
+      const inserted = ensureData(result.data, result.error) as { id: number };
+      await insertSupabaseAuditLog(client, {
+        action: "create",
+        target_table: "cybercafe_sales",
+        target_id: inserted.id,
+        details: `Recette cybercafe ${tariff.name}: ${quantity} connexion(s), ${tariff.unitPrice * quantity} FC`,
+      });
+      return this.listCybercafeSales();
+    }
+
+    const sales = loadJson<CybercafeSale[]>("walikale-web-cybercafe-sales", []);
+    sales.unshift({
+      id: Date.now(), tariffId: tariff.id, tariffName: tariff.name, unitPrice: tariff.unitPrice, quantity,
+      amount: tariff.unitPrice * quantity, date: formatFrenchDate(`${draft.date}T12:00:00.000Z`),
+      paymentMethod: draft.paymentMethod || "Especes", note: draft.note.trim(), userName: "Utilisateur web",
+    });
+    localStorage.setItem("walikale-web-cybercafe-sales", JSON.stringify(sales));
+    return sales;
   },
 
   async listSales(): Promise<SaleRecord[]> {
@@ -3536,13 +3733,18 @@ export const repository = {
     }
 
     if (isSupabaseEnabled()) {
-      const [products, sales, expenses] = await Promise.all([this.listProducts(), this.listSales(), this.listExpenses()]);
-      const totalSalesAmount = sales.reduce((sum, item) => sum + item.amount, 0);
+      const [products, sales, cybercafeSales, expenses] = await Promise.all([
+        this.listProducts(),
+        this.listSales(),
+        this.listCybercafeSales(),
+        this.listExpenses(),
+      ]);
+      const totalSalesAmount = sales.reduce((sum, item) => sum + item.amount, 0) + cybercafeSales.reduce((sum, item) => sum + item.amount, 0);
       const totalExpenses = expenses.reduce((sum, item) => sum + item.amount, 0);
       return {
         totalStock: products.reduce((sum, item) => sum + item.quantity, 0),
         totalProducts: products.length,
-        dailySales: sales.length,
+        dailySales: sales.length + cybercafeSales.length,
         suppliers: new Set(products.map((item) => item.supplier)).size,
         totalSalesAmount,
         totalExpenses,

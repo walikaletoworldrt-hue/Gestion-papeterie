@@ -6,6 +6,8 @@ import { buildInvoiceHtml } from "./invoice-template";
 import type { SyncSnapshot } from "../src/types";
 import type {
   ClientDraft,
+  CybercafeSaleDraft,
+  CybercafeTariffDraft,
   CloudDesktopSessionDraft,
   ExpenseDraft,
   LoginDraft,
@@ -40,6 +42,10 @@ function registerIpc() {
   ipcMain.handle("inventory:delete", (_event, id: number) => database.deleteProduct(id));
   ipcMain.handle("services:list", () => database.listServices());
   ipcMain.handle("services:save", (_event, draft: ServiceDraft) => database.saveService(draft));
+  ipcMain.handle("cybercafe:tariffs:list", () => database.listCybercafeTariffs());
+  ipcMain.handle("cybercafe:tariffs:save", (_event, draft: CybercafeTariffDraft) => database.saveCybercafeTariff(draft));
+  ipcMain.handle("cybercafe:sales:list", () => database.listCybercafeSales());
+  ipcMain.handle("cybercafe:sales:create", (_event, draft: CybercafeSaleDraft) => database.createCybercafeSale(draft));
   ipcMain.handle("inventory:reset-cycle", () => database.resetInventoryCycle());
   ipcMain.handle("sales:list", () => database.listSales());
   ipcMain.handle("sales:create", (_event, draft: SaleDraft) => database.createSale(draft));

@@ -8,6 +8,10 @@ import type {
   AppUser,
   Client,
   ClientDraft,
+  CybercafeSale,
+  CybercafeSaleDraft,
+  CybercafeTariff,
+  CybercafeTariffDraft,
   CloudDesktopSessionDraft,
   DesktopSyncCredentials,
   DashboardMetrics,
@@ -59,6 +63,28 @@ type ServiceRow = {
   active: number;
   created_at: string;
   updated_at: string;
+};
+
+type CybercafeTariffRow = {
+  id: number;
+  name: string;
+  unit_price: number;
+  active: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type CybercafeSaleRow = {
+  id: number;
+  tariff_id: number;
+  tariff_name: string;
+  unit_price: number;
+  quantity: number;
+  total_amount: number;
+  sold_at: string;
+  payment_method: string;
+  note: string | null;
+  user_name: string | null;
 };
 
 type SupplyHistoryRow = {
@@ -343,6 +369,29 @@ export class LocalDatabase {
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cybercafe_tariffs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE,
+        unit_price REAL NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cybercafe_sales (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tariff_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price REAL NOT NULL,
+        total_amount REAL NOT NULL,
+        sold_at TEXT NOT NULL,
+        payment_method TEXT NOT NULL DEFAULT 'Especes',
+        note TEXT,
+        user_id INTEGER,
+        FOREIGN KEY (tariff_id) REFERENCES cybercafe_tariffs(id) ON DELETE RESTRICT,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
       );
 
       CREATE TABLE IF NOT EXISTS initial_stocks (
@@ -777,6 +826,95 @@ export class LocalDatabase {
     }));
   }
 
+  listCybercafeTariffs(): CybercafeTariff[] {
+    const rows = this.db
+      .prepare("SELECT id, name, unit_price, active, created_at, updated_at FROM cybercafe_tariffs ORDER BY active DESC, unit_price ASC, name ASC")
+      .all() as CybercafeTariffRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      unitPrice: Number(row.unit_price),
+      active: Boolean(row.active),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  saveCybercafeTariff(draft: CybercafeTariffDraft): CybercafeTariff[] {
+    this.requirePermission("manage_inventory");
+    const name = draft.name.trim();
+    const unitPrice = Number(draft.unitPrice);
+    const now = new Date().toISOString();
+
+    if (!name) throw new Error("Le nom du tarif cybercafe est obligatoire.");
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) throw new Error("Le prix du tarif doit etre superieur a zero.");
+
+    if (draft.id) {
+      this.db
+        .prepare("UPDATE cybercafe_tariffs SET name = ?, unit_price = ?, active = ?, updated_at = ? WHERE id = ?")
+        .run(name, unitPrice, draft.active === false ? 0 : 1, now, draft.id);
+      this.logAction(this.getActorUserId(), "update", "cybercafe_tariffs", draft.id, `Mise a jour tarif cybercafe ${name}`);
+    } else {
+      const result = this.db
+        .prepare("INSERT INTO cybercafe_tariffs (name, unit_price, active, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+        .run(name, unitPrice, draft.active === false ? 0 : 1, now, now);
+      this.logAction(this.getActorUserId(), "create", "cybercafe_tariffs", Number(result.lastInsertRowid), `Creation tarif cybercafe ${name}`);
+    }
+
+    return this.listCybercafeTariffs();
+  }
+
+  listCybercafeSales(): CybercafeSale[] {
+    const rows = this.db
+      .prepare(`
+        SELECT cs.id, cs.tariff_id, ct.name AS tariff_name, cs.unit_price, cs.quantity, cs.total_amount,
+               cs.sold_at, cs.payment_method, cs.note, u.full_name AS user_name
+        FROM cybercafe_sales cs
+        INNER JOIN cybercafe_tariffs ct ON ct.id = cs.tariff_id
+        LEFT JOIN users u ON u.id = cs.user_id
+        ORDER BY datetime(cs.sold_at) DESC, cs.id DESC
+      `)
+      .all() as CybercafeSaleRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      tariffId: row.tariff_id,
+      tariffName: row.tariff_name,
+      unitPrice: Number(row.unit_price),
+      quantity: row.quantity,
+      amount: Number(row.total_amount),
+      date: this.formatDate(row.sold_at),
+      paymentMethod: row.payment_method,
+      note: row.note ?? "",
+      userName: row.user_name ?? "Utilisateur",
+    }));
+  }
+
+  createCybercafeSale(draft: CybercafeSaleDraft): CybercafeSale[] {
+    this.requirePermission("manage_sales");
+    const tariffId = Number(draft.tariffId);
+    const quantity = Number(draft.quantity);
+    const soldAt = `${draft.date || new Date().toISOString().slice(0, 10)}T12:00:00.000Z`;
+    const tariff = this.db
+      .prepare("SELECT id, name, unit_price, active FROM cybercafe_tariffs WHERE id = ?")
+      .get(tariffId) as { id: number; name: string; unit_price: number; active: number } | undefined;
+
+    if (!tariff || !tariff.active) throw new Error("Selectionnez un tarif cybercafe actif.");
+    if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("Le nombre de connexions doit etre superieur a zero.");
+
+    const amount = Number(tariff.unit_price) * quantity;
+    const result = this.db
+      .prepare(`
+        INSERT INTO cybercafe_sales (tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(tariff.id, quantity, tariff.unit_price, amount, soldAt, draft.paymentMethod || "Especes", draft.note.trim() || null, this.getActorUserId());
+
+    this.logAction(this.getActorUserId(), "create", "cybercafe_sales", Number(result.lastInsertRowid), `Recette cybercafe ${tariff.name}: ${quantity} connexion(s), ${amount} FC`);
+    return this.listCybercafeSales();
+  }
+
   saveProduct(draft: ProductDraft): Product[] {
     this.requirePermission("manage_inventory");
     const actor = this.requireAuthenticatedUser();
@@ -1084,11 +1222,13 @@ export class LocalDatabase {
       clients: this.db.prepare("SELECT id, name, phone, address, email, created_at FROM clients ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       expenses: this.db.prepare("SELECT id, detail, nature, amount, expense_date, user_id, approved_by, purpose FROM expenses ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       services: this.db.prepare("SELECT id, name, category, unit_price, description, active, created_at, updated_at FROM services ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      cybercafeTariffs: this.db.prepare("SELECT id, name, unit_price, active, created_at, updated_at FROM cybercafe_tariffs ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       initialStocks: this.db.prepare("SELECT id, product_id, quantity, purchase_price, stock_date, cycle_id, NULL as user_id, note FROM initial_stocks ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       replenishments: this.db.prepare("SELECT id, product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, NULL as user_id, note FROM replenishments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       sales: this.db.prepare("SELECT id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, NULL as user_id FROM sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleServiceItems: this.db.prepare("SELECT id, sale_id, service_id, quantity, unit_price, line_total FROM sale_service_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      cybercafeSales: this.db.prepare("SELECT id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id FROM cybercafe_sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       stockMovements: this.db.prepare("SELECT id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, NULL as user_id FROM stock_movements ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       auditLogs: this.db.prepare("SELECT id, NULL as user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at FROM audit_logs ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       invoiceSequences: this.db.prepare("SELECT id, current_year, series_index, next_number, updated_at FROM invoice_sequence_settings ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1101,6 +1241,7 @@ export class LocalDatabase {
     const replaceTransaction = this.db.transaction(() => {
       this.db.prepare("DELETE FROM sale_items").run();
       this.db.prepare("DELETE FROM sale_service_items").run();
+      this.db.prepare("DELETE FROM cybercafe_sales").run();
       this.db.prepare("DELETE FROM stock_movements").run();
       this.db.prepare("DELETE FROM sales").run();
       this.db.prepare("DELETE FROM replenishments").run();
@@ -1108,6 +1249,7 @@ export class LocalDatabase {
       this.db.prepare("DELETE FROM audit_logs").run();
       this.db.prepare("DELETE FROM expenses").run();
       this.db.prepare("DELETE FROM services").run();
+      this.db.prepare("DELETE FROM cybercafe_tariffs").run();
       this.db.prepare("DELETE FROM users").run();
       this.db.prepare("DELETE FROM clients").run();
       this.db.prepare("DELETE FROM products").run();
@@ -1134,6 +1276,10 @@ export class LocalDatabase {
         INSERT INTO services (id, name, category, unit_price, description, active, created_at, updated_at)
         VALUES (@id, @name, @category, @unit_price, @description, @active, @created_at, @updated_at)
       `);
+      const insertCybercafeTariffs = this.db.prepare(`
+        INSERT INTO cybercafe_tariffs (id, name, unit_price, active, created_at, updated_at)
+        VALUES (@id, @name, @unit_price, @active, @created_at, @updated_at)
+      `);
       const insertInitialStocks = this.db.prepare(`
         INSERT INTO initial_stocks (id, product_id, quantity, purchase_price, stock_date, cycle_id, user_id, note)
         VALUES (@id, @product_id, @quantity, @purchase_price, @stock_date, @cycle_id, @user_id, @note)
@@ -1153,6 +1299,10 @@ export class LocalDatabase {
       const insertSaleServiceItems = this.db.prepare(`
         INSERT INTO sale_service_items (id, sale_id, service_id, quantity, unit_price, line_total)
         VALUES (@id, @sale_id, @service_id, @quantity, @unit_price, @line_total)
+      `);
+      const insertCybercafeSales = this.db.prepare(`
+        INSERT INTO cybercafe_sales (id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id)
+        VALUES (@id, @tariff_id, @quantity, @unit_price, @total_amount, @sold_at, @payment_method, @note, @user_id)
       `);
       const insertStockMovements = this.db.prepare(`
         INSERT INTO stock_movements (id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, user_id)
@@ -1176,6 +1326,7 @@ export class LocalDatabase {
       (snapshot.clients ?? []).forEach((row) => insertClients.run(row));
       (snapshot.expenses ?? []).forEach((row) => insertExpenses.run(row));
       (snapshot.services ?? []).forEach((row) => insertServices.run(row));
+      (snapshot.cybercafeTariffs ?? []).forEach((row) => insertCybercafeTariffs.run(row));
       (snapshot.inventoryCycles ?? []).forEach((row) => insertInventoryCycles.run(row));
       (snapshot.invoiceSequences ?? []).forEach((row) => insertInvoiceSequences.run(row));
       (snapshot.initialStocks ?? []).forEach((row) => insertInitialStocks.run(row));
@@ -1183,6 +1334,7 @@ export class LocalDatabase {
       (snapshot.sales ?? []).forEach((row) => insertSales.run(row));
       (snapshot.saleItems ?? []).forEach((row) => insertSaleItems.run(row));
       (snapshot.saleServiceItems ?? []).forEach((row) => insertSaleServiceItems.run(row));
+      (snapshot.cybercafeSales ?? []).forEach((row) => insertCybercafeSales.run(row));
       (snapshot.stockMovements ?? []).forEach((row) => insertStockMovements.run(row));
       const importedAt = new Date().toISOString();
       (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run({ ...row, synced_at: importedAt }));
@@ -1665,15 +1817,19 @@ export class LocalDatabase {
     const dailySales = this.db
       .prepare("SELECT COUNT(*) AS count FROM sales WHERE substr(sold_at, 1, 10) = ?")
       .get(today) as { count: number };
+    const dailyCybercafeSales = this.db
+      .prepare("SELECT COUNT(*) AS count FROM cybercafe_sales WHERE substr(sold_at, 1, 10) = ?")
+      .get(today) as { count: number };
     const totalSalesRow = this.db.prepare("SELECT COALESCE(SUM(total_amount), 0) AS total FROM sales").get() as { total: number };
+    const totalCybercafeRow = this.db.prepare("SELECT COALESCE(SUM(total_amount), 0) AS total FROM cybercafe_sales").get() as { total: number };
     const totalExpensesRow = this.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM expenses").get() as { total: number };
-    const totalSalesAmount = Number(totalSalesRow.total ?? 0);
+    const totalSalesAmount = Number(totalSalesRow.total ?? 0) + Number(totalCybercafeRow.total ?? 0);
     const totalExpenses = Number(totalExpensesRow.total ?? 0);
 
     return {
       totalStock,
       totalProducts: products.length,
-      dailySales: dailySales.count,
+      dailySales: dailySales.count + dailyCybercafeSales.count,
       suppliers: new Set(products.map((item) => item.supplier)).size,
       totalSalesAmount,
       totalExpenses,

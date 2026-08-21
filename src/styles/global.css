@@ -758,6 +758,20 @@ h2 {
   font-size: 1.35rem;
 }
 
+.metric-card-inline-filter {
+  margin-top: 0.65rem;
+}
+
+.metric-card-inline-filter select {
+  width: 100%;
+}
+
+.metric-card-date-range {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.55rem;
+}
+
 .metric-card.warning {
   border-left-color: #f08a24;
 }

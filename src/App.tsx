@@ -6,6 +6,10 @@ import type {
   AppUser,
   Client,
   ClientDraft,
+  CybercafeSale,
+  CybercafeSaleDraft,
+  CybercafeTariff,
+  CybercafeTariffDraft,
   DashboardMetrics,
   ExpenseDraft,
   ExpenseItem,
@@ -38,6 +42,7 @@ const tabs: { id: TabId; label: string }[] = [
   { id: "initial-stock", label: "Stock initial" },
   { id: "replenishments", label: "Reapprovisionnement" },
   { id: "sales", label: "Ventes" },
+  { id: "cybercafe", label: "Cybercafe" },
   { id: "current-stock", label: "Stock actuel" },
   { id: "utilisateurs", label: "Utilisateurs" },
   { id: "history", label: "Historique" },
@@ -129,7 +134,7 @@ const emptyExpenseDraft: ExpenseDraft = {
 };
 
 const userRoles: UserRole[] = ["Administrateur", "Super admin", "Employe"];
-type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport";
+type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale" | "cybercafeTariff";
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -999,6 +1004,8 @@ export default function App() {
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [sales, setSales] = useState<SaleRecord[]>([]);
+  const [cybercafeTariffs, setCybercafeTariffs] = useState<CybercafeTariff[]>([]);
+  const [cybercafeSales, setCybercafeSales] = useState<CybercafeSale[]>([]);
   const [currentStock, setCurrentStock] = useState<StockRow[]>([]);
   const [invoiceSeriesInfo, setInvoiceSeriesInfo] = useState<InvoiceSeriesInfo | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
@@ -1028,6 +1035,9 @@ export default function App() {
   const [expenseDraft, setExpenseDraft] = useState<ExpenseDraft>(emptyExpenseDraft);
   const [expenseReport, setExpenseReport] = useState<ExpenseReportState | null>(null);
   const [saleDraft, setSaleDraft] = useState<SaleDraft>(emptySaleDraft);
+  const [cybercafeTariffDraft, setCybercafeTariffDraft] = useState<CybercafeTariffDraft>({ name: "", unitPrice: 0, active: true });
+  const [cybercafeSaleDraft, setCybercafeSaleDraft] = useState<CybercafeSaleDraft>({ tariffId: 0, quantity: 1, date: new Date().toISOString().slice(0, 10), paymentMethod: "Especes", note: "" });
+  const [cybercafeSearch, setCybercafeSearch] = useState("");
   const [replenishmentDraft, setReplenishmentDraft] = useState<ReplenishmentDraft>(createEmptyReplenishmentDraft([]));
   const [saleDateDraft, setSaleDateDraft] = useState(() => new Date().toISOString().slice(0, 10));
   const [saleNoteDraft, setSaleNoteDraft] = useState("");
@@ -1048,6 +1058,9 @@ export default function App() {
   const [globalSearch, setGlobalSearch] = useState("");
   const [clientSearch, setClientSearch] = useState("");
   const [saleSearch, setSaleSearch] = useState("");
+  const [dashboardSalesPreset, setDashboardSalesPreset] = useState<SalesPeriodPreset>("month");
+  const [dashboardSalesStart, setDashboardSalesStart] = useState(() => toInputDateValue(startOfMonth(new Date())));
+  const [dashboardSalesEnd, setDashboardSalesEnd] = useState(() => toInputDateValue(new Date()));
   const [salesPeriodPreset, setSalesPeriodPreset] = useState<SalesPeriodPreset>("all");
   const [salesPeriodStart, setSalesPeriodStart] = useState(() => toInputDateValue(addDays(new Date(), -29)));
   const [salesPeriodEnd, setSalesPeriodEnd] = useState(() => toInputDateValue(new Date()));
@@ -1190,6 +1203,8 @@ export default function App() {
       repository.getDashboardMetrics(),
       repository.getCurrentStock(),
       repository.getInvoiceSeriesInfo(),
+      repository.listCybercafeTariffs(),
+      repository.listCybercafeSales(),
     ]);
 
     const errors = settled
@@ -1214,6 +1229,8 @@ export default function App() {
         : { totalStock: 0, totalProducts: 0, dailySales: 0, suppliers: 0, totalSalesAmount: 0, totalExpenses: 0, netSalesAmount: 0 };
     const nextCurrentStock = settled[10].status === "fulfilled" ? settled[10].value : [];
     const nextInvoiceSeriesInfo = settled[11].status === "fulfilled" ? settled[11].value : null;
+    const nextCybercafeTariffs = settled[12].status === "fulfilled" ? settled[12].value : [];
+    const nextCybercafeSales = settled[13].status === "fulfilled" ? settled[13].value : [];
 
     setProducts(nextProducts);
     setServices(nextServices);
@@ -1226,6 +1243,8 @@ export default function App() {
     setMetrics(nextMetrics);
     setCurrentStock(nextCurrentStock);
     setInvoiceSeriesInfo(nextInvoiceSeriesInfo);
+    setCybercafeTariffs(nextCybercafeTariffs);
+    setCybercafeSales(nextCybercafeSales);
     setSyncStatus(nextSyncStatus);
     setSaleDraft((current) => ({
       ...current,
@@ -1576,6 +1595,58 @@ export default function App() {
     setActiveModal("sale");
   }
 
+  function openCybercafeSaleModal() {
+    if (!canCreateSales) {
+      showAccessDenied("Veuillez vous connecter pour enregistrer une recette cybercafe.");
+      return;
+    }
+
+    const firstTariff = cybercafeTariffs.find((item) => item.active);
+    if (!firstTariff) {
+      showToast("error", "Creez d'abord un tarif de connexion actif.");
+      return;
+    }
+
+    setCybercafeSaleDraft({
+      tariffId: firstTariff.id,
+      quantity: 1,
+      date: new Date().toISOString().slice(0, 10),
+      paymentMethod: "Especes",
+      note: "",
+    });
+    setActiveModal("cybercafeSale");
+  }
+
+  async function handleCybercafeSaleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const nextSales = await repository.createCybercafeSale(cybercafeSaleDraft);
+      setCybercafeSales(nextSales);
+      setActiveModal(null);
+      showToast("success", "Recette cybercafe enregistree avec succes.");
+      void loadData();
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'enregistrer cette recette.");
+    }
+  }
+
+  async function handleCybercafeTariffSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canCreateInventory) {
+      showAccessDenied("Votre profil ne permet pas de gerer les tarifs cybercafe.");
+      return;
+    }
+
+    try {
+      const nextTariffs = await repository.saveCybercafeTariff(cybercafeTariffDraft);
+      setCybercafeTariffs(nextTariffs);
+      setActiveModal(null);
+      showToast("success", "Tarif cybercafe enregistre avec succes.");
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'enregistrer ce tarif.");
+    }
+  }
+
   function openUserModal() {
     if (!canManageUsers) {
       showAccessDenied("Seul le super administrateur peut ajouter un utilisateur.");
@@ -1674,6 +1745,12 @@ export default function App() {
         const normalized = startOfDay(expenseDate);
         return normalized.getTime() >= reportRangeStart.getTime() && normalized.getTime() <= reportRangeEnd.getTime();
       });
+      const filteredCybercafeSales = cybercafeSales.filter((sale) => {
+        const saleDate = parseSaleDate(sale.date);
+        if (!saleDate) return false;
+        const normalized = startOfDay(saleDate);
+        return normalized.getTime() >= reportRangeStart.getTime() && normalized.getTime() <= reportRangeEnd.getTime();
+      });
       const periodLabel =
         expenseReportPeriodPreset === "today"
           ? "Aujourd'hui"
@@ -1717,7 +1794,19 @@ export default function App() {
         });
       });
 
-      const totalSalesAmount = filteredSales.reduce((sum, sale) => sum + sale.amount, 0);
+      filteredCybercafeSales.forEach((sale) => {
+        const category = `Cybercafe - ${sale.tariffName}`;
+        const existingService = serviceTotals.get(category);
+        serviceTotals.set(category, {
+          category,
+          quantity: (existingService?.quantity ?? 0) + sale.quantity,
+          amount: (existingService?.amount ?? 0) + sale.amount,
+        });
+      });
+
+      const totalSalesAmount =
+        filteredSales.reduce((sum, sale) => sum + sale.amount, 0) +
+        filteredCybercafeSales.reduce((sum, sale) => sum + sale.amount, 0);
       const totalExpensesAmount = filteredExpenses.reduce((sum, item) => sum + item.amount, 0);
       const netBalance = totalSalesAmount - totalExpensesAmount;
       const expenseRatio = totalSalesAmount > 0 ? totalExpensesAmount / totalSalesAmount : totalExpensesAmount > 0 ? Infinity : 0;
@@ -2654,6 +2743,55 @@ export default function App() {
     .sort((left, right) => right.amount - left.amount)
     .slice(0, 5);
   const topClientsMaxAmount = topClients.reduce((max, item) => Math.max(max, item.amount), 0);
+
+  const dashboardSalesToday = startOfDay(new Date());
+  let dashboardSalesRangeStart: Date | null = null;
+  let dashboardSalesRangeEnd: Date | null = null;
+
+  if (dashboardSalesPreset === "today") {
+    dashboardSalesRangeStart = dashboardSalesToday;
+    dashboardSalesRangeEnd = endOfDay(dashboardSalesToday);
+  } else if (dashboardSalesPreset === "7d") {
+    dashboardSalesRangeStart = addDays(dashboardSalesToday, -6);
+    dashboardSalesRangeEnd = endOfDay(dashboardSalesToday);
+  } else if (dashboardSalesPreset === "30d") {
+    dashboardSalesRangeStart = addDays(dashboardSalesToday, -29);
+    dashboardSalesRangeEnd = endOfDay(dashboardSalesToday);
+  } else if (dashboardSalesPreset === "90d") {
+    dashboardSalesRangeStart = addDays(dashboardSalesToday, -89);
+    dashboardSalesRangeEnd = endOfDay(dashboardSalesToday);
+  } else if (dashboardSalesPreset === "month") {
+    dashboardSalesRangeStart = startOfMonth(dashboardSalesToday);
+    dashboardSalesRangeEnd = endOfDay(dashboardSalesToday);
+  } else if (dashboardSalesPreset === "year") {
+    dashboardSalesRangeStart = startOfYear(dashboardSalesToday);
+    dashboardSalesRangeEnd = endOfDay(dashboardSalesToday);
+  } else if (dashboardSalesPreset === "custom") {
+    const customStart = parseSaleDate(dashboardSalesStart);
+    const customEnd = parseSaleDate(dashboardSalesEnd);
+    dashboardSalesRangeStart = customStart ? startOfDay(customStart) : null;
+    dashboardSalesRangeEnd = customEnd ? endOfDay(customEnd) : null;
+  }
+
+  if (dashboardSalesRangeStart && dashboardSalesRangeEnd && dashboardSalesRangeStart.getTime() > dashboardSalesRangeEnd.getTime()) {
+    const swappedStart = startOfDay(dashboardSalesRangeEnd);
+    dashboardSalesRangeEnd = endOfDay(dashboardSalesRangeStart);
+    dashboardSalesRangeStart = swappedStart;
+  }
+
+  const dashboardFilteredSales = sales.filter((sale) => {
+    if (!dashboardSalesRangeStart || !dashboardSalesRangeEnd) {
+      return true;
+    }
+
+    const saleDate = parseSaleDate(sale.date);
+    return (
+      saleDate !== null &&
+      saleDate.getTime() >= dashboardSalesRangeStart.getTime() &&
+      saleDate.getTime() <= dashboardSalesRangeEnd.getTime()
+    );
+  });
+  const dashboardFilteredSalesAmount = dashboardFilteredSales.reduce((sum, sale) => sum + sale.amount, 0);
   const replenishmentLotMetrics = supplyHistory
     .filter((entry) => entry.movementType === "reapprovisionnement" && entry.lotNumber)
     .reduce((map, entry) => {
@@ -3484,7 +3622,36 @@ export default function App() {
                 </article>
                 <article className="metric-card">
                   <span>Montant vendu</span>
-                  <strong>{formatCurrency(metrics.totalSalesAmount ?? 0)}</strong>
+                  <strong>{formatCurrency(dashboardFilteredSalesAmount)}</strong>
+                  <div className="metric-card-inline-filter">
+                    <select
+                      value={dashboardSalesPreset}
+                      onChange={(event) => setDashboardSalesPreset(event.target.value as SalesPeriodPreset)}
+                    >
+                      <option value="today">Aujourd'hui</option>
+                      <option value="7d">7 derniers jours</option>
+                      <option value="30d">30 derniers jours</option>
+                      <option value="90d">90 derniers jours</option>
+                      <option value="month">Mois en cours</option>
+                      <option value="year">Annee en cours</option>
+                      <option value="all">Toutes les periodes</option>
+                      <option value="custom">Periode personnalisee</option>
+                    </select>
+                  </div>
+                  {dashboardSalesPreset === "custom" ? (
+                    <div className="metric-card-date-range">
+                      <input
+                        type="date"
+                        value={dashboardSalesStart}
+                        onChange={(event) => setDashboardSalesStart(event.target.value)}
+                      />
+                      <input
+                        type="date"
+                        value={dashboardSalesEnd}
+                        onChange={(event) => setDashboardSalesEnd(event.target.value)}
+                      />
+                    </div>
+                  ) : null}
                 </article>
                 <article className="metric-card warning">
                   <span>Depenses engagees</span>
@@ -4328,6 +4495,47 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "cybercafe" && (
+          <section className="panel-card">
+            <div className="panel-header">
+              <div>
+                <h2>Cybercafe</h2>
+                <p className="hero-copy">Enregistrez les connexions vendues sans les melanger aux factures de papeterie.</p>
+              </div>
+              <div className="panel-header-actions">
+                {canCreateInventory ? (
+                  <button className="ghost-btn" type="button" onClick={() => {
+                    setCybercafeTariffDraft({ name: "", unitPrice: 0, active: true });
+                    setActiveModal("cybercafeTariff");
+                  }}>
+                    Gerer les tarifs
+                  </button>
+                ) : null}
+                {canCreateSales ? <button className="primary-btn" type="button" onClick={openCybercafeSaleModal}>Nouvelle recette</button> : null}
+              </div>
+            </div>
+            <div className="sales-summary compact-summary">
+              <div className="sales-indicator neutral"><span>Recettes enregistrees</span><strong>{cybercafeSales.length}</strong></div>
+              <div className="sales-indicator success"><span>Montant total cybercafe</span><strong>{formatCurrency(cybercafeSales.reduce((sum, item) => sum + item.amount, 0))}</strong></div>
+              <div className="sales-indicator neutral"><span>Connexions vendues</span><strong>{cybercafeSales.reduce((sum, item) => sum + item.quantity, 0)}</strong></div>
+              <div className="sales-indicator neutral"><span>Tarifs actifs</span><strong>{cybercafeTariffs.filter((item) => item.active).length}</strong></div>
+            </div>
+            <div className="section-tools">
+              <input className="table-search-input" placeholder="Rechercher un tarif, une date ou un paiement" value={cybercafeSearch} onChange={(event) => setCybercafeSearch(event.target.value)} />
+              <span className="section-count">{cybercafeSales.filter((item) => normalizeText(`${item.tariffName} ${item.date} ${item.paymentMethod} ${item.note}`).includes(normalizeText(cybercafeSearch))).length} resultat(s)</span>
+            </div>
+            {cybercafeSales.length === 0 ? (
+              <EmptyState title="Aucune recette cybercafe" description="Ajoutez vos tarifs, puis enregistrez chaque vente de connexion de la journee." />
+            ) : (
+              <div className="table-wrap sales-table-wrap"><table className="sales-table"><thead><tr><th>Date</th><th>Tarif</th><th>Prix unitaire</th><th>Connexions</th><th>Montant</th><th>Paiement</th><th>Enregistre par</th><th>Note</th></tr></thead><tbody>
+                {cybercafeSales.filter((item) => normalizeText(`${item.tariffName} ${item.date} ${item.paymentMethod} ${item.note}`).includes(normalizeText(cybercafeSearch))).map((sale) => (
+                  <tr key={sale.id}><td>{sale.date}</td><td>{sale.tariffName}</td><td>{formatCurrency(sale.unitPrice)}</td><td>{sale.quantity}</td><td className="sales-amount-cell">{formatCurrency(sale.amount)}</td><td>{sale.paymentMethod}</td><td>{sale.userName}</td><td>{sale.note || "-"}</td></tr>
+                ))}
+              </tbody></table></div>
             )}
           </section>
         )}
@@ -5495,6 +5703,33 @@ export default function App() {
                 Enregistrer l'approvisionnement
               </button>
             </div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {activeModal === "cybercafeTariff" ? (
+        <Modal title={cybercafeTariffDraft.id ? "Modifier le tarif cybercafe" : "Nouveau tarif cybercafe"} onClose={closeModal}>
+          <form className="modal-form modal-form-stack" onSubmit={handleCybercafeTariffSubmit}>
+            <label>Nom du tarif<input value={cybercafeTariffDraft.name} onChange={(event) => setCybercafeTariffDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex: Connexion internet 1 heure" required /></label>
+            <label>Prix par connexion (FC)<input type="number" min="1" step="0.01" value={cybercafeTariffDraft.unitPrice || ""} onChange={(event) => setCybercafeTariffDraft((current) => ({ ...current, unitPrice: Number(event.target.value) || 0 }))} required /></label>
+            <label className="checkbox-label"><input type="checkbox" checked={cybercafeTariffDraft.active !== false} onChange={(event) => setCybercafeTariffDraft((current) => ({ ...current, active: event.target.checked }))} /> Tarif disponible a la vente</label>
+            {cybercafeTariffs.length > 0 ? <div className="service-list"><p className="sales-modern-label">Tarifs existants</p>{cybercafeTariffs.map((tariff) => <button className="ghost-btn" type="button" key={tariff.id} onClick={() => setCybercafeTariffDraft({ id: tariff.id, name: tariff.name, unitPrice: tariff.unitPrice, active: tariff.active })}>{tariff.name} - {formatCurrency(tariff.unitPrice)} {tariff.active ? "" : "(inactif)"}</button>)}</div> : null}
+            <div className="modal-actions"><button className="ghost-btn muted" type="button" onClick={closeModal}>Annuler</button><button className="primary-btn" type="submit">Enregistrer le tarif</button></div>
+          </form>
+        </Modal>
+      ) : null}
+
+      {activeModal === "cybercafeSale" ? (
+        <Modal title="Nouvelle recette cybercafe" onClose={closeModal}>
+          <form className="modal-form modal-form-stack" onSubmit={handleCybercafeSaleSubmit}>
+            <p className="hero-copy">Cette operation n'emet pas de facture et n'apparait pas dans la liste des ventes de papeterie.</p>
+            <label>Tarif de connexion<select value={cybercafeSaleDraft.tariffId} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, tariffId: Number(event.target.value) }))}>{cybercafeTariffs.filter((item) => item.active).map((tariff) => <option key={tariff.id} value={tariff.id}>{tariff.name} - {formatCurrency(tariff.unitPrice)}</option>)}</select></label>
+            <label>Nombre de connexions vendues<input type="number" min="1" step="1" value={cybercafeSaleDraft.quantity} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, quantity: Number(event.target.value) || 0 }))} required /></label>
+            <label>Date<input type="date" value={cybercafeSaleDraft.date} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, date: event.target.value }))} required /></label>
+            <label>Mode de paiement<select value={cybercafeSaleDraft.paymentMethod} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, paymentMethod: event.target.value }))}><option>Especes</option><option>Mobile Money</option><option>Virement</option></select></label>
+            <label>Observation (optionnel)<textarea rows={2} value={cybercafeSaleDraft.note} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, note: event.target.value }))} placeholder="Ex: Vente de la matinee" /></label>
+            <div className="sales-total-card"><span>Montant a enregistrer</span><strong>{formatCurrency((cybercafeTariffs.find((item) => item.id === cybercafeSaleDraft.tariffId)?.unitPrice ?? 0) * cybercafeSaleDraft.quantity)}</strong></div>
+            <div className="modal-actions"><button className="ghost-btn muted" type="button" onClick={closeModal}>Annuler</button><button className="primary-btn" type="submit">Enregistrer la recette</button></div>
           </form>
         </Modal>
       ) : null}

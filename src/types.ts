@@ -7,6 +7,7 @@ export type TabId =
   | "initial-stock"
   | "replenishments"
   | "sales"
+  | "cybercafe"
   | "current-stock"
   | "utilisateurs"
   | "history";
@@ -56,6 +57,43 @@ export type ServiceDraft = {
   unitPrice: number;
   description: string;
   active?: boolean;
+};
+
+export type CybercafeTariff = {
+  id: number;
+  name: string;
+  unitPrice: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CybercafeTariffDraft = {
+  id?: number;
+  name: string;
+  unitPrice: number;
+  active?: boolean;
+};
+
+export type CybercafeSale = {
+  id: number;
+  tariffId: number;
+  tariffName: string;
+  unitPrice: number;
+  quantity: number;
+  amount: number;
+  date: string;
+  paymentMethod: string;
+  note: string;
+  userName: string;
+};
+
+export type CybercafeSaleDraft = {
+  tariffId: number;
+  quantity: number;
+  date: string;
+  paymentMethod: string;
+  note: string;
 };
 
 export type SupplyHistoryItem = {
@@ -282,6 +320,7 @@ export type SyncSnapshot = {
   users: Array<Record<string, unknown>>;
   products: Array<Record<string, unknown>>;
   services: Array<Record<string, unknown>>;
+  cybercafeTariffs: Array<Record<string, unknown>>;
   clients: Array<Record<string, unknown>>;
   expenses: Array<Record<string, unknown>>;
   initialStocks: Array<Record<string, unknown>>;
@@ -289,6 +328,7 @@ export type SyncSnapshot = {
   sales: Array<Record<string, unknown>>;
   saleItems: Array<Record<string, unknown>>;
   saleServiceItems: Array<Record<string, unknown>>;
+  cybercafeSales: Array<Record<string, unknown>>;
   stockMovements: Array<Record<string, unknown>>;
   auditLogs: Array<Record<string, unknown>>;
   invoiceSequences: Array<Record<string, unknown>>;
@@ -302,6 +342,10 @@ export type DesktopApi = {
   deleteProduct: (id: number) => Promise<Product[]>;
   listServices: () => Promise<Service[]>;
   saveService: (draft: ServiceDraft) => Promise<Service[]>;
+  listCybercafeTariffs: () => Promise<CybercafeTariff[]>;
+  saveCybercafeTariff: (draft: CybercafeTariffDraft) => Promise<CybercafeTariff[]>;
+  listCybercafeSales: () => Promise<CybercafeSale[]>;
+  createCybercafeSale: (draft: CybercafeSaleDraft) => Promise<CybercafeSale[]>;
   listSales: () => Promise<SaleRecord[]>;
   createSale: (draft: SaleDraft) => Promise<SaleRecord[]>;
   getSaleDetail: (saleId: number) => Promise<SaleDetail | null>;
