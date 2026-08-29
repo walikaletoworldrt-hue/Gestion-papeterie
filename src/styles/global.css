@@ -1183,6 +1183,248 @@ h2 {
   border-left: 3px solid #f08a24;
 }
 
+.cybercafe-conclusion {
+  margin: 0 0 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #f7d59e;
+  border-left: 4px solid #f08a24;
+  border-radius: 0.9rem;
+  background: #fffaf1;
+  color: #76480e;
+}
+
+.cybercafe-report-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.65rem;
+  margin-bottom: 1rem;
+  padding: 0.8rem;
+  border: 1px solid #dce7f5;
+  border-radius: 0.9rem;
+  background: #f8fbff;
+}
+
+.cybercafe-report-tools label {
+  display: grid;
+  gap: 0.28rem;
+  color: #59718f;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.cybercafe-report-tools input {
+  min-height: 2.35rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid #cfdeef;
+  border-radius: 0.65rem;
+  background: #fff;
+  color: #16335b;
+}
+
+.cybercafe-report-tools input[readonly] {
+  cursor: not-allowed;
+  background: #edf3fa;
+  color: #7185a2;
+}
+
+.cybercafe-email-field {
+  flex: 1 1 220px;
+}
+
+.cybercafe-conclusion.balanced {
+  border-color: #9cdec2;
+  border-left-color: #22a35a;
+  background: #f2fcf6;
+  color: #16683a;
+}
+
+.cybercafe-conclusion strong {
+  display: block;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.cybercafe-conclusion p {
+  margin: 0.35rem 0 0;
+}
+
+.cybercafe-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.cybercafe-analysis-card {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid #dce7f5;
+  border-radius: 1rem;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.cybercafe-analysis-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+.cybercafe-analysis-heading h3 {
+  margin: 0;
+  color: #102544;
+  font-size: 1rem;
+}
+
+.cybercafe-analysis-heading span {
+  color: #7185a2;
+  font-size: 0.74rem;
+  text-align: right;
+}
+
+.cybercafe-bar-chart,
+.cybercafe-hour-chart {
+  display: flex;
+  align-items: end;
+  gap: 0.6rem;
+  min-height: 220px;
+  padding-top: 0.75rem;
+  overflow-x: auto;
+}
+
+.cybercafe-bar-wrap,
+.cybercafe-hour-wrap {
+  display: grid;
+  flex: 1 0 68px;
+  align-items: end;
+  justify-items: center;
+  gap: 0.35rem;
+  height: 205px;
+  color: #607895;
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.cybercafe-bar-wrap strong,
+.cybercafe-hour-wrap strong {
+  color: #16335b;
+  font-size: 0.7rem;
+}
+
+.cybercafe-bar,
+.cybercafe-hour-bar {
+  width: min(42px, 82%);
+  min-height: 10px;
+  border-radius: 0.75rem 0.75rem 0.25rem 0.25rem;
+  background: linear-gradient(180deg, #63d6d2, #1c9fa6);
+}
+
+.cybercafe-hour-bar {
+  background: linear-gradient(180deg, #77baff, #287ee3);
+}
+
+.cybercafe-profile-content {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.9fr) minmax(170px, 1.1fr);
+  align-items: center;
+  gap: 1rem;
+  min-height: 220px;
+}
+
+.cybercafe-donut {
+  display: grid;
+  place-items: center;
+  width: min(180px, 100%);
+  aspect-ratio: 1;
+  margin: auto;
+  border-radius: 50%;
+}
+
+.cybercafe-donut span {
+  display: grid;
+  place-items: center;
+  width: 58%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #fff;
+  color: #102544;
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.cybercafe-donut small {
+  color: #7185a2;
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+.cybercafe-legend {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.cybercafe-legend div {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.45rem;
+  color: #59718f;
+  font-size: 0.77rem;
+}
+
+.cybercafe-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.cybercafe-legend span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cybercafe-legend strong {
+  color: #16335b;
+}
+
+.cybercafe-statistics {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+}
+
+.cybercafe-statistics div {
+  display: grid;
+  gap: 0.15rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px solid #e6eef8;
+}
+
+.cybercafe-statistics div:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.cybercafe-statistics dt {
+  color: #647c99;
+  font-size: 0.73rem;
+}
+
+.cybercafe-statistics dd {
+  margin: 0;
+  color: #102544;
+  font-size: 0.96rem;
+  font-weight: 800;
+}
+
+.cybercafe-distribution-card {
+  grid-column: 1 / -1;
+}
+
 .sales-form-stack {
   display: grid;
   gap: 1rem;
@@ -2794,6 +3036,14 @@ tbody td:first-child {
 
   .sales-summary {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .cybercafe-analysis-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cybercafe-distribution-card {
+    grid-column: auto;
   }
 
   .sales-trends-toolbar label {

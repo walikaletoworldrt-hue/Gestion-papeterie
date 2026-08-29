@@ -12,6 +12,8 @@ import type {
   CybercafeSaleDraft,
   CybercafeTariff,
   CybercafeTariffDraft,
+  MikhmonImportSummary,
+  MikhmonSale,
   CloudDesktopSessionDraft,
   DesktopSyncCredentials,
   DashboardMetrics,
@@ -85,6 +87,15 @@ type CybercafeSaleRow = {
   payment_method: string;
   note: string | null;
   user_name: string | null;
+};
+
+type MikhmonSaleRow = {
+  id: number;
+  sold_at: string;
+  username: string;
+  profile: string;
+  comment: string;
+  amount: number;
 };
 
 type SupplyHistoryRow = {
@@ -391,6 +402,20 @@ export class LocalDatabase {
         note TEXT,
         user_id INTEGER,
         FOREIGN KEY (tariff_id) REFERENCES cybercafe_tariffs(id) ON DELETE RESTRICT,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS mikhmon_sales (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sold_at TEXT NOT NULL,
+        username TEXT NOT NULL,
+        profile TEXT NOT NULL DEFAULT '',
+        comment TEXT NOT NULL DEFAULT '',
+        amount REAL NOT NULL,
+        source_key TEXT NOT NULL UNIQUE,
+        source_file TEXT,
+        imported_at TEXT NOT NULL,
+        user_id INTEGER,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
       );
 
@@ -894,25 +919,100 @@ export class LocalDatabase {
   createCybercafeSale(draft: CybercafeSaleDraft): CybercafeSale[] {
     this.requirePermission("manage_sales");
     const tariffId = Number(draft.tariffId);
-    const quantity = Number(draft.quantity);
+    const quantity = Number(draft.quantity || 1);
+    const manualAmount = Number(draft.amount ?? 0);
     const soldAt = `${draft.date || new Date().toISOString().slice(0, 10)}T12:00:00.000Z`;
+    this.db
+      .prepare("INSERT OR IGNORE INTO cybercafe_tariffs (name, unit_price, active, created_at, updated_at) VALUES ('Caisse cybercafe journaliere', 1, 1, ?, ?)")
+      .run(new Date().toISOString(), new Date().toISOString());
     const tariff = this.db
-      .prepare("SELECT id, name, unit_price, active FROM cybercafe_tariffs WHERE id = ?")
-      .get(tariffId) as { id: number; name: string; unit_price: number; active: number } | undefined;
+      .prepare("SELECT id, name, unit_price, active FROM cybercafe_tariffs WHERE id = ? OR (name = 'Caisse cybercafe journaliere' AND ? = 0) LIMIT 1")
+      .get(tariffId, tariffId) as { id: number; name: string; unit_price: number; active: number } | undefined;
 
-    if (!tariff || !tariff.active) throw new Error("Selectionnez un tarif cybercafe actif.");
-    if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("Le nombre de connexions doit etre superieur a zero.");
+    if (!tariff || !tariff.active) throw new Error("La caisse journaliere Cybercafe n'est pas configuree. Executez la migration Supabase et relancez l'application.");
+    if (!Number.isFinite(manualAmount) || manualAmount <= 0) throw new Error("Le montant de caisse doit etre superieur a zero.");
 
-    const amount = Number(tariff.unit_price) * quantity;
+    const amount = manualAmount;
     const result = this.db
       .prepare(`
         INSERT INTO cybercafe_sales (tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(tariff.id, quantity, tariff.unit_price, amount, soldAt, draft.paymentMethod || "Especes", draft.note.trim() || null, this.getActorUserId());
+      .run(tariff.id, quantity, amount, amount, soldAt, draft.paymentMethod || "Especes", draft.note.trim() || null, this.getActorUserId());
 
-    this.logAction(this.getActorUserId(), "create", "cybercafe_sales", Number(result.lastInsertRowid), `Recette cybercafe ${tariff.name}: ${quantity} connexion(s), ${amount} FC`);
+    this.logAction(this.getActorUserId(), "create", "cybercafe_sales", Number(result.lastInsertRowid), `Caisse cybercafe journaliere : ${amount} FC`);
     return this.listCybercafeSales();
+  }
+
+  listMikhmonSales(): MikhmonSale[] {
+    const rows = this.db
+      .prepare("SELECT id, sold_at, username, profile, comment, amount FROM mikhmon_sales ORDER BY datetime(sold_at) DESC, id DESC")
+      .all() as MikhmonSaleRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      date: row.sold_at.slice(0, 10),
+      time: row.sold_at.slice(11, 19),
+      username: row.username,
+      profile: row.profile,
+      comment: row.comment,
+      amount: Number(row.amount),
+    }));
+  }
+
+  importMikhmonCsv(fileName: string, content: string): MikhmonImportSummary {
+    this.requirePermission("manage_sales");
+    const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const headerIndex = lines.findIndex((line) => /\bdate\b/i.test(line) && /\bprice\b/i.test(line));
+    if (headerIndex < 0) throw new Error("Le fichier Mikhmon doit contenir les colonnes Date et Price.");
+
+    const headers = this.parseCsvLine(lines[headerIndex]).map((value) => value.trim().toLowerCase());
+    const column = (name: string) => headers.findIndex((header) => header === name);
+    const dateIndex = column("date");
+    const timeIndex = column("time");
+    const usernameIndex = column("username");
+    const profileIndex = column("profile");
+    const commentIndex = column("comment");
+    const priceIndex = column("price");
+    if (dateIndex < 0 || timeIndex < 0 || usernameIndex < 0 || priceIndex < 0) {
+      throw new Error("Colonnes Mikhmon attendues : Date, Time, Username et Price.");
+    }
+
+    const insert = this.db.prepare(`
+      INSERT OR IGNORE INTO mikhmon_sales
+      (sold_at, username, profile, comment, amount, source_key, source_file, imported_at, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const summary: MikhmonImportSummary = { imported: 0, skipped: 0, totalAmount: 0, ticketCount: 0, errors: [] };
+    const importedAt = new Date().toISOString();
+    const userId = this.getActorUserId();
+    const transaction = this.db.transaction(() => {
+      lines.slice(headerIndex + 1).forEach((line, offset) => {
+        const row = this.parseCsvLine(line);
+        const date = row[dateIndex]?.trim() ?? "";
+        const time = row[timeIndex]?.trim() ?? "";
+        const username = row[usernameIndex]?.trim() ?? "";
+        const amount = Number((row[priceIndex] ?? "").replace(/[^0-9.-]/g, ""));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}:\d{2}$/.test(time) || !username || !Number.isFinite(amount) || amount <= 0) {
+          summary.errors.push(`Ligne ${headerIndex + offset + 2} ignoree : donnees Mikhmon invalides.`);
+          return;
+        }
+        const profile = profileIndex >= 0 ? row[profileIndex]?.trim() ?? "" : "";
+        const comment = commentIndex >= 0 ? row[commentIndex]?.trim() ?? "" : "";
+        const sourceKey = crypto.createHash("sha256").update(`${date}|${time}|${username}|${profile}|${comment}|${amount}`).digest("hex");
+        const result = insert.run(`${date}T${time}.000Z`, username, profile, comment, amount, sourceKey, fileName, importedAt, userId);
+        if (result.changes > 0) {
+          summary.imported += 1;
+          summary.totalAmount += amount;
+          summary.ticketCount += 1;
+        } else {
+          summary.skipped += 1;
+        }
+      });
+    });
+    transaction();
+    this.logAction(userId, "import", "mikhmon_sales", 0, `Import Mikhmon ${fileName}: ${summary.imported} ticket(s), ${summary.totalAmount} FC`);
+    return summary;
   }
 
   saveProduct(draft: ProductDraft): Product[] {
@@ -1229,6 +1329,7 @@ export class LocalDatabase {
       saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleServiceItems: this.db.prepare("SELECT id, sale_id, service_id, quantity, unit_price, line_total FROM sale_service_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       cybercafeSales: this.db.prepare("SELECT id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id FROM cybercafe_sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      mikhmonSales: this.db.prepare("SELECT id, sold_at, username, profile, comment, amount, source_key, source_file, imported_at, user_id FROM mikhmon_sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       stockMovements: this.db.prepare("SELECT id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, NULL as user_id FROM stock_movements ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       auditLogs: this.db.prepare("SELECT id, NULL as user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at FROM audit_logs ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       invoiceSequences: this.db.prepare("SELECT id, current_year, series_index, next_number, updated_at FROM invoice_sequence_settings ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1242,6 +1343,7 @@ export class LocalDatabase {
       this.db.prepare("DELETE FROM sale_items").run();
       this.db.prepare("DELETE FROM sale_service_items").run();
       this.db.prepare("DELETE FROM cybercafe_sales").run();
+      this.db.prepare("DELETE FROM mikhmon_sales").run();
       this.db.prepare("DELETE FROM stock_movements").run();
       this.db.prepare("DELETE FROM sales").run();
       this.db.prepare("DELETE FROM replenishments").run();
@@ -1304,6 +1406,10 @@ export class LocalDatabase {
         INSERT INTO cybercafe_sales (id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id)
         VALUES (@id, @tariff_id, @quantity, @unit_price, @total_amount, @sold_at, @payment_method, @note, @user_id)
       `);
+      const insertMikhmonSales = this.db.prepare(`
+        INSERT INTO mikhmon_sales (id, sold_at, username, profile, comment, amount, source_key, source_file, imported_at, user_id)
+        VALUES (@id, @sold_at, @username, @profile, @comment, @amount, @source_key, @source_file, @imported_at, @user_id)
+      `);
       const insertStockMovements = this.db.prepare(`
         INSERT INTO stock_movements (id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, user_id)
         VALUES (@id, @product_id, @movement_type, @quantity, @source_table, @source_id, @movement_date, @cycle_id, @user_id)
@@ -1335,6 +1441,7 @@ export class LocalDatabase {
       (snapshot.saleItems ?? []).forEach((row) => insertSaleItems.run(row));
       (snapshot.saleServiceItems ?? []).forEach((row) => insertSaleServiceItems.run(row));
       (snapshot.cybercafeSales ?? []).forEach((row) => insertCybercafeSales.run(row));
+      (snapshot.mikhmonSales ?? []).forEach((row) => insertMikhmonSales.run(row));
       (snapshot.stockMovements ?? []).forEach((row) => insertStockMovements.run(row));
       const importedAt = new Date().toISOString();
       (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run({ ...row, synced_at: importedAt }));
@@ -2433,6 +2540,30 @@ export class LocalDatabase {
         new Date().toISOString(),
         null
       );
+  }
+
+  private parseCsvLine(line: string) {
+    const values: string[] = [];
+    let value = "";
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (character === '"') {
+        if (quoted && line[index + 1] === '"') {
+          value += '"';
+          index += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (character === "," && !quoted) {
+        values.push(value);
+        value = "";
+      } else {
+        value += character;
+      }
+    }
+    values.push(value);
+    return values;
   }
 
   private formatAuditActorLabel(row: AuditLogRow) {

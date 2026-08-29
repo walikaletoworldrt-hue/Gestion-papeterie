@@ -9,6 +9,8 @@ import type {
   CybercafeSaleDraft,
   CybercafeTariff,
   CybercafeTariffDraft,
+  MikhmonImportSummary,
+  MikhmonSale,
   DashboardMetrics,
   DesktopSyncCredentials,
   ExpenseDraft,
@@ -341,6 +343,15 @@ type SupabaseCybercafeSaleRow = {
   note: string | null;
   tariff?: { name: string | null } | Array<{ name: string | null }> | null;
   user?: { full_name: string | null } | Array<{ full_name: string | null }> | null;
+};
+
+type SupabaseMikhmonSaleRow = {
+  id: number;
+  sold_at: string;
+  username: string;
+  profile: string;
+  comment: string;
+  amount: number;
 };
 
 type SupabaseClientRow = {
@@ -1238,6 +1249,43 @@ function formatFrenchDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("fr-FR");
 }
 
+function parseMikhmonCsv(content: string) {
+  const parseLine = (line: string) => {
+    const values: string[] = [];
+    let value = "";
+    let quoted = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (character === '"') {
+        if (quoted && line[index + 1] === '"') { value += '"'; index += 1; } else quoted = !quoted;
+      } else if (character === "," && !quoted) { values.push(value); value = ""; } else value += character;
+    }
+    values.push(value);
+    return values;
+  };
+  const lines = content.replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
+  const headerIndex = lines.findIndex((line) => /\bdate\b/i.test(line) && /\bprice\b/i.test(line));
+  if (headerIndex < 0) throw new Error("Le fichier Mikhmon doit contenir les colonnes Date et Price.");
+  const headers = parseLine(lines[headerIndex]).map((value) => value.trim().toLowerCase());
+  const indexOf = (name: string) => headers.findIndex((value) => value === name);
+  const dateIndex = indexOf("date"), timeIndex = indexOf("time"), usernameIndex = indexOf("username"), priceIndex = indexOf("price");
+  if ([dateIndex, timeIndex, usernameIndex, priceIndex].some((index) => index < 0)) throw new Error("Colonnes Mikhmon attendues : Date, Time, Username et Price.");
+  const profileIndex = indexOf("profile"), commentIndex = indexOf("comment");
+  const errors: string[] = [];
+  const rows = lines.slice(headerIndex + 1).flatMap((line, offset) => {
+    const row = parseLine(line);
+    const date = row[dateIndex]?.trim() ?? "", time = row[timeIndex]?.trim() ?? "", username = row[usernameIndex]?.trim() ?? "";
+    const amount = Number((row[priceIndex] ?? "").replace(/[^0-9.-]/g, ""));
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}:\d{2}$/.test(time) || !username || !Number.isFinite(amount) || amount <= 0) {
+      errors.push(`Ligne ${headerIndex + offset + 2} ignoree : donnees Mikhmon invalides.`); return [];
+    }
+    const profile = profileIndex >= 0 ? row[profileIndex]?.trim() ?? "" : "";
+    const comment = commentIndex >= 0 ? row[commentIndex]?.trim() ?? "" : "";
+    return [{ sold_at: `${date}T${time}.000Z`, username, profile, comment, amount, source_key: `${date}|${time}|${username}|${profile}|${comment}|${amount}` }];
+  });
+  return { rows, errors };
+}
+
 function formatFrenchDateTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -1381,6 +1429,7 @@ async function assertSupabaseSyncSchema() {
     { relation: "sale_items", column: "id" },
     { relation: "sale_service_items", column: "id" },
     { relation: "cybercafe_sales", column: "id" },
+    { relation: "mikhmon_sales", column: "id" },
     { relation: "stock_movements", column: "id" },
     { relation: "audit_logs", column: "id" },
     { relation: "invoice_sequences", column: "id" },
@@ -1400,7 +1449,7 @@ async function assertSupabaseSyncSchema() {
 const syncBucketDefinitions: Record<string, { label: string; tables: string[] }> = {
   products: { label: "Produits", tables: ["products"] },
   services: { label: "Services", tables: ["services"] },
-  cybercafe: { label: "Cybercafe", tables: ["cybercafe_tariffs", "cybercafe_sales"] },
+  cybercafe: { label: "Cybercafe", tables: ["cybercafe_tariffs", "cybercafe_sales", "mikhmon_sales"] },
   clients: { label: "Clients", tables: ["clients"] },
   expenses: { label: "Depenses", tables: ["expenses"] },
   initial_stocks: { label: "Stock initial", tables: ["initial_stocks"] },
@@ -1521,6 +1570,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     saleItems,
     saleServiceItems,
     cybercafeSales,
+    mikhmonSales,
     stockMovements,
     auditLogs,
     invoiceSequences,
@@ -1538,6 +1588,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     client.from("sale_items").select("id, sale_id, product_id, quantity, unit_price, line_total").order("id", { ascending: true }),
     client.from("sale_service_items").select("id, sale_id, service_id, quantity, unit_price, line_total").order("id", { ascending: true }),
     client.from("cybercafe_sales").select("id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id").order("id", { ascending: true }),
+    client.from("mikhmon_sales").select("id, sold_at, username, profile, comment, amount, source_key, source_file, imported_at, user_id").order("id", { ascending: true }),
     client.from("stock_movements").select("id, product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, user_id").order("id", { ascending: true }),
     client.from("audit_logs").select("id, user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at").order("id", { ascending: true }),
     client.from("invoice_sequences").select("id, current_year, series_index, next_number, updated_at").order("id", { ascending: true }),
@@ -1557,6 +1608,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     saleItems: ensureData(saleItems.data, saleItems.error) as Array<Record<string, unknown>>,
     saleServiceItems: ensureData(saleServiceItems.data, saleServiceItems.error) as Array<Record<string, unknown>>,
     cybercafeSales: ensureData(cybercafeSales.data, cybercafeSales.error) as Array<Record<string, unknown>>,
+    mikhmonSales: ensureData(mikhmonSales.data, mikhmonSales.error) as Array<Record<string, unknown>>,
     stockMovements: ensureData(stockMovements.data, stockMovements.error) as Array<Record<string, unknown>>,
     auditLogs: ensureData(auditLogs.data, auditLogs.error) as Array<Record<string, unknown>>,
     invoiceSequences: ensureData(invoiceSequences.data, invoiceSequences.error) as Array<Record<string, unknown>>,
@@ -1627,6 +1679,7 @@ function createEmptySyncSnapshot(): SyncSnapshot {
     saleItems: [],
     saleServiceItems: [],
     cybercafeSales: [],
+    mikhmonSales: [],
     stockMovements: [],
     auditLogs: [],
     invoiceSequences: [],
@@ -1654,6 +1707,7 @@ function filterSyncSnapshot(snapshot: SyncSnapshot, selectedTables: string[] | n
   if (included.has("sale_items")) filtered.saleItems = snapshot.saleItems ?? [];
   if (included.has("sale_service_items")) filtered.saleServiceItems = snapshot.saleServiceItems ?? [];
   if (included.has("cybercafe_sales")) filtered.cybercafeSales = snapshot.cybercafeSales ?? [];
+  if (included.has("mikhmon_sales")) filtered.mikhmonSales = snapshot.mikhmonSales ?? [];
   if (included.has("stock_movements")) filtered.stockMovements = snapshot.stockMovements ?? [];
   if (included.has("invoice_sequences")) filtered.invoiceSequences = snapshot.invoiceSequences ?? [];
   if (included.has("inventory_cycles")) filtered.inventoryCycles = snapshot.inventoryCycles ?? [];
@@ -1721,6 +1775,7 @@ function mergeSnapshotsForCloudSync(
     saleItems: cloudSnapshot.saleItems ?? [],
     saleServiceItems: cloudSnapshot.saleServiceItems ?? [],
     cybercafeSales: cloudSnapshot.cybercafeSales ?? [],
+    mikhmonSales: cloudSnapshot.mikhmonSales ?? [],
     stockMovements: cloudSnapshot.stockMovements ?? [],
     auditLogs: cloudSnapshot.auditLogs ?? [],
     invoiceSequences: cloudSnapshot.invoiceSequences ?? [],
@@ -1741,6 +1796,7 @@ function mergeSnapshotsForCloudSync(
   if (included.has("sale_items")) merged.saleItems = localSnapshot.saleItems ?? [];
   if (included.has("sale_service_items")) merged.saleServiceItems = localSnapshot.saleServiceItems ?? [];
   if (included.has("cybercafe_sales")) merged.cybercafeSales = localSnapshot.cybercafeSales ?? [];
+  if (included.has("mikhmon_sales")) merged.mikhmonSales = localSnapshot.mikhmonSales ?? [];
   if (included.has("stock_movements")) merged.stockMovements = localSnapshot.stockMovements ?? [];
   if (included.has("invoice_sequences")) merged.invoiceSequences = localSnapshot.invoiceSequences ?? [];
   if (included.has("inventory_cycles")) merged.inventoryCycles = localSnapshot.inventoryCycles ?? [];
@@ -1758,6 +1814,7 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
   if (hasTable("sale_items")) await deleteSupabaseRows("sale_items");
   if (hasTable("sale_service_items")) await deleteSupabaseRows("sale_service_items");
   if (hasTable("cybercafe_sales")) await deleteSupabaseRows("cybercafe_sales");
+  if (hasTable("mikhmon_sales")) await deleteSupabaseRows("mikhmon_sales");
   if (hasTable("stock_movements")) await deleteSupabaseRows("stock_movements");
   if (hasTable("sales")) await deleteSupabaseRows("sales");
   if (hasTable("replenishments")) await deleteSupabaseRows("replenishments");
@@ -1788,6 +1845,7 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
   if (hasTable("sale_items")) await insertSupabaseRows("sale_items", syncSnapshot.saleItems);
   if (hasTable("sale_service_items")) await insertSupabaseRows("sale_service_items", syncSnapshot.saleServiceItems);
   if (hasTable("cybercafe_sales")) await insertSupabaseRows("cybercafe_sales", syncSnapshot.cybercafeSales);
+  if (hasTable("mikhmon_sales")) await insertSupabaseRows("mikhmon_sales", syncSnapshot.mikhmonSales);
   if (hasTable("stock_movements")) await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
   if (hasTable("audit_logs")) await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
 }
@@ -2356,6 +2414,7 @@ export const repository = {
         "sale_items",
         "sale_service_items",
         "cybercafe_sales",
+        "mikhmon_sales",
         "stock_movements",
         "audit_logs",
       ];
@@ -2934,12 +2993,12 @@ export const repository = {
   async createCybercafeSale(draft: CybercafeSaleDraft): Promise<CybercafeSale[]> {
     if (window.desktopApi) return window.desktopApi.createCybercafeSale(draft);
 
-    const tariffId = Number(draft.tariffId);
-    const quantity = Number(draft.quantity);
-    if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("Le nombre de connexions doit etre superieur a zero.");
+    const quantity = Number(draft.quantity || 1);
+    const amount = Number(draft.amount ?? 0);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("Le montant de caisse doit etre superieur a zero.");
     const tariffs = await this.listCybercafeTariffs();
-    const tariff = tariffs.find((item) => item.id === tariffId && item.active);
-    if (!tariff) throw new Error("Selectionnez un tarif cybercafe actif.");
+    const tariff = tariffs.find((item) => item.name === "Caisse cybercafe journaliere" && item.active);
+    if (!tariff) throw new Error("La caisse journaliere Cybercafe n'est pas configuree. Executez la migration Supabase.");
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
@@ -2948,8 +3007,8 @@ export const repository = {
         .insert({
           tariff_id: tariff.id,
           quantity,
-          unit_price: tariff.unitPrice,
-          total_amount: tariff.unitPrice * quantity,
+          unit_price: amount,
+          total_amount: amount,
           sold_at: `${draft.date || new Date().toISOString().slice(0, 10)}T12:00:00.000Z`,
           payment_method: draft.paymentMethod || "Especes",
           note: draft.note.trim() || null,
@@ -2961,19 +3020,57 @@ export const repository = {
         action: "create",
         target_table: "cybercafe_sales",
         target_id: inserted.id,
-        details: `Recette cybercafe ${tariff.name}: ${quantity} connexion(s), ${tariff.unitPrice * quantity} FC`,
+        details: `Caisse cybercafe journaliere : ${amount} FC`,
       });
       return this.listCybercafeSales();
     }
 
     const sales = loadJson<CybercafeSale[]>("walikale-web-cybercafe-sales", []);
     sales.unshift({
-      id: Date.now(), tariffId: tariff.id, tariffName: tariff.name, unitPrice: tariff.unitPrice, quantity,
-      amount: tariff.unitPrice * quantity, date: formatFrenchDate(`${draft.date}T12:00:00.000Z`),
+      id: Date.now(), tariffId: tariff.id, tariffName: tariff.name, unitPrice: amount, quantity,
+      amount, date: formatFrenchDate(`${draft.date}T12:00:00.000Z`),
       paymentMethod: draft.paymentMethod || "Especes", note: draft.note.trim(), userName: "Utilisateur web",
     });
     localStorage.setItem("walikale-web-cybercafe-sales", JSON.stringify(sales));
     return sales;
+  },
+
+  async listMikhmonSales(): Promise<MikhmonSale[]> {
+    if (window.desktopApi) return window.desktopApi.listMikhmonSales();
+    if (isSupabaseEnabled()) {
+      const result = await getSupabaseClient()
+        .from("mikhmon_sales")
+        .select("id, sold_at, username, profile, comment, amount")
+        .order("sold_at", { ascending: false });
+      const rows = ensureData(result.data, result.error) as SupabaseMikhmonSaleRow[];
+      return rows.map((row) => ({ id: row.id, date: row.sold_at.slice(0, 10), time: row.sold_at.slice(11, 19), username: row.username, profile: row.profile, comment: row.comment, amount: Number(row.amount) }));
+    }
+    return loadJson<MikhmonSale[]>("walikale-web-mikhmon-sales", []);
+  },
+
+  async importMikhmonCsv(fileName: string, content: string): Promise<MikhmonImportSummary> {
+    if (window.desktopApi) return window.desktopApi.importMikhmonCsv(fileName, content);
+    const parsed = parseMikhmonCsv(content);
+    const summary: MikhmonImportSummary = { imported: 0, skipped: 0, totalAmount: 0, ticketCount: 0, errors: parsed.errors };
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      for (const row of parsed.rows) {
+        const result = await client.from("mikhmon_sales").upsert({ ...row, source_file: fileName, imported_at: new Date().toISOString() }, { onConflict: "source_key", ignoreDuplicates: true }).select("id");
+        const inserted = ensureData(result.data ?? [], result.error) as Array<{ id: number }>;
+        if (inserted.length > 0) { summary.imported += 1; summary.ticketCount += 1; summary.totalAmount += row.amount; } else summary.skipped += 1;
+      }
+      await insertSupabaseAuditLog(client, { action: "import", target_table: "mikhmon_sales", target_id: 0, details: `Import Mikhmon ${fileName}: ${summary.imported} ticket(s), ${summary.totalAmount} FC` });
+      return summary;
+    }
+    const existing = loadJson<MikhmonSale[]>("walikale-web-mikhmon-sales", []);
+    const keys = new Set(existing.map((row) => `${row.date}|${row.time}|${row.username}|${row.profile}|${row.comment}|${row.amount}`));
+    parsed.rows.forEach((row) => {
+      if (keys.has(row.source_key)) { summary.skipped += 1; return; }
+      existing.unshift({ id: Date.now() + summary.imported, date: row.sold_at.slice(0, 10), time: row.sold_at.slice(11, 19), username: row.username, profile: row.profile, comment: row.comment, amount: row.amount });
+      summary.imported += 1; summary.ticketCount += 1; summary.totalAmount += row.amount;
+    });
+    localStorage.setItem("walikale-web-mikhmon-sales", JSON.stringify(existing));
+    return summary;
   },
 
   async listSales(): Promise<SaleRecord[]> {

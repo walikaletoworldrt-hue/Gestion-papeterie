@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import brandLogo from "../img/logo-walikale1.png";
 import { repository } from "./lib/repository";
 import type {
@@ -8,8 +8,7 @@ import type {
   ClientDraft,
   CybercafeSale,
   CybercafeSaleDraft,
-  CybercafeTariff,
-  CybercafeTariffDraft,
+  MikhmonSale,
   DashboardMetrics,
   ExpenseDraft,
   ExpenseItem,
@@ -49,6 +48,7 @@ const tabs: { id: TabId; label: string }[] = [
 ];
 
 const stockWeeklyLaborCostStorageKey = "walikale-stock-weekly-labor-cost";
+const cybercafeReportEmailStorageKey = "walikale-cybercafe-report-email";
 
 const productCategoryOptions = [
   "Papeterie",
@@ -134,7 +134,7 @@ const emptyExpenseDraft: ExpenseDraft = {
 };
 
 const userRoles: UserRole[] = ["Administrateur", "Super admin", "Employe"];
-type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale" | "cybercafeTariff";
+type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale";
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -1004,8 +1004,8 @@ export default function App() {
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [sales, setSales] = useState<SaleRecord[]>([]);
-  const [cybercafeTariffs, setCybercafeTariffs] = useState<CybercafeTariff[]>([]);
   const [cybercafeSales, setCybercafeSales] = useState<CybercafeSale[]>([]);
+  const [mikhmonSales, setMikhmonSales] = useState<MikhmonSale[]>([]);
   const [currentStock, setCurrentStock] = useState<StockRow[]>([]);
   const [invoiceSeriesInfo, setInvoiceSeriesInfo] = useState<InvoiceSeriesInfo | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
@@ -1035,9 +1035,12 @@ export default function App() {
   const [expenseDraft, setExpenseDraft] = useState<ExpenseDraft>(emptyExpenseDraft);
   const [expenseReport, setExpenseReport] = useState<ExpenseReportState | null>(null);
   const [saleDraft, setSaleDraft] = useState<SaleDraft>(emptySaleDraft);
-  const [cybercafeTariffDraft, setCybercafeTariffDraft] = useState<CybercafeTariffDraft>({ name: "", unitPrice: 0, active: true });
   const [cybercafeSaleDraft, setCybercafeSaleDraft] = useState<CybercafeSaleDraft>({ tariffId: 0, quantity: 1, date: new Date().toISOString().slice(0, 10), paymentMethod: "Especes", note: "" });
   const [cybercafeSearch, setCybercafeSearch] = useState("");
+  const [cybercafeReportStart, setCybercafeReportStart] = useState(() => toInputDateValue(startOfMonth(new Date())));
+  const [cybercafeReportEnd, setCybercafeReportEnd] = useState(() => toInputDateValue(new Date()));
+  const [cybercafeReportEmail, setCybercafeReportEmail] = useState(() => localStorage.getItem(cybercafeReportEmailStorageKey) || "walikaletoworld@gmail.com");
+  const mikhmonFileInputRef = useRef<HTMLInputElement>(null);
   const [replenishmentDraft, setReplenishmentDraft] = useState<ReplenishmentDraft>(createEmptyReplenishmentDraft([]));
   const [saleDateDraft, setSaleDateDraft] = useState(() => new Date().toISOString().slice(0, 10));
   const [saleNoteDraft, setSaleNoteDraft] = useState("");
@@ -1203,8 +1206,8 @@ export default function App() {
       repository.getDashboardMetrics(),
       repository.getCurrentStock(),
       repository.getInvoiceSeriesInfo(),
-      repository.listCybercafeTariffs(),
       repository.listCybercafeSales(),
+      repository.listMikhmonSales(),
     ]);
 
     const errors = settled
@@ -1229,8 +1232,8 @@ export default function App() {
         : { totalStock: 0, totalProducts: 0, dailySales: 0, suppliers: 0, totalSalesAmount: 0, totalExpenses: 0, netSalesAmount: 0 };
     const nextCurrentStock = settled[10].status === "fulfilled" ? settled[10].value : [];
     const nextInvoiceSeriesInfo = settled[11].status === "fulfilled" ? settled[11].value : null;
-    const nextCybercafeTariffs = settled[12].status === "fulfilled" ? settled[12].value : [];
-    const nextCybercafeSales = settled[13].status === "fulfilled" ? settled[13].value : [];
+    const nextCybercafeSales = settled[12].status === "fulfilled" ? settled[12].value : [];
+    const nextMikhmonSales = settled[13].status === "fulfilled" ? settled[13].value : [];
 
     setProducts(nextProducts);
     setServices(nextServices);
@@ -1243,8 +1246,8 @@ export default function App() {
     setMetrics(nextMetrics);
     setCurrentStock(nextCurrentStock);
     setInvoiceSeriesInfo(nextInvoiceSeriesInfo);
-    setCybercafeTariffs(nextCybercafeTariffs);
     setCybercafeSales(nextCybercafeSales);
+    setMikhmonSales(nextMikhmonSales);
     setSyncStatus(nextSyncStatus);
     setSaleDraft((current) => ({
       ...current,
@@ -1601,15 +1604,10 @@ export default function App() {
       return;
     }
 
-    const firstTariff = cybercafeTariffs.find((item) => item.active);
-    if (!firstTariff) {
-      showToast("error", "Creez d'abord un tarif de connexion actif.");
-      return;
-    }
-
     setCybercafeSaleDraft({
-      tariffId: firstTariff.id,
+      tariffId: 0,
       quantity: 1,
+      amount: 0,
       date: new Date().toISOString().slice(0, 10),
       paymentMethod: "Especes",
       note: "",
@@ -1630,21 +1628,55 @@ export default function App() {
     }
   }
 
-  async function handleCybercafeTariffSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!canCreateInventory) {
-      showAccessDenied("Votre profil ne permet pas de gerer les tarifs cybercafe.");
+  async function handleMikhmonFileImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      showToast("error", "Selectionnez un fichier CSV exporte depuis Mikhmon.");
       return;
     }
-
     try {
-      const nextTariffs = await repository.saveCybercafeTariff(cybercafeTariffDraft);
-      setCybercafeTariffs(nextTariffs);
-      setActiveModal(null);
-      showToast("success", "Tarif cybercafe enregistre avec succes.");
+      const summary = await repository.importMikhmonCsv(file.name, await file.text());
+      setMikhmonSales(await repository.listMikhmonSales());
+      showToast("success", `Import Mikhmon termine : ${summary.imported} ticket(s), ${formatCurrency(summary.totalAmount)}. ${summary.skipped ? `${summary.skipped} doublon(s) ignore(s).` : ""}`);
     } catch (error) {
-      showToast("error", error instanceof Error ? error.message : "Impossible d'enregistrer ce tarif.");
+      showToast("error", error instanceof Error ? error.message : "Impossible d'importer le rapport Mikhmon.");
     }
+  }
+
+  function sendCybercafeReportByEmail() {
+    const recipient = cybercafeReportEmail.trim();
+    if (!recipient) {
+      showToast("error", "Saisissez l'adresse e-mail du responsable.");
+      return;
+    }
+    const period = cybercafeReportStart || cybercafeReportEnd
+      ? `du ${cybercafeReportStart ? formatDateOnly(cybercafeReportStart) : "debut"} au ${cybercafeReportEnd ? formatDateOnly(cybercafeReportEnd) : "aujourd'hui"}`
+      : "pour tout l'historique";
+    const body = [
+      "RAPPORT CYBERCAFE - WALIKALE TO WORLD",
+      `Periode : ${period}`,
+      `Envoye par : ${currentUser?.fullName ?? currentUser?.username ?? "Utilisateur inconnu"}`,
+      "",
+      `Recettes saisies en caisse : ${formatCurrency(cybercafeCashTotal)}`,
+      `Jours de caisse saisis : ${new Set(filteredCybercafeSales.map((sale) => sale.date)).size}`,
+      `Ventes analysees depuis Mikhmon : ${formatCurrency(cybercafeAnalysis.total)}`,
+      `Tickets Mikhmon importes : ${filteredMikhmonSales.length}`,
+      `Ecart Mikhmon / caisse : ${formatCurrency(cybercafeDifference)}`,
+      "",
+      `Conclusion : ${cybercafeConclusion}`,
+    ].join("\n");
+    window.location.href = `mailto:${encodeURIComponent(recipient)}?subject=${encodeURIComponent(`Rapport Cybercafe ${period}`)}&body=${encodeURIComponent(body)}`;
+  }
+
+  function updateCybercafeReportEmail(value: string) {
+    if (!isSuperAdmin) {
+      showToast("error", "Seul le super-admin peut modifier l'adresse e-mail du responsable.");
+      return;
+    }
+    setCybercafeReportEmail(value);
+    localStorage.setItem(cybercafeReportEmailStorageKey, value);
   }
 
   function openUserModal() {
@@ -2543,6 +2575,88 @@ export default function App() {
   });
   const clientsWithEmailCount = filteredClients.filter((item) => item.email.trim().length > 0).length;
   const clientsWithPhoneCount = filteredClients.filter((item) => item.phone.trim().length > 0).length;
+  const cybercafeReportRangeStart = parseSaleDate(cybercafeReportStart);
+  const cybercafeReportRangeEnd = parseSaleDate(cybercafeReportEnd);
+  const filteredCybercafeSales = cybercafeSales.filter((sale) => {
+    const date = parseSaleDate(sale.date);
+    if (!date) return false;
+    return (!cybercafeReportRangeStart || date >= startOfDay(cybercafeReportRangeStart))
+      && (!cybercafeReportRangeEnd || date <= endOfDay(cybercafeReportRangeEnd));
+  });
+  const filteredMikhmonSales = mikhmonSales.filter((ticket) => {
+    const date = parseSaleDate(ticket.date);
+    if (!date) return false;
+    return (!cybercafeReportRangeStart || date >= startOfDay(cybercafeReportRangeStart))
+      && (!cybercafeReportRangeEnd || date <= endOfDay(cybercafeReportRangeEnd));
+  });
+  const cybercafeDailyComparison = (() => {
+    const days = new Map<string, { cash: number; mikhmon: number }>();
+    filteredCybercafeSales.forEach((sale) => {
+      const date = parseSaleDate(sale.date);
+      if (!date) return;
+      const key = toInputDateValue(date);
+      const current = days.get(key) ?? { cash: 0, mikhmon: 0 };
+      current.cash += sale.amount;
+      days.set(key, current);
+    });
+    filteredMikhmonSales.forEach((sale) => {
+      const current = days.get(sale.date) ?? { cash: 0, mikhmon: 0 };
+      current.mikhmon += sale.amount;
+      days.set(sale.date, current);
+    });
+    return [...days.entries()].map(([date, totals]) => ({ date, ...totals, difference: totals.mikhmon - totals.cash })).sort((left, right) => right.date.localeCompare(left.date));
+  })();
+  const cybercafeAnalysis = (() => {
+    const byDay = new Map<string, number>();
+    const byProfile = new Map<string, { tickets: number; amount: number }>();
+    const byHour = new Map<number, number>();
+
+    filteredMikhmonSales.forEach((ticket) => {
+      byDay.set(ticket.date, (byDay.get(ticket.date) ?? 0) + ticket.amount);
+      const profile = ticket.profile.trim() || "Sans forfait";
+      const currentProfile = byProfile.get(profile) ?? { tickets: 0, amount: 0 };
+      currentProfile.tickets += 1;
+      currentProfile.amount += ticket.amount;
+      byProfile.set(profile, currentProfile);
+      const hour = Number(ticket.time.slice(0, 2));
+      if (Number.isInteger(hour) && hour >= 0 && hour <= 23) byHour.set(hour, (byHour.get(hour) ?? 0) + 1);
+    });
+
+    const daily = [...byDay.entries()].map(([date, amount]) => ({ date, amount })).sort((left, right) => left.date.localeCompare(right.date));
+    const profiles = [...byProfile.entries()]
+      .map(([name, totals]) => ({ name, ...totals }))
+      .sort((left, right) => right.amount - left.amount);
+    const hours = [...byHour.entries()].map(([hour, tickets]) => ({ hour, tickets })).sort((left, right) => left.hour - right.hour);
+    const total = filteredMikhmonSales.reduce((sum, ticket) => sum + ticket.amount, 0);
+    return {
+      daily,
+      profiles,
+      hours,
+      total,
+      maxDaily: Math.max(...daily.map((item) => item.amount), 0),
+      maxHourly: Math.max(...hours.map((item) => item.tickets), 0),
+      averageDaily: daily.length ? total / daily.length : 0,
+      minimumDay: daily.length ? daily.reduce((lowest, item) => item.amount < lowest.amount ? item : lowest) : null,
+      maximumDay: daily.length ? daily.reduce((highest, item) => item.amount > highest.amount ? item : highest) : null,
+    };
+  })();
+  const cybercafeProfileColors = ["#1d8dee", "#ff5f86", "#ffbd4a", "#31b7a8", "#7667d8", "#4d86c9"];
+  const cybercafeProfileGradient = cybercafeAnalysis.profiles.reduce<{ segments: string[]; offset: number }>((gradient, profile, index) => {
+    const percentage = cybercafeAnalysis.total ? (profile.amount / cybercafeAnalysis.total) * 100 : 0;
+    const color = cybercafeProfileColors[index % cybercafeProfileColors.length];
+    gradient.segments.push(`${color} ${gradient.offset}% ${gradient.offset + percentage}%`);
+    gradient.offset += percentage;
+    return gradient;
+  }, { segments: [], offset: 0 }).segments.join(", ");
+  const cybercafeCashTotal = filteredCybercafeSales.reduce((sum, item) => sum + item.amount, 0);
+  const cybercafeDifference = cybercafeAnalysis.total - cybercafeCashTotal;
+  const cybercafeConclusion = filteredMikhmonSales.length === 0
+    ? "Importez un rapport Mikhmon pour obtenir l'analyse des forfaits, des heures et des ventes quotidiennes."
+    : cybercafeDifference === 0
+      ? "Les ventes analysees dans Mikhmon correspondent exactement au total declare en caisse."
+      : cybercafeDifference > 0
+        ? `Mikhmon indique ${formatCurrency(cybercafeDifference)} de plus que la caisse declaree. Verifiez les encaissements de la periode et les tickets non payes.`
+        : `La caisse declaree depasse les tickets Mikhmon de ${formatCurrency(Math.abs(cybercafeDifference))}. Verifiez les dates importees ou les recettes hors ticket.`;
 
   const salesPeriodToday = startOfDay(new Date());
   let salesPeriodRangeStart: Date | null = null;
@@ -4507,33 +4621,100 @@ export default function App() {
                 <p className="hero-copy">Enregistrez les connexions vendues sans les melanger aux factures de papeterie.</p>
               </div>
               <div className="panel-header-actions">
-                {canCreateInventory ? (
-                  <button className="ghost-btn" type="button" onClick={() => {
-                    setCybercafeTariffDraft({ name: "", unitPrice: 0, active: true });
-                    setActiveModal("cybercafeTariff");
-                  }}>
-                    Gerer les tarifs
-                  </button>
-                ) : null}
+                <input ref={mikhmonFileInputRef} type="file" accept=".csv,text/csv" hidden onChange={handleMikhmonFileImport} />
+                <button className="ghost-btn success" type="button" onClick={() => mikhmonFileInputRef.current?.click()}>
+                  Importer rapport Mikhmon
+                </button>
                 {canCreateSales ? <button className="primary-btn" type="button" onClick={openCybercafeSaleModal}>Nouvelle recette</button> : null}
               </div>
             </div>
+            <div className="cybercafe-report-tools">
+              <label>Du<input type="date" value={cybercafeReportStart} onChange={(event) => setCybercafeReportStart(event.target.value)} /></label>
+              <label>Au<input type="date" value={cybercafeReportEnd} onChange={(event) => setCybercafeReportEnd(event.target.value)} /></label>
+              <button className="ghost-btn" type="button" onClick={() => { setCybercafeReportStart(toInputDateValue(startOfMonth(new Date()))); setCybercafeReportEnd(toInputDateValue(new Date())); }}>Mois en cours</button>
+              <button className="ghost-btn" type="button" onClick={() => { setCybercafeReportStart(""); setCybercafeReportEnd(""); }}>Tout l'historique</button>
+              <label className="cybercafe-email-field">E-mail du responsable {isSuperAdmin ? "(modifiable)" : "(lecture seule)"}<input type="email" value={cybercafeReportEmail} onChange={(event) => updateCybercafeReportEmail(event.target.value)} readOnly={!isSuperAdmin} aria-readonly={!isSuperAdmin} /></label>
+              <button className="ghost-btn success" type="button" onClick={sendCybercafeReportByEmail}>Envoyer le resume</button>
+            </div>
             <div className="sales-summary compact-summary">
-              <div className="sales-indicator neutral"><span>Recettes enregistrees</span><strong>{cybercafeSales.length}</strong></div>
-              <div className="sales-indicator success"><span>Montant total cybercafe</span><strong>{formatCurrency(cybercafeSales.reduce((sum, item) => sum + item.amount, 0))}</strong></div>
-              <div className="sales-indicator neutral"><span>Connexions vendues</span><strong>{cybercafeSales.reduce((sum, item) => sum + item.quantity, 0)}</strong></div>
-              <div className="sales-indicator neutral"><span>Tarifs actifs</span><strong>{cybercafeTariffs.filter((item) => item.active).length}</strong></div>
+              <div className="sales-indicator neutral"><span>Recettes enregistrees</span><strong>{filteredCybercafeSales.length}</strong></div>
+              <div className="sales-indicator success"><span>Montant total cybercafe</span><strong>{formatCurrency(cybercafeCashTotal)}</strong></div>
+              <div className="sales-indicator neutral"><span>Jours de caisse saisis</span><strong>{new Set(filteredCybercafeSales.map((sale) => sale.date)).size}</strong></div>
+              <div className="sales-indicator neutral"><span>Tickets Mikhmon importes</span><strong>{filteredMikhmonSales.length}</strong></div>
+              <div className="sales-indicator success"><span>Total Mikhmon</span><strong>{formatCurrency(cybercafeAnalysis.total)}</strong></div>
+              <div className={`sales-indicator ${cybercafeDifference === 0 ? "success" : "warning"}`}><span>Ecart Mikhmon / caisse</span><strong>{formatCurrency(cybercafeDifference)}</strong></div>
             </div>
+            <div className={`cybercafe-conclusion ${cybercafeDifference === 0 ? "balanced" : ""}`}>
+              <strong>Lecture automatique</strong>
+              <p>{cybercafeConclusion}</p>
+            </div>
+            {filteredMikhmonSales.length > 0 ? (
+              <div className="cybercafe-analysis-grid">
+                <article className="cybercafe-analysis-card">
+                  <div className="cybercafe-analysis-heading"><h3>Ventes journalieres</h3><span>Selon Mikhmon</span></div>
+                  <div className="cybercafe-bar-chart" aria-label="Ventes Mikhmon par jour">
+                    {cybercafeAnalysis.daily.map((day) => {
+                      const height = cybercafeAnalysis.maxDaily ? Math.max((day.amount / cybercafeAnalysis.maxDaily) * 100, 10) : 10;
+                      return <div className="cybercafe-bar-wrap" key={day.date}><strong>{formatCurrency(day.amount)}</strong><div className="cybercafe-bar" style={{ height: `${height}%` }} title={`${formatDateOnly(day.date)} : ${formatCurrency(day.amount)}`} /><span>{formatDateOnly(day.date)}</span></div>;
+                    })}
+                  </div>
+                </article>
+                <article className="cybercafe-analysis-card">
+                  <div className="cybercafe-analysis-heading"><h3>Repartition par forfait</h3><span>Valeur vendue</span></div>
+                  <div className="cybercafe-profile-content">
+                    <div className="cybercafe-donut" style={{ background: `conic-gradient(${cybercafeProfileGradient})` }}><span>{filteredMikhmonSales.length}<small>tickets</small></span></div>
+                    <div className="cybercafe-legend">{cybercafeAnalysis.profiles.map((profile, index) => <div key={profile.name}><i style={{ backgroundColor: cybercafeProfileColors[index % cybercafeProfileColors.length] }} /><span>{profile.name}</span><strong>{Math.round((profile.amount / cybercafeAnalysis.total) * 100)}%</strong></div>)}</div>
+                  </div>
+                </article>
+                <article className="cybercafe-analysis-card">
+                  <div className="cybercafe-analysis-heading"><h3>Heures les plus actives</h3><span>Nombre de tickets</span></div>
+                  <div className="cybercafe-hour-chart" aria-label="Tickets Mikhmon par heure">
+                    {cybercafeAnalysis.hours.map((hour) => {
+                      const height = cybercafeAnalysis.maxHourly ? Math.max((hour.tickets / cybercafeAnalysis.maxHourly) * 100, 12) : 12;
+                      return <div className="cybercafe-hour-wrap" key={hour.hour}><strong>{hour.tickets}</strong><div className="cybercafe-hour-bar" style={{ height: `${height}%` }} title={`${hour.hour}h : ${hour.tickets} ticket(s)`} /><span>{hour.hour}h</span></div>;
+                    })}
+                  </div>
+                </article>
+                <article className="cybercafe-analysis-card cybercafe-statistics-card">
+                  <div className="cybercafe-analysis-heading"><h3>Statistiques globales</h3><span>Periode importee</span></div>
+                  <dl className="cybercafe-statistics">
+                    <div><dt>Total des ventes</dt><dd>{formatCurrency(cybercafeAnalysis.total)}</dd></div>
+                    <div><dt>Tickets vendus</dt><dd>{filteredMikhmonSales.length}</dd></div>
+                    <div><dt>Moyenne journaliere</dt><dd>{formatCurrency(cybercafeAnalysis.averageDaily)}</dd></div>
+                    <div><dt>Minimum journalier</dt><dd>{cybercafeAnalysis.minimumDay ? `${formatCurrency(cybercafeAnalysis.minimumDay.amount)} - ${formatDateOnly(cybercafeAnalysis.minimumDay.date)}` : "-"}</dd></div>
+                    <div><dt>Maximum journalier</dt><dd>{cybercafeAnalysis.maximumDay ? `${formatCurrency(cybercafeAnalysis.maximumDay.amount)} - ${formatDateOnly(cybercafeAnalysis.maximumDay.date)}` : "-"}</dd></div>
+                  </dl>
+                </article>
+                <article className="cybercafe-analysis-card cybercafe-distribution-card">
+                  <div className="cybercafe-analysis-heading"><h3>Distribution des tickets</h3><span>Par forfait</span></div>
+                  <div className="table-wrap"><table className="sales-table"><thead><tr><th>Forfait</th><th>Tickets</th><th>Part</th><th>Total</th></tr></thead><tbody>{cybercafeAnalysis.profiles.map((profile) => <tr key={profile.name}><td>{profile.name}</td><td>{profile.tickets}</td><td>{((profile.tickets / filteredMikhmonSales.length) * 100).toFixed(1)}%</td><td className="sales-amount-cell">{formatCurrency(profile.amount)}</td></tr>)}</tbody></table></div>
+                </article>
+              </div>
+            ) : null}
+            {cybercafeDailyComparison.length > 0 ? (
+              <div className="table-wrap sales-table-wrap">
+                <table className="sales-table"><thead><tr><th colSpan={4}>Comparaison journaliere : caisse et Mikhmon</th></tr><tr><th>Date</th><th>Total caisse saisi</th><th>Total tickets Mikhmon</th><th>Ecart</th></tr></thead><tbody>
+                  {cybercafeDailyComparison.map((day) => <tr key={day.date}><td>{formatDateOnly(day.date)}</td><td className="sales-amount-cell">{formatCurrency(day.cash)}</td><td className="sales-amount-cell">{formatCurrency(day.mikhmon)}</td><td className="sales-amount-cell">{formatCurrency(day.difference)}</td></tr>)}
+                </tbody></table>
+              </div>
+            ) : null}
+            {filteredMikhmonSales.length > 0 ? (
+              <div className="table-wrap sales-table-wrap">
+                <table className="sales-table"><thead><tr><th colSpan={4}>Derniers tickets importes depuis Mikhmon</th></tr><tr><th>Date / heure</th><th>Profil</th><th>Utilisateur</th><th>Montant</th></tr></thead><tbody>
+                  {filteredMikhmonSales.slice(0, 10).map((ticket) => <tr key={ticket.id}><td>{ticket.date} {ticket.time}</td><td>{ticket.profile || "-"}</td><td>{ticket.username}</td><td className="sales-amount-cell">{formatCurrency(ticket.amount)}</td></tr>)}
+                </tbody></table>
+              </div>
+            ) : null}
             <div className="section-tools">
-              <input className="table-search-input" placeholder="Rechercher un tarif, une date ou un paiement" value={cybercafeSearch} onChange={(event) => setCybercafeSearch(event.target.value)} />
-              <span className="section-count">{cybercafeSales.filter((item) => normalizeText(`${item.tariffName} ${item.date} ${item.paymentMethod} ${item.note}`).includes(normalizeText(cybercafeSearch))).length} resultat(s)</span>
+              <input className="table-search-input" placeholder="Rechercher une date, un paiement ou une note" value={cybercafeSearch} onChange={(event) => setCybercafeSearch(event.target.value)} />
+              <span className="section-count">{filteredCybercafeSales.filter((item) => normalizeText(`${item.date} ${item.paymentMethod} ${item.note}`).includes(normalizeText(cybercafeSearch))).length} resultat(s)</span>
             </div>
-            {cybercafeSales.length === 0 ? (
-              <EmptyState title="Aucune recette cybercafe" description="Ajoutez vos tarifs, puis enregistrez chaque vente de connexion de la journee." />
+            {filteredCybercafeSales.length === 0 ? (
+              <EmptyState title="Aucune caisse cybercafe" description="Saisissez le total reel trouve en caisse a la fin de chaque journee." />
             ) : (
-              <div className="table-wrap sales-table-wrap"><table className="sales-table"><thead><tr><th>Date</th><th>Tarif</th><th>Prix unitaire</th><th>Connexions</th><th>Montant</th><th>Paiement</th><th>Enregistre par</th><th>Note</th></tr></thead><tbody>
-                {cybercafeSales.filter((item) => normalizeText(`${item.tariffName} ${item.date} ${item.paymentMethod} ${item.note}`).includes(normalizeText(cybercafeSearch))).map((sale) => (
-                  <tr key={sale.id}><td>{sale.date}</td><td>{sale.tariffName}</td><td>{formatCurrency(sale.unitPrice)}</td><td>{sale.quantity}</td><td className="sales-amount-cell">{formatCurrency(sale.amount)}</td><td>{sale.paymentMethod}</td><td>{sale.userName}</td><td>{sale.note || "-"}</td></tr>
+              <div className="table-wrap sales-table-wrap"><table className="sales-table"><thead><tr><th>Date</th><th>Total caisse</th><th>Paiement</th><th>Enregistre par</th><th>Note</th></tr></thead><tbody>
+                {filteredCybercafeSales.filter((item) => normalizeText(`${item.date} ${item.paymentMethod} ${item.note}`).includes(normalizeText(cybercafeSearch))).map((sale) => (
+                  <tr key={sale.id}><td>{sale.date}</td><td className="sales-amount-cell">{formatCurrency(sale.amount)}</td><td>{sale.paymentMethod}</td><td>{sale.userName}</td><td>{sale.note || "-"}</td></tr>
                 ))}
               </tbody></table></div>
             )}
@@ -5707,29 +5888,16 @@ export default function App() {
         </Modal>
       ) : null}
 
-      {activeModal === "cybercafeTariff" ? (
-        <Modal title={cybercafeTariffDraft.id ? "Modifier le tarif cybercafe" : "Nouveau tarif cybercafe"} onClose={closeModal}>
-          <form className="modal-form modal-form-stack" onSubmit={handleCybercafeTariffSubmit}>
-            <label>Nom du tarif<input value={cybercafeTariffDraft.name} onChange={(event) => setCybercafeTariffDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Ex: Connexion internet 1 heure" required /></label>
-            <label>Prix par connexion (FC)<input type="number" min="1" step="0.01" value={cybercafeTariffDraft.unitPrice || ""} onChange={(event) => setCybercafeTariffDraft((current) => ({ ...current, unitPrice: Number(event.target.value) || 0 }))} required /></label>
-            <label className="checkbox-label"><input type="checkbox" checked={cybercafeTariffDraft.active !== false} onChange={(event) => setCybercafeTariffDraft((current) => ({ ...current, active: event.target.checked }))} /> Tarif disponible a la vente</label>
-            {cybercafeTariffs.length > 0 ? <div className="service-list"><p className="sales-modern-label">Tarifs existants</p>{cybercafeTariffs.map((tariff) => <button className="ghost-btn" type="button" key={tariff.id} onClick={() => setCybercafeTariffDraft({ id: tariff.id, name: tariff.name, unitPrice: tariff.unitPrice, active: tariff.active })}>{tariff.name} - {formatCurrency(tariff.unitPrice)} {tariff.active ? "" : "(inactif)"}</button>)}</div> : null}
-            <div className="modal-actions"><button className="ghost-btn muted" type="button" onClick={closeModal}>Annuler</button><button className="primary-btn" type="submit">Enregistrer le tarif</button></div>
-          </form>
-        </Modal>
-      ) : null}
-
       {activeModal === "cybercafeSale" ? (
-        <Modal title="Nouvelle recette cybercafe" onClose={closeModal}>
+        <Modal title="Total journalier de caisse Cybercafe" onClose={closeModal}>
           <form className="modal-form modal-form-stack" onSubmit={handleCybercafeSaleSubmit}>
-            <p className="hero-copy">Cette operation n'emet pas de facture et n'apparait pas dans la liste des ventes de papeterie.</p>
-            <label>Tarif de connexion<select value={cybercafeSaleDraft.tariffId} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, tariffId: Number(event.target.value) }))}>{cybercafeTariffs.filter((item) => item.active).map((tariff) => <option key={tariff.id} value={tariff.id}>{tariff.name} - {formatCurrency(tariff.unitPrice)}</option>)}</select></label>
-            <label>Nombre de connexions vendues<input type="number" min="1" step="1" value={cybercafeSaleDraft.quantity} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, quantity: Number(event.target.value) || 0 }))} required /></label>
+            <p className="hero-copy">Saisissez uniquement le total reel trouve en caisse. Les tickets et leurs tarifs seront analyses depuis le fichier Mikhmon importe.</p>
+            <label>Montant total de caisse (FC)<input type="number" min="1" step="0.01" value={cybercafeSaleDraft.amount || ""} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, amount: Number(event.target.value) || 0 }))} required /></label>
             <label>Date<input type="date" value={cybercafeSaleDraft.date} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, date: event.target.value }))} required /></label>
             <label>Mode de paiement<select value={cybercafeSaleDraft.paymentMethod} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, paymentMethod: event.target.value }))}><option>Especes</option><option>Mobile Money</option><option>Virement</option></select></label>
-            <label>Observation (optionnel)<textarea rows={2} value={cybercafeSaleDraft.note} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, note: event.target.value }))} placeholder="Ex: Vente de la matinee" /></label>
-            <div className="sales-total-card"><span>Montant a enregistrer</span><strong>{formatCurrency((cybercafeTariffs.find((item) => item.id === cybercafeSaleDraft.tariffId)?.unitPrice ?? 0) * cybercafeSaleDraft.quantity)}</strong></div>
-            <div className="modal-actions"><button className="ghost-btn muted" type="button" onClick={closeModal}>Annuler</button><button className="primary-btn" type="submit">Enregistrer la recette</button></div>
+            <label>Observation (optionnel)<textarea rows={2} value={cybercafeSaleDraft.note} onChange={(event) => setCybercafeSaleDraft((current) => ({ ...current, note: event.target.value }))} placeholder="Ex: Total compte en fin de journee" /></label>
+            <div className="sales-total-card"><span>Total de caisse a enregistrer</span><strong>{formatCurrency(cybercafeSaleDraft.amount ?? 0)}</strong></div>
+            <div className="modal-actions"><button className="ghost-btn muted" type="button" onClick={closeModal}>Annuler</button><button className="primary-btn" type="submit">Enregistrer le total</button></div>
           </form>
         </Modal>
       ) : null}

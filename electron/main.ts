@@ -8,6 +8,7 @@ import type {
   ClientDraft,
   CybercafeSaleDraft,
   CybercafeTariffDraft,
+  MikhmonImportSummary,
   CloudDesktopSessionDraft,
   ExpenseDraft,
   LoginDraft,
@@ -46,6 +47,8 @@ function registerIpc() {
   ipcMain.handle("cybercafe:tariffs:save", (_event, draft: CybercafeTariffDraft) => database.saveCybercafeTariff(draft));
   ipcMain.handle("cybercafe:sales:list", () => database.listCybercafeSales());
   ipcMain.handle("cybercafe:sales:create", (_event, draft: CybercafeSaleDraft) => database.createCybercafeSale(draft));
+  ipcMain.handle("cybercafe:mikhmon:list", () => database.listMikhmonSales());
+  ipcMain.handle("cybercafe:mikhmon:import", (_event, fileName: string, content: string): MikhmonImportSummary => database.importMikhmonCsv(fileName, content));
   ipcMain.handle("inventory:reset-cycle", () => database.resetInventoryCycle());
   ipcMain.handle("sales:list", () => database.listSales());
   ipcMain.handle("sales:create", (_event, draft: SaleDraft) => database.createSale(draft));

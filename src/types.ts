@@ -91,9 +91,28 @@ export type CybercafeSale = {
 export type CybercafeSaleDraft = {
   tariffId: number;
   quantity: number;
+  amount?: number;
   date: string;
   paymentMethod: string;
   note: string;
+};
+
+export type MikhmonSale = {
+  id: number;
+  date: string;
+  time: string;
+  username: string;
+  profile: string;
+  comment: string;
+  amount: number;
+};
+
+export type MikhmonImportSummary = {
+  imported: number;
+  skipped: number;
+  totalAmount: number;
+  ticketCount: number;
+  errors: string[];
 };
 
 export type SupplyHistoryItem = {
@@ -329,6 +348,7 @@ export type SyncSnapshot = {
   saleItems: Array<Record<string, unknown>>;
   saleServiceItems: Array<Record<string, unknown>>;
   cybercafeSales: Array<Record<string, unknown>>;
+  mikhmonSales: Array<Record<string, unknown>>;
   stockMovements: Array<Record<string, unknown>>;
   auditLogs: Array<Record<string, unknown>>;
   invoiceSequences: Array<Record<string, unknown>>;
@@ -346,6 +366,8 @@ export type DesktopApi = {
   saveCybercafeTariff: (draft: CybercafeTariffDraft) => Promise<CybercafeTariff[]>;
   listCybercafeSales: () => Promise<CybercafeSale[]>;
   createCybercafeSale: (draft: CybercafeSaleDraft) => Promise<CybercafeSale[]>;
+  listMikhmonSales: () => Promise<MikhmonSale[]>;
+  importMikhmonCsv: (fileName: string, content: string) => Promise<MikhmonImportSummary>;
   listSales: () => Promise<SaleRecord[]>;
   createSale: (draft: SaleDraft) => Promise<SaleRecord[]>;
   getSaleDetail: (saleId: number) => Promise<SaleDetail | null>;
