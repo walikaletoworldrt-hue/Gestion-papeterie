@@ -49,6 +49,8 @@ const tabs: { id: TabId; label: string }[] = [
 
 const stockWeeklyLaborCostStorageKey = "walikale-stock-weekly-labor-cost";
 const cybercafeReportEmailStorageKey = "walikale-cybercafe-report-email";
+const defaultCybercafeReportEmail = "ahmadroberto09@gmail.com";
+const previousCybercafeReportEmail = "walikaletoworld@gmail.com";
 
 const productCategoryOptions = [
   "Papeterie",
@@ -1039,7 +1041,10 @@ export default function App() {
   const [cybercafeSearch, setCybercafeSearch] = useState("");
   const [cybercafeReportStart, setCybercafeReportStart] = useState(() => toInputDateValue(startOfMonth(new Date())));
   const [cybercafeReportEnd, setCybercafeReportEnd] = useState(() => toInputDateValue(new Date()));
-  const [cybercafeReportEmail, setCybercafeReportEmail] = useState(() => localStorage.getItem(cybercafeReportEmailStorageKey) || "walikaletoworld@gmail.com");
+  const [cybercafeReportEmail, setCybercafeReportEmail] = useState(() => {
+    const savedEmail = localStorage.getItem(cybercafeReportEmailStorageKey);
+    return !savedEmail || savedEmail === previousCybercafeReportEmail ? defaultCybercafeReportEmail : savedEmail;
+  });
   const mikhmonFileInputRef = useRef<HTMLInputElement>(null);
   const [replenishmentDraft, setReplenishmentDraft] = useState<ReplenishmentDraft>(createEmptyReplenishmentDraft([]));
   const [saleDateDraft, setSaleDateDraft] = useState(() => new Date().toISOString().slice(0, 10));

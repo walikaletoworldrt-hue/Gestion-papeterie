@@ -1807,6 +1807,68 @@ function mergeSnapshotsForCloudSync(
   return merged;
 }
 
+type SyncUserIdentityRow = {
+  id: number;
+  auth_user_id?: string | null;
+  username?: string | null;
+  email?: string | null;
+};
+
+async function getCloudSyncUserIdentities(): Promise<SyncUserIdentityRow[]> {
+  const result = await getSupabaseClient()
+    .from("users")
+    .select("id, auth_user_id, username, email");
+  return ensureData(result.data ?? [], result.error) as SyncUserIdentityRow[];
+}
+
+function remapSnapshotUserReferences(
+  snapshot: SyncSnapshot,
+  cloudUsers: SyncUserIdentityRow[]
+): SyncSnapshot {
+  const byAuthUserId = new Map(
+    cloudUsers.filter((user) => user.auth_user_id).map((user) => [String(user.auth_user_id), user.id])
+  );
+  const byEmail = new Map(
+    cloudUsers.filter((user) => user.email).map((user) => [String(user.email).trim().toLowerCase(), user.id])
+  );
+  const byUsername = new Map(
+    cloudUsers.filter((user) => user.username).map((user) => [String(user.username).trim().toLowerCase(), user.id])
+  );
+  const localToCloudUserId = new Map<number, number>();
+
+  (snapshot.users ?? []).forEach((rawUser) => {
+    const localId = Number(rawUser.id);
+    if (!Number.isFinite(localId)) return;
+    const authUserId = rawUser.auth_user_id ? String(rawUser.auth_user_id) : "";
+    const email = rawUser.email ? String(rawUser.email).trim().toLowerCase() : "";
+    const username = rawUser.username ? String(rawUser.username).trim().toLowerCase() : "";
+    const cloudId = (authUserId ? byAuthUserId.get(authUserId) : undefined)
+      ?? (email ? byEmail.get(email) : undefined)
+      ?? (username ? byUsername.get(username) : undefined);
+    if (cloudId) localToCloudUserId.set(localId, cloudId);
+  });
+
+  const remapRows = (rows: Array<Record<string, unknown>> | undefined) => (rows ?? []).map((row) => {
+    if (row.user_id === null || row.user_id === undefined) return row;
+    const mappedUserId = localToCloudUserId.get(Number(row.user_id));
+    // Local IDs are device-specific. Never send an unmatched ID to Supabase.
+    return { ...row, user_id: mappedUserId ?? null };
+  });
+
+  return {
+    ...snapshot,
+    expenses: remapRows(snapshot.expenses),
+    initialStocks: remapRows(snapshot.initialStocks),
+    replenishments: remapRows(snapshot.replenishments),
+    sales: remapRows(snapshot.sales),
+    cybercafeSales: remapRows(snapshot.cybercafeSales),
+    mikhmonSales: remapRows(snapshot.mikhmonSales),
+    stockMovements: remapRows(snapshot.stockMovements),
+    auditLogs: remapRows(snapshot.auditLogs),
+    inventoryCycles: remapRows(snapshot.inventoryCycles),
+  };
+}
+
 async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTables: string[] | null, canSyncUsers: boolean) {
   const included = selectedTables ? new Set(selectedTables) : null;
   const hasTable = (table: string) => !included || included.has(table);
@@ -1832,22 +1894,24 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
     await syncUsersToSupabase(syncSnapshot.users ?? []);
   }
 
-  if (hasTable("products")) await insertSupabaseRows("products", syncSnapshot.products);
-  if (hasTable("services")) await insertSupabaseRows("services", syncSnapshot.services);
-  if (hasTable("cybercafe_tariffs")) await insertSupabaseRows("cybercafe_tariffs", syncSnapshot.cybercafeTariffs);
-  if (hasTable("clients")) await insertSupabaseRows("clients", syncSnapshot.clients);
-  if (hasTable("expenses")) await insertSupabaseRows("expenses", syncSnapshot.expenses ?? []);
-  if (hasTable("inventory_cycles")) await insertSupabaseRows("inventory_cycles", syncSnapshot.inventoryCycles);
-  if (hasTable("invoice_sequences")) await insertSupabaseRows("invoice_sequences", syncSnapshot.invoiceSequences);
-  if (hasTable("initial_stocks")) await insertSupabaseRows("initial_stocks", syncSnapshot.initialStocks);
-  if (hasTable("replenishments")) await insertSupabaseRows("replenishments", syncSnapshot.replenishments);
-  if (hasTable("sales")) await insertSupabaseRows("sales", syncSnapshot.sales);
-  if (hasTable("sale_items")) await insertSupabaseRows("sale_items", syncSnapshot.saleItems);
-  if (hasTable("sale_service_items")) await insertSupabaseRows("sale_service_items", syncSnapshot.saleServiceItems);
-  if (hasTable("cybercafe_sales")) await insertSupabaseRows("cybercafe_sales", syncSnapshot.cybercafeSales);
-  if (hasTable("mikhmon_sales")) await insertSupabaseRows("mikhmon_sales", syncSnapshot.mikhmonSales);
-  if (hasTable("stock_movements")) await insertSupabaseRows("stock_movements", syncSnapshot.stockMovements);
-  if (hasTable("audit_logs")) await insertSupabaseRows("audit_logs", syncSnapshot.auditLogs);
+  const resolvedSnapshot = remapSnapshotUserReferences(syncSnapshot, await getCloudSyncUserIdentities());
+
+  if (hasTable("products")) await insertSupabaseRows("products", resolvedSnapshot.products);
+  if (hasTable("services")) await insertSupabaseRows("services", resolvedSnapshot.services);
+  if (hasTable("cybercafe_tariffs")) await insertSupabaseRows("cybercafe_tariffs", resolvedSnapshot.cybercafeTariffs);
+  if (hasTable("clients")) await insertSupabaseRows("clients", resolvedSnapshot.clients);
+  if (hasTable("expenses")) await insertSupabaseRows("expenses", resolvedSnapshot.expenses ?? []);
+  if (hasTable("inventory_cycles")) await insertSupabaseRows("inventory_cycles", resolvedSnapshot.inventoryCycles);
+  if (hasTable("invoice_sequences")) await insertSupabaseRows("invoice_sequences", resolvedSnapshot.invoiceSequences);
+  if (hasTable("initial_stocks")) await insertSupabaseRows("initial_stocks", resolvedSnapshot.initialStocks);
+  if (hasTable("replenishments")) await insertSupabaseRows("replenishments", resolvedSnapshot.replenishments);
+  if (hasTable("sales")) await insertSupabaseRows("sales", resolvedSnapshot.sales);
+  if (hasTable("sale_items")) await insertSupabaseRows("sale_items", resolvedSnapshot.saleItems);
+  if (hasTable("sale_service_items")) await insertSupabaseRows("sale_service_items", resolvedSnapshot.saleServiceItems);
+  if (hasTable("cybercafe_sales")) await insertSupabaseRows("cybercafe_sales", resolvedSnapshot.cybercafeSales);
+  if (hasTable("mikhmon_sales")) await insertSupabaseRows("mikhmon_sales", resolvedSnapshot.mikhmonSales);
+  if (hasTable("stock_movements")) await insertSupabaseRows("stock_movements", resolvedSnapshot.stockMovements);
+  if (hasTable("audit_logs")) await insertSupabaseRows("audit_logs", resolvedSnapshot.auditLogs);
 }
 
 async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>) {
