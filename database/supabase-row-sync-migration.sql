@@ -282,3 +282,29 @@ $$;
 
 grant execute on function public.row_sync_claim_device(text, uuid, text) to authenticated;
 grant execute on function public.row_sync_user_directory() to authenticated;
+
+-- Etape 4 : cycle d'inventaire en cours = le plus recemment demarre.
+-- Les numeros internes (id) ne suivent plus l'ordre des cycles quand plusieurs postes en creent.
+create or replace function public.current_inventory_cycle_id()
+returns bigint
+language sql
+stable
+as $$
+  select ic.id from public.inventory_cycles ic order by ic.started_at desc, ic.id desc limit 1;
+$$;
+
+grant execute on function public.current_inventory_cycle_id() to authenticated;
+
+create or replace view public.current_stock_view as
+select
+  p.id as product_id,
+  p.name as product_name,
+  coalesce(sum(case when sm.quantity > 0 then sm.quantity else 0 end), 0) as quantity_in,
+  coalesce(sum(case when sm.quantity < 0 then abs(sm.quantity) else 0 end), 0) as quantity_out,
+  coalesce(sum(sm.quantity), 0) as current_stock,
+  p.alert_threshold as alert_threshold
+from public.products p
+left join public.stock_movements sm
+  on sm.product_id = p.id
+ and sm.cycle_id = coalesce(public.current_inventory_cycle_id(), 1)
+group by p.id, p.name, p.alert_threshold;

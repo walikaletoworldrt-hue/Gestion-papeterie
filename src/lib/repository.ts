@@ -562,11 +562,13 @@ function createIsolatedSupabaseClient() {
   });
 }
 
-async function getCurrentSupabaseInventoryCycleId() {
+async function getCurrentSupabaseInventoryCycle() {
   const client = getSupabaseClient();
+  // Current cycle = most recently started (ids no longer follow the cycle order once several devices sync).
   const cycleResult = await client
     .from("inventory_cycles")
-    .select("id")
+    .select("id, label")
+    .order("started_at", { ascending: false })
     .order("id", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -578,12 +580,16 @@ async function getCurrentSupabaseInventoryCycleId() {
       .insert({
         label: "Cycle 1",
       })
-      .select("id")
+      .select("id, label")
       .single();
     cycle = ensureData(insertResult.data, insertResult.error) as SupabaseInventoryCycleRow;
   }
 
-  return cycle.id;
+  return cycle as SupabaseInventoryCycleRow & { label?: string };
+}
+
+async function getCurrentSupabaseInventoryCycleId() {
+  return (await getCurrentSupabaseInventoryCycle()).id;
 }
 
 function computeMetrics(products: Product[]): DashboardMetrics {
@@ -4817,8 +4823,9 @@ export const repository = {
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
-      const currentCycleId = await getCurrentSupabaseInventoryCycleId();
-      const nextCycleId = currentCycleId + 1;
+      const currentCycle = await getCurrentSupabaseInventoryCycle();
+      // Cycle number from its label ("Cycle 3"), like the PCs: ids differ between devices.
+      const nextCycleId = Number(/(\d+)\s*$/.exec(currentCycle.label ?? "")?.[1] ?? currentCycle.id) + 1;
       await deleteSupabaseRows("sale_items");
       await deleteSupabaseRows("sale_service_items");
       await deleteSupabaseRows("stock_movements");
