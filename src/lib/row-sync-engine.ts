@@ -42,26 +42,28 @@ type EngineOptions = {
 
 export async function runRowSync(client: SupabaseClient, api: DesktopApi, options: EngineOptions = {}): Promise<RowSyncReport> {
   const state = await api.rowSyncGetState();
-  if (!state.deviceCode) {
+  if (!state.deviceCode && !options.pullOnly) {
     throw new Error("Ce poste n'a pas de code (P1, P2...). Le super administrateur doit le definir dans Stock initial avant de synchroniser.");
   }
 
   const clock = await measureClock(client);
 
-  const claim = await client.rpc("row_sync_claim_device", {
-    p_code: state.deviceCode,
-    p_device_id: state.deviceId,
-    p_device_label: state.deviceLabel,
-  });
-  if (claim.error) {
-    throw new Error(claim.error.message);
+  if (state.deviceCode) {
+    const claim = await client.rpc("row_sync_claim_device", {
+      p_code: state.deviceCode,
+      p_device_id: state.deviceId,
+      p_device_label: state.deviceLabel,
+    });
+    if (claim.error) {
+      throw new Error(claim.error.message);
+    }
   }
 
   const pulled = await pullChanges(client, state.cursor, clock);
   const pulledResult = await api.rowSyncApply(pulled);
 
   const report: RowSyncReport = { pulled: pulledResult, pushed: 0, deletionsSent: 0, failures: [] };
-  if (!options.pullOnly) {
+  if (!options.pullOnly && state.deviceCode) {
     await pushChanges(client, api, state.deviceCode, clock.offsetMs, report, options);
   }
 

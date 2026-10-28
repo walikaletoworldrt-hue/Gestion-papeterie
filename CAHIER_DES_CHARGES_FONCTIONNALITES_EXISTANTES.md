@@ -407,6 +407,11 @@ Le systeme gere :
 - la serie de facturation
 - la prochaine reference
 - le passage a une nouvelle serie
+- un code poste par PC (P1, P2... defini par le Super admin dans Stock initial) et la serie W pour le web
+
+Format des references : `Fact-SA26-P1-0001` (PC 1), `Fact-SA26-P2-0001` (PC 2), `Fact-SA26-W-0001` (web).
+Deux postes ne peuvent jamais produire le meme numero, meme hors ligne. Un PC sans code poste ne peut pas vendre.
+Le numero web est attribue par le serveur en une seule operation.
 
 La reinitialisation de la numerotation doit rester reservee au Super admin.
 
@@ -539,46 +544,27 @@ La synchronisation concerne :
 - cycles d'inventaire
 - ventes Cybercafe et imports Mikhmon
 
-Fonctionnalites disponibles :
-- detection du statut en ligne
-- affichage du nombre d'elements en attente
-- bouton `En attente` cliquable
-- choix des rubriques a synchroniser
-- synchronisation rubrique par rubrique
-- detection des conflits
-- import/export de snapshots
+Fonctionnement (depuis la version 1.1.0, synchronisation ligne par ligne) :
+- chaque ligne a un identifiant unique partage par tous les postes et le web
+- `Synchroniser` recupere d'abord les changements du cloud depuis le dernier passage, puis envoie seulement les changements du poste
+- rien n'est jamais remplace en bloc : plusieurs PC et le web peuvent travailler en meme temps, meme hors ligne
+- les suppressions sont transmises a tous les postes
+- un code poste ne peut servir qu'a un seul PC (registre des postes dans Supabase)
+
+Guide de mise en service : `MISE_EN_SERVICE_SYNCHRONISATION.md`.
 
 ### 17.1 Sens des boutons de synchronisation
 
-Les indicateurs ont une vraie fonction :
 - `En ligne` indique la disponibilite cloud
-- `En attente` affiche le volume de donnees locales non poussees
+- `En attente` affiche le nombre de changements du poste pas encore envoyes ; un clic en montre le detail
 - `Synchroniser` lance la synchronisation
 
-Le bouton `En attente` permet maintenant d'ouvrir une selection des blocs a synchroniser, afin d'eviter de tout pousser d'un coup.
+### 17.2 Modifications simultanees
 
-Protection des relations :
-- avant l'envoi des ventes, l'application rapproche les utilisateurs, produits, clients, services et factures entre le poste local et Supabase
-- le rapprochement utilise des identifiants metier stables, notamment le code ou le nom du produit et la reference de facture
-- si une vente locale utilise un produit absent du cloud, ce produit est publie avant ses lignes de vente
-- cette protection evite les erreurs de cle etrangere sur les lignes de vente lors de l'utilisation de plusieurs ordinateurs
-
-### 17.2 Gestion des conflits
-
-Le message :
-`Conflit detecte : le cloud et ce poste ont tous les deux des changements non synchronises`
-signifie que :
-- le poste local a des donnees modifiees non envoyees
-- le cloud contient aussi des modifications plus recentes ou differentes
-- l'application demande une resolution prudente pour eviter l'ecrasement
-
-L'approche actuellement disponible consiste a :
-- identifier la rubrique en attente
-- synchroniser bloc par bloc
-- choisir la bonne source si une resolution est proposee
-
-Limite actuelle :
-- pas encore de fusion intelligente automatique sur tous les cas
+Il n'y a plus de message de conflit. Regles appliquees automatiquement :
+- si un meme element est modifie sur deux postes, la modification la plus recente est gardee (horloge des PC corrigee avec l'heure du serveur)
+- un meme produit, service, tarif cybercafe ou cycle d'inventaire cree separement sur deux postes (meme nom) devient un seul enregistrement
+- deux produits differents avec le meme code : celui du second poste est renomme (exemple `PAP-STY-001-P2`)
 
 ## 18. Sauvegarde et restauration
 
@@ -684,7 +670,8 @@ Les points suivants restent hors perimetre ou a renforcer :
 - envoi direct de rapport par e-mail depuis l'application
 - mecanisme PWA installable depuis le navigateur pour usage hors ligne complet
 - prise en charge des comptes internes qui n'utilisent pas une adresse e-mail reelle pour la recuperation autonome du mot de passe
-- fusion avancee des conflits de synchronisation
+- suppression d'un utilisateur faite sur le web non repercutee sur les PC
+- deux clients crees avec le meme nom sur deux postes ne sont pas fusionnes
 - permissions encore plus fines par action metier
 - module fournisseur autonome
 - gestion avancee des avoirs, remises et fiscalite

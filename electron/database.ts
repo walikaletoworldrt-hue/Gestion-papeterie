@@ -219,103 +219,6 @@ type InventoryCycleRow = {
   started_at: string;
 };
 
-const seedProducts: ProductDraft[] = [
-  {
-    code: "PAP-001",
-    name: "Classeur",
-    category: "Classement",
-    purchasePrice: 4.2,
-    sellingPrice: 6.0,
-    quantity: 49,
-    unit: "piece",
-    alertThreshold: 10,
-    supplier: "Papeterie Kivu",
-  },
-  {
-    code: "PAP-002",
-    name: "Scotch transparent",
-    category: "Fourniture",
-    purchasePrice: 3.2,
-    sellingPrice: 5.0,
-    quantity: 20,
-    unit: "piece",
-    alertThreshold: 8,
-    supplier: "Bureau Express",
-  },
-  {
-    code: "PAP-003",
-    name: "Ram papier couleur",
-    category: "Papier",
-    purchasePrice: 0.08,
-    sellingPrice: 0.1,
-    quantity: 994,
-    unit: "rame",
-    alertThreshold: 100,
-    supplier: "Color Print",
-  },
-];
-
-const seedClients = [
-  { name: "Institut Amani", phone: "+243970000001", address: "Goma", email: "contact@amani.cd" },
-  { name: "Groupe Horizon", phone: "+243970000002", address: "Bukavu", email: "admin@horizon.cd" },
-];
-
-const seedServices: ServiceDraft[] = [
-  { name: "Saisie de documents", category: "Bureautique", unitPrice: 2, description: "Saisie et mise en forme de documents", active: true },
-  { name: "Impression couleur", category: "Impression", unitPrice: 1, description: "Impression couleur par page", active: true },
-  { name: "Scan", category: "Numerisation", unitPrice: 1.5, description: "Numerisation de documents", active: true },
-  { name: "Maintenance informatique", category: "Maintenance", unitPrice: 15, description: "Intervention et maintenance", active: true },
-];
-
-const seedUsers = [
-  {
-    fullName: "Marie Jeanne R.",
-    username: "mjr",
-    email: "mjr@lacouronne",
-    role: "Administrateur",
-    active: 1,
-    createdAt: "2026-05-02T16:41:00",
-    lastLoginAt: "2026-05-08T09:32:00",
-  },
-  {
-    fullName: "Jean R.",
-    username: "jr",
-    email: "jr@lacouronne",
-    role: "Super admin",
-    active: 1,
-    createdAt: "2026-05-02T16:17:00",
-    lastLoginAt: "2026-05-02T16:18:00",
-  },
-  {
-    fullName: "Test Employe",
-    username: "test",
-    email: "test@lacouronne",
-    role: "Employe",
-    active: 1,
-    createdAt: "2026-05-01T19:50:00",
-    lastLoginAt: "2026-05-01T20:00:00",
-  },
-  {
-    fullName: "Roberto M.",
-    username: "roberto",
-    email: "roberto@lacouronne",
-    role: "Super admin",
-    active: 1,
-    createdAt: "2026-04-29T13:42:00",
-    lastLoginAt: "2026-05-16T15:51:00",
-  },
-  {
-    fullName: "Admin Couronne",
-    username: "admin",
-    email: "admin@lacouronne.fr",
-    role: "Super admin",
-    active: 1,
-    createdAt: "2026-04-29T13:42:00",
-    lastLoginAt: "2026-04-29T17:29:00",
-  },
-];
-
-const DEFAULT_PASSWORD = "Walikale123";
 
 // Cloud sync passwords are stored encrypted with the Windows account key (DPAPI via Electron safeStorage).
 const SYNC_SECRET_PREFIX = "enc:v1:";
@@ -612,8 +515,6 @@ export class LocalDatabase {
     this.ensureInventoryCycleSeed();
     this.ensureInvoiceSequenceSettings();
     this.ensureSyncSettings();
-    this.seedIfNeeded();
-    this.ensureMissingUserPasswords();
     this.encryptLegacySyncSecrets();
     this.clearPendingSessionAuditLogs();
     installRowSyncSupport(this.db);
@@ -803,79 +704,9 @@ export class LocalDatabase {
     `);
   }
 
-  private seedIfNeeded() {
-    const productCount = this.db.prepare("SELECT COUNT(*) AS count FROM products").get() as { count: number };
-    const now = new Date().toISOString();
-    const serviceCount = this.db.prepare("SELECT COUNT(*) AS count FROM services").get() as { count: number };
-    const previousSessionUserId = this.sessionUserId;
-    let seedUserId = previousSessionUserId;
-
-    if (productCount.count === 0) {
-      const insertUser = this.db.prepare(`
-        INSERT INTO users (full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-
-      seedUsers.forEach((user) => {
-        insertUser.run(
-          user.fullName,
-          user.username,
-          user.email,
-          this.hashPassword(DEFAULT_PASSWORD),
-          this.encryptSyncSecret(DEFAULT_PASSWORD),
-          user.role,
-          user.active,
-          user.createdAt,
-          user.lastLoginAt
-        );
-      });
-
-      const insertClient = this.db.prepare(`
-        INSERT INTO clients (name, phone, address, email, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `);
-
-      seedClients.forEach((client) => {
-        insertClient.run(client.name, client.phone, client.address, client.email, now);
-      });
-
-      const firstSeedUser = this.db.prepare("SELECT id FROM users ORDER BY id ASC LIMIT 1").get() as
-        | { id: number }
-        | undefined;
-      seedUserId = firstSeedUser?.id ?? null;
-      this.sessionUserId = seedUserId;
-      seedProducts.forEach((product) => this.saveProduct(product));
-    } else if (serviceCount.count === 0 && this.sessionUserId == null) {
-      const firstExistingUser = this.db.prepare("SELECT id FROM users ORDER BY id ASC LIMIT 1").get() as
-        | { id: number }
-        | undefined;
-      seedUserId = firstExistingUser?.id ?? null;
-    }
-
-    if (serviceCount.count === 0) {
-      this.sessionUserId = seedUserId;
-      seedServices.forEach((service) => this.saveService(service));
-    }
-
-    this.sessionUserId = previousSessionUserId;
-  }
-
-  private ensureMissingUserPasswords() {
-    const usersWithoutPassword = this.db
-      .prepare("SELECT id FROM users WHERE password_hash IS NULL OR TRIM(password_hash) = ''")
-      .all() as Array<{ id: number }>;
-
-    if (usersWithoutPassword.length === 0) {
-      return;
-    }
-
-    const passwordHash = this.hashPassword(DEFAULT_PASSWORD);
-    const updateUserPassword = this.db.prepare("UPDATE users SET password_hash = ? WHERE id = ?");
-
-    usersWithoutPassword.forEach((user) => {
-      updateUserPassword.run(passwordHash, user.id);
-    });
-  }
+  // No demo data and no default password: a new installation starts empty. The first login uses a
+  // Supabase account (internet needed once); the account is then kept on the PC for offline logins,
+  // and the first sync brings the shop's data. Users without a local password log in through the cloud.
 
   private ensureInvoiceSequenceSettings() {
     const now = new Date().toISOString();

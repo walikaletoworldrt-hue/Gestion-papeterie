@@ -6612,38 +6612,22 @@ export default function App() {
       ) : null}
 
       {syncSelectionState ? (
-        <Modal title="Choisir les elements a synchroniser" onClose={() => !syncBusy && setSyncSelectionState(null)}>
+        <Modal title="Changements en attente" onClose={() => !syncBusy && setSyncSelectionState(null)}>
           <div className="confirm-stack">
             <p className="confirm-text">
-              Choisissez les rubriques locales que vous voulez envoyer maintenant vers Supabase. Les elements non coches
-              resteront en attente sur ce poste.
+              Changements faits sur ce poste et pas encore envoyes. La synchronisation recupere d'abord les changements
+              des autres postes et du web, puis envoie ceux-ci, dans le bon ordre (un produit avant les ventes qui le
+              contiennent).
             </p>
-            <div className="sync-selection-toolbar">
-              <button className="ghost-btn" type="button" disabled={syncBusy} onClick={handleSelectAllSyncBuckets}>
-                Tout cocher
-              </button>
-              <button className="ghost-btn muted" type="button" disabled={syncBusy} onClick={handleClearSyncBuckets}>
-                Tout decocher
-              </button>
-            </div>
             <div className="sync-selection-list">
-              {syncSelectionState.buckets.map((bucket) => {
-                const checked = syncSelectionState.selectedKeys.includes(bucket.key);
-                return (
-                  <label className={`sync-selection-row ${checked ? "selected" : ""}`} key={bucket.key}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={syncBusy}
-                      onChange={() => handleToggleSyncBucket(bucket.key)}
-                    />
-                    <span className="sync-selection-copy">
-                      <strong>{bucket.label}</strong>
-                      <small>{bucket.count} changement(s) en attente</small>
-                    </span>
-                  </label>
-                );
-              })}
+              {syncSelectionState.buckets.map((bucket) => (
+                <div className="sync-selection-row" key={bucket.key}>
+                  <span className="sync-selection-copy">
+                    <strong>{bucket.label}</strong>
+                    <small>{bucket.count} changement(s) en attente</small>
+                  </span>
+                </div>
+              ))}
             </div>
             <div className="modal-actions">
               <button
@@ -6654,8 +6638,8 @@ export default function App() {
               >
                 Fermer
               </button>
-              <button className="primary-btn" type="button" disabled={syncBusy} onClick={() => void handleSyncSelectedBuckets()}>
-                {syncBusy ? "Synchronisation..." : "Synchroniser la selection"}
+              <button className="primary-btn" type="button" disabled={syncBusy} onClick={() => void handleSyncNowWithSelection()}>
+                {syncBusy ? "Synchronisation..." : "Synchroniser maintenant"}
               </button>
             </div>
           </div>

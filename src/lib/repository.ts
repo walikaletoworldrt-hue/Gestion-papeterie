@@ -1325,26 +1325,6 @@ async function deleteSupabaseRows(table: string) {
   ensureData(result.data ?? [], result.error);
 }
 
-async function insertSupabaseRows(table: string, rows: Array<Record<string, unknown>>, chunkSize = 200) {
-  if (rows.length === 0) {
-    return;
-  }
-
-  const client = await ensureDesktopSupabaseSession();
-  const canUpsertById = rows.every((row) => typeof row.id === "number" || typeof row.id === "string");
-
-  for (let index = 0; index < rows.length; index += chunkSize) {
-    const chunk = rows.slice(index, index + chunkSize);
-    const result = canUpsertById
-      ? await client.from(table).upsert(chunk, {
-          onConflict: "id",
-          ignoreDuplicates: false,
-        })
-      : await client.from(table).insert(chunk);
-    ensureData(result.data ?? [], result.error);
-  }
-}
-
 async function getCloudLastChangeAt() {
   const client = await ensureDesktopSupabaseSession();
   const result = await client
@@ -1355,12 +1335,6 @@ async function getCloudLastChangeAt() {
     .maybeSingle();
   const row = ensureOptionalData(result.data, result.error) as { created_at: string } | null;
   return row?.created_at ?? null;
-}
-
-async function syncSupabaseIdentitySequences() {
-  const client = await ensureDesktopSupabaseSession();
-  const result = await client.rpc("sync_identity_sequences");
-  ensureOptionalData(result.data, result.error);
 }
 
 function extractMissingSupabaseRelation(message: string) {
@@ -1486,10 +1460,6 @@ function normalizeSyncBucketKey(key: string) {
   return syncTableToBucketKey.get(key) ?? key;
 }
 
-function getTablesForSyncBucketKeys(keys: string[]) {
-  return [...new Set(keys.flatMap((key) => syncBucketDefinitions[key]?.tables ?? [key]))];
-}
-
 function groupSyncBuckets(
   buckets: Array<{ key: string; label: string; count: number }>
 ): SyncConflictBucket[] {
@@ -1513,20 +1483,6 @@ function groupSyncBuckets(
   return [...grouped.values()].sort(
     (left, right) => right.count - left.count || left.label.localeCompare(right.label, "fr", { sensitivity: "base" })
   );
-}
-
-function sumSelectedSyncBuckets(buckets: SyncConflictBucket[], selectedBucketKeys: string[]) {
-  const selected = new Set(selectedBucketKeys);
-  return buckets.reduce((total, bucket) => (selected.has(bucket.key) ? total + bucket.count : total), 0);
-}
-
-function getSyncBucketKeysWithChanges(buckets: SyncConflictBucket[]) {
-  return buckets.filter((bucket) => bucket.count > 0).map((bucket) => bucket.key);
-}
-
-function hasSyncBucketOverlap(leftKeys: string[], rightKeys: string[]) {
-  const rightSet = new Set(rightKeys);
-  return leftKeys.some((key) => rightSet.has(key));
 }
 
 // Logins and logouts stay in the history but change no data, so they never count as sync changes.
@@ -1679,454 +1635,6 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
     localBuckets: groupedLocalBuckets,
     cloudBuckets: cloudSummary.buckets,
   };
-}
-
-async function getCloudSyncOverview(since: string | null) {
-  const cloudAuditLogsResult = await getSupabaseClient()
-    .from("audit_logs")
-    .select("target_table, details, created_at")
-    .order("created_at", { ascending: false })
-    .limit(500);
-
-  const cloudAuditLogs = ensureData(cloudAuditLogsResult.data, cloudAuditLogsResult.error) as Array<{
-    target_table?: string | null;
-    details?: string | null;
-    created_at?: string | null;
-  }>;
-
-  return buildSyncBucketsFromAuditLogs(cloudAuditLogs, since);
-}
-
-function createEmptySyncSnapshot(): SyncSnapshot {
-  return {
-    users: [],
-    products: [],
-    services: [],
-    cybercafeTariffs: [],
-    clients: [],
-    expenses: [],
-    initialStocks: [],
-    replenishments: [],
-    sales: [],
-    saleItems: [],
-    saleServiceItems: [],
-    cybercafeSales: [],
-    mikhmonSales: [],
-    stockMovements: [],
-    auditLogs: [],
-    invoiceSequences: [],
-    inventoryCycles: [],
-  };
-}
-
-function filterSyncSnapshot(snapshot: SyncSnapshot, selectedTables: string[] | null): SyncSnapshot {
-  if (!selectedTables || selectedTables.length === 0) {
-    return snapshot;
-  }
-
-  const included = new Set(selectedTables);
-  const filtered = createEmptySyncSnapshot();
-
-  if (included.has("users")) filtered.users = snapshot.users ?? [];
-  if (included.has("products")) filtered.products = snapshot.products ?? [];
-  if (included.has("services")) filtered.services = snapshot.services ?? [];
-  if (included.has("cybercafe_tariffs")) filtered.cybercafeTariffs = snapshot.cybercafeTariffs ?? [];
-  if (included.has("clients")) filtered.clients = snapshot.clients ?? [];
-  if (included.has("expenses")) filtered.expenses = snapshot.expenses ?? [];
-  if (included.has("initial_stocks")) filtered.initialStocks = snapshot.initialStocks ?? [];
-  if (included.has("replenishments")) filtered.replenishments = snapshot.replenishments ?? [];
-  if (included.has("sales")) filtered.sales = snapshot.sales ?? [];
-  if (included.has("sale_items")) filtered.saleItems = snapshot.saleItems ?? [];
-  if (included.has("sale_service_items")) filtered.saleServiceItems = snapshot.saleServiceItems ?? [];
-  if (included.has("cybercafe_sales")) filtered.cybercafeSales = snapshot.cybercafeSales ?? [];
-  if (included.has("mikhmon_sales")) filtered.mikhmonSales = snapshot.mikhmonSales ?? [];
-  if (included.has("stock_movements")) filtered.stockMovements = snapshot.stockMovements ?? [];
-  if (included.has("invoice_sequences")) filtered.invoiceSequences = snapshot.invoiceSequences ?? [];
-  if (included.has("inventory_cycles")) filtered.inventoryCycles = snapshot.inventoryCycles ?? [];
-
-  filtered.auditLogs = (snapshot.auditLogs ?? []).filter((row) => {
-    const targetTable = String(row.target_table ?? "");
-    return included.has(targetTable);
-  });
-
-  return filtered;
-}
-
-function mergeAuditLogsForSync(
-  cloudRows: Array<Record<string, unknown>>,
-  localRows: Array<Record<string, unknown>>
-): Array<Record<string, unknown>> {
-  const merged = new Map<string, Record<string, unknown>>();
-
-  [...cloudRows, ...localRows].forEach((row) => {
-    const key = [
-      String(row.created_at ?? ""),
-      String(row.action ?? ""),
-      String(row.target_table ?? ""),
-      String(row.target_id ?? ""),
-      String(row.details ?? ""),
-      String(row.actor_username ?? ""),
-      String(row.source_device ?? ""),
-      String(row.source_platform ?? ""),
-    ].join("|");
-
-    merged.set(key, {
-      user_id: row.user_id ?? null,
-      action: row.action ?? null,
-      target_table: row.target_table ?? null,
-      target_id: row.target_id ?? null,
-      details: row.details ?? null,
-      actor_name: row.actor_name ?? null,
-      actor_username: row.actor_username ?? null,
-      source_device: row.source_device ?? null,
-      source_platform: row.source_platform ?? null,
-      created_at: row.created_at ?? new Date().toISOString(),
-    });
-  });
-
-  return [...merged.values()].sort((left, right) =>
-    String(left.created_at ?? "").localeCompare(String(right.created_at ?? ""))
-  );
-}
-
-function mergeSnapshotsForCloudSync(
-  cloudSnapshot: SyncSnapshot,
-  localSnapshot: SyncSnapshot,
-  localTablesToApply: string[]
-): SyncSnapshot {
-  const merged: SyncSnapshot = {
-    users: cloudSnapshot.users ?? [],
-    products: cloudSnapshot.products ?? [],
-    services: cloudSnapshot.services ?? [],
-    cybercafeTariffs: cloudSnapshot.cybercafeTariffs ?? [],
-    clients: cloudSnapshot.clients ?? [],
-    expenses: cloudSnapshot.expenses ?? [],
-    initialStocks: cloudSnapshot.initialStocks ?? [],
-    replenishments: cloudSnapshot.replenishments ?? [],
-    sales: cloudSnapshot.sales ?? [],
-    saleItems: cloudSnapshot.saleItems ?? [],
-    saleServiceItems: cloudSnapshot.saleServiceItems ?? [],
-    cybercafeSales: cloudSnapshot.cybercafeSales ?? [],
-    mikhmonSales: cloudSnapshot.mikhmonSales ?? [],
-    stockMovements: cloudSnapshot.stockMovements ?? [],
-    auditLogs: cloudSnapshot.auditLogs ?? [],
-    invoiceSequences: cloudSnapshot.invoiceSequences ?? [],
-    inventoryCycles: cloudSnapshot.inventoryCycles ?? [],
-  };
-
-  const included = new Set(localTablesToApply);
-
-  if (included.has("users")) merged.users = localSnapshot.users ?? [];
-  if (included.has("products")) merged.products = localSnapshot.products ?? [];
-  if (included.has("services")) merged.services = localSnapshot.services ?? [];
-  if (included.has("cybercafe_tariffs")) merged.cybercafeTariffs = localSnapshot.cybercafeTariffs ?? [];
-  if (included.has("clients")) merged.clients = localSnapshot.clients ?? [];
-  if (included.has("expenses")) merged.expenses = localSnapshot.expenses ?? [];
-  if (included.has("initial_stocks")) merged.initialStocks = localSnapshot.initialStocks ?? [];
-  if (included.has("replenishments")) merged.replenishments = localSnapshot.replenishments ?? [];
-  if (included.has("sales")) merged.sales = localSnapshot.sales ?? [];
-  if (included.has("sale_items")) merged.saleItems = localSnapshot.saleItems ?? [];
-  if (included.has("sale_service_items")) merged.saleServiceItems = localSnapshot.saleServiceItems ?? [];
-  if (included.has("cybercafe_sales")) merged.cybercafeSales = localSnapshot.cybercafeSales ?? [];
-  if (included.has("mikhmon_sales")) merged.mikhmonSales = localSnapshot.mikhmonSales ?? [];
-  if (included.has("stock_movements")) merged.stockMovements = localSnapshot.stockMovements ?? [];
-  if (included.has("invoice_sequences")) merged.invoiceSequences = localSnapshot.invoiceSequences ?? [];
-  if (included.has("inventory_cycles")) merged.inventoryCycles = localSnapshot.inventoryCycles ?? [];
-
-  const localAuditRows = (localSnapshot.auditLogs ?? []).filter((row) => included.has(String(row.target_table ?? "")));
-  merged.auditLogs = mergeAuditLogsForSync(cloudSnapshot.auditLogs ?? [], localAuditRows);
-
-  return merged;
-}
-
-type SyncUserIdentityRow = {
-  id: number;
-  auth_user_id?: string | null;
-  username?: string | null;
-  email?: string | null;
-};
-
-async function getCloudSyncUserIdentities(): Promise<SyncUserIdentityRow[]> {
-  const result = await getSupabaseClient()
-    .from("users")
-    .select("id, auth_user_id, username, email");
-  return ensureData(result.data ?? [], result.error) as SyncUserIdentityRow[];
-}
-
-function normalizeSyncIdentity(value: unknown) {
-  return String(value ?? "").trim().toLocaleLowerCase("fr-FR");
-}
-
-function buildSyncEntityIdMap(
-  localRows: Array<Record<string, unknown>> | undefined,
-  targetRows: Array<Record<string, unknown>> | undefined,
-  getKey: (row: Record<string, unknown>) => string
-) {
-  const targetByKey = new Map<string, number>();
-  (targetRows ?? []).forEach((row) => {
-    const id = Number(row.id);
-    const key = getKey(row);
-    if (Number.isFinite(id) && key) targetByKey.set(key, id);
-  });
-
-  const localToTargetId = new Map<number, number>();
-  (localRows ?? []).forEach((row) => {
-    const localId = Number(row.id);
-    const targetId = targetByKey.get(getKey(row));
-    if (Number.isFinite(localId) && targetId) localToTargetId.set(localId, targetId);
-  });
-
-  return localToTargetId;
-}
-
-function addMissingSyncMappings(
-  primary: Map<number, number>,
-  fallback: Map<number, number>
-) {
-  fallback.forEach((targetId, localId) => {
-    if (!primary.has(localId)) primary.set(localId, targetId);
-  });
-  return primary;
-}
-
-function isCloudProductMatch(
-  localProduct: Record<string, unknown>,
-  cloudProduct: Record<string, unknown>
-) {
-  const localCode = normalizeSyncIdentity(localProduct.code);
-  const cloudCode = normalizeSyncIdentity(cloudProduct.code);
-  if (localCode && localCode === cloudCode) return true;
-
-  const localName = normalizeSyncIdentity(localProduct.name);
-  const cloudName = normalizeSyncIdentity(cloudProduct.name);
-  if (!localName || localName !== cloudName) return false;
-
-  const localCategory = normalizeSyncIdentity(localProduct.category);
-  const cloudCategory = normalizeSyncIdentity(cloudProduct.category);
-  return !localCategory || !cloudCategory || localCategory === cloudCategory;
-}
-
-async function ensureProductsReferencedBySales(
-  snapshot: SyncSnapshot,
-  cloudSnapshot: SyncSnapshot
-) {
-  const referencedProductIds = new Set(
-    [...(snapshot.saleItems ?? []), ...(snapshot.stockMovements ?? [])]
-      .map((row) => Number(row.product_id))
-      .filter((id) => Number.isFinite(id))
-  );
-  if (referencedProductIds.size === 0) return cloudSnapshot;
-
-  const localProducts = (snapshot.products ?? []).filter((row) => referencedProductIds.has(Number(row.id)));
-  const missingProducts = localProducts.filter(
-    (localProduct) => !(cloudSnapshot.products ?? []).some((cloudProduct) => isCloudProductMatch(localProduct, cloudProduct))
-  );
-  if (missingProducts.length === 0) return cloudSnapshot;
-
-  // A local sale cannot be valid in Supabase without its parent product. Publish only
-  // the missing parent records, then reload their cloud IDs before inserting the sale.
-  const productPayload = missingProducts.map(({ id: _id, ...product }) => product);
-  const result = await (await ensureDesktopSupabaseSession())
-    .from("products")
-    .insert(productPayload);
-  ensureData(result.data ?? [], result.error);
-  return getCloudSnapshot();
-}
-
-function remapSnapshotReferences(
-  snapshot: SyncSnapshot,
-  localReferenceSnapshot: SyncSnapshot,
-  cloudSnapshot: SyncSnapshot,
-  included: Set<string> | null,
-  cloudUsers: SyncUserIdentityRow[]
-): SyncSnapshot {
-  const hasTable = (table: string) => !included || included.has(table);
-  const byAuthUserId = new Map(
-    cloudUsers.filter((user) => user.auth_user_id).map((user) => [String(user.auth_user_id), user.id])
-  );
-  const byEmail = new Map(
-    cloudUsers.filter((user) => user.email).map((user) => [String(user.email).trim().toLowerCase(), user.id])
-  );
-  const byUsername = new Map(
-    cloudUsers.filter((user) => user.username).map((user) => [String(user.username).trim().toLowerCase(), user.id])
-  );
-  const localToCloudUserId = new Map<number, number>();
-
-  (localReferenceSnapshot.users ?? []).forEach((rawUser) => {
-    const localId = Number(rawUser.id);
-    if (!Number.isFinite(localId)) return;
-    const authUserId = rawUser.auth_user_id ? String(rawUser.auth_user_id) : "";
-    const email = rawUser.email ? String(rawUser.email).trim().toLowerCase() : "";
-    const username = rawUser.username ? String(rawUser.username).trim().toLowerCase() : "";
-    const cloudId = (authUserId ? byAuthUserId.get(authUserId) : undefined)
-      ?? (email ? byEmail.get(email) : undefined)
-      ?? (username ? byUsername.get(username) : undefined);
-    if (cloudId) localToCloudUserId.set(localId, cloudId);
-  });
-
-  // When a parent table is included it is recreated with this device's IDs. Otherwise,
-  // resolve the local ID against the existing cloud record using a stable business key.
-  const targetProducts = hasTable("products") ? localReferenceSnapshot.products : cloudSnapshot.products;
-  const targetServices = hasTable("services") ? localReferenceSnapshot.services : cloudSnapshot.services;
-  const targetClients = hasTable("clients") ? localReferenceSnapshot.clients : cloudSnapshot.clients;
-  const targetTariffs = hasTable("cybercafe_tariffs")
-    ? localReferenceSnapshot.cybercafeTariffs
-    : cloudSnapshot.cybercafeTariffs;
-  const targetCycles = hasTable("inventory_cycles")
-    ? localReferenceSnapshot.inventoryCycles
-    : cloudSnapshot.inventoryCycles;
-  const targetSales = hasTable("sales") ? localReferenceSnapshot.sales : cloudSnapshot.sales;
-
-  const productIds = buildSyncEntityIdMap(
-    localReferenceSnapshot.products,
-    targetProducts,
-    (row) => normalizeSyncIdentity(row.code)
-  );
-  addMissingSyncMappings(productIds, buildSyncEntityIdMap(
-    localReferenceSnapshot.products,
-    targetProducts,
-    (row) => `${normalizeSyncIdentity(row.name)}|${normalizeSyncIdentity(row.category)}`
-  ));
-  addMissingSyncMappings(productIds, buildSyncEntityIdMap(
-    localReferenceSnapshot.products,
-    targetProducts,
-    (row) => normalizeSyncIdentity(row.name)
-  ));
-  const serviceIds = buildSyncEntityIdMap(
-    localReferenceSnapshot.services,
-    targetServices,
-    (row) => `${normalizeSyncIdentity(row.name)}|${normalizeSyncIdentity(row.category)}`
-  );
-  const clientIds = buildSyncEntityIdMap(
-    localReferenceSnapshot.clients,
-    targetClients,
-    (row) => {
-      const email = normalizeSyncIdentity(row.email);
-      if (email) return `email:${email}`;
-      const phone = normalizeSyncIdentity(row.phone);
-      const name = normalizeSyncIdentity(row.name);
-      return phone ? `phone:${phone}|${name}` : `name:${name}`;
-    }
-  );
-  const tariffIds = buildSyncEntityIdMap(
-    localReferenceSnapshot.cybercafeTariffs,
-    targetTariffs,
-    (row) => normalizeSyncIdentity(row.name)
-  );
-  const cycleIds = buildSyncEntityIdMap(
-    localReferenceSnapshot.inventoryCycles,
-    targetCycles,
-    (row) => `${normalizeSyncIdentity(row.label)}|${String(row.started_at ?? "")}`
-  );
-  const saleIds = buildSyncEntityIdMap(
-    localReferenceSnapshot.sales,
-    targetSales,
-    (row) => normalizeSyncIdentity(row.reference)
-  );
-
-  const remapRows = (
-    rows: Array<Record<string, unknown>> | undefined,
-    references: Record<string, Map<number, number>>
-  ) => (rows ?? []).map((row) => {
-    const mapped = { ...row };
-    Object.entries(references).forEach(([column, ids]) => {
-      if (mapped[column] === null || mapped[column] === undefined) return;
-      const targetId = ids.get(Number(mapped[column]));
-      if (targetId) mapped[column] = targetId;
-    });
-    return mapped;
-  });
-
-  return {
-    ...snapshot,
-    expenses: remapRows(snapshot.expenses, { user_id: localToCloudUserId }),
-    initialStocks: remapRows(snapshot.initialStocks, {
-      product_id: productIds,
-      cycle_id: cycleIds,
-      user_id: localToCloudUserId,
-    }),
-    replenishments: remapRows(snapshot.replenishments, {
-      product_id: productIds,
-      cycle_id: cycleIds,
-      user_id: localToCloudUserId,
-    }),
-    sales: remapRows(snapshot.sales, {
-      client_id: clientIds,
-      cycle_id: cycleIds,
-      user_id: localToCloudUserId,
-    }),
-    saleItems: remapRows(snapshot.saleItems, { sale_id: saleIds, product_id: productIds }),
-    saleServiceItems: remapRows(snapshot.saleServiceItems, { sale_id: saleIds, service_id: serviceIds }),
-    cybercafeSales: remapRows(snapshot.cybercafeSales, { tariff_id: tariffIds, user_id: localToCloudUserId }),
-    mikhmonSales: remapRows(snapshot.mikhmonSales, { user_id: localToCloudUserId }),
-    stockMovements: remapRows(snapshot.stockMovements, {
-      product_id: productIds,
-      cycle_id: cycleIds,
-      user_id: localToCloudUserId,
-    }),
-    auditLogs: remapRows(snapshot.auditLogs, { user_id: localToCloudUserId }),
-    inventoryCycles: remapRows(snapshot.inventoryCycles, { user_id: localToCloudUserId }),
-  };
-}
-
-async function replaceSupabaseSyncTables(
-  syncSnapshot: SyncSnapshot,
-  selectedTables: string[] | null,
-  canSyncUsers: boolean,
-  localReferenceSnapshot: SyncSnapshot = syncSnapshot
-) {
-  const included = selectedTables ? new Set(selectedTables) : null;
-  const hasTable = (table: string) => !included || included.has(table);
-  // Keep the pre-replacement cloud IDs. They are required when this device sends
-  // sales while products and clients were created or received on another device.
-  let cloudSnapshot = await getCloudSnapshot();
-  cloudSnapshot = await ensureProductsReferencedBySales(localReferenceSnapshot, cloudSnapshot);
-
-  if (hasTable("sale_items")) await deleteSupabaseRows("sale_items");
-  if (hasTable("sale_service_items")) await deleteSupabaseRows("sale_service_items");
-  if (hasTable("cybercafe_sales")) await deleteSupabaseRows("cybercafe_sales");
-  if (hasTable("mikhmon_sales")) await deleteSupabaseRows("mikhmon_sales");
-  if (hasTable("stock_movements")) await deleteSupabaseRows("stock_movements");
-  if (hasTable("sales")) await deleteSupabaseRows("sales");
-  if (hasTable("replenishments")) await deleteSupabaseRows("replenishments");
-  if (hasTable("initial_stocks")) await deleteSupabaseRows("initial_stocks");
-  if (hasTable("audit_logs")) await deleteSupabaseRows("audit_logs");
-  if (hasTable("expenses")) await deleteSupabaseRows("expenses");
-  if (hasTable("services")) await deleteSupabaseRows("services");
-  if (hasTable("cybercafe_tariffs")) await deleteSupabaseRows("cybercafe_tariffs");
-  if (hasTable("clients")) await deleteSupabaseRows("clients");
-  if (hasTable("products")) await deleteSupabaseRows("products");
-  if (hasTable("inventory_cycles")) await deleteSupabaseRows("inventory_cycles");
-  if (hasTable("invoice_sequences")) await deleteSupabaseRows("invoice_sequences");
-
-  if (canSyncUsers && hasTable("users")) {
-    await syncUsersToSupabase(syncSnapshot.users ?? []);
-  }
-
-  const resolvedSnapshot = remapSnapshotReferences(
-    syncSnapshot,
-    localReferenceSnapshot,
-    cloudSnapshot,
-    included,
-    await getCloudSyncUserIdentities()
-  );
-
-  if (hasTable("products")) await insertSupabaseRows("products", resolvedSnapshot.products);
-  if (hasTable("services")) await insertSupabaseRows("services", resolvedSnapshot.services);
-  if (hasTable("cybercafe_tariffs")) await insertSupabaseRows("cybercafe_tariffs", resolvedSnapshot.cybercafeTariffs);
-  if (hasTable("clients")) await insertSupabaseRows("clients", resolvedSnapshot.clients);
-  if (hasTable("expenses")) await insertSupabaseRows("expenses", resolvedSnapshot.expenses ?? []);
-  if (hasTable("inventory_cycles")) await insertSupabaseRows("inventory_cycles", resolvedSnapshot.inventoryCycles);
-  if (hasTable("invoice_sequences")) await insertSupabaseRows("invoice_sequences", resolvedSnapshot.invoiceSequences);
-  if (hasTable("initial_stocks")) await insertSupabaseRows("initial_stocks", resolvedSnapshot.initialStocks);
-  if (hasTable("replenishments")) await insertSupabaseRows("replenishments", resolvedSnapshot.replenishments);
-  if (hasTable("sales")) await insertSupabaseRows("sales", resolvedSnapshot.sales);
-  if (hasTable("sale_items")) await insertSupabaseRows("sale_items", resolvedSnapshot.saleItems);
-  if (hasTable("sale_service_items")) await insertSupabaseRows("sale_service_items", resolvedSnapshot.saleServiceItems);
-  if (hasTable("cybercafe_sales")) await insertSupabaseRows("cybercafe_sales", resolvedSnapshot.cybercafeSales);
-  if (hasTable("mikhmon_sales")) await insertSupabaseRows("mikhmon_sales", resolvedSnapshot.mikhmonSales);
-  if (hasTable("stock_movements")) await insertSupabaseRows("stock_movements", resolvedSnapshot.stockMovements);
-  if (hasTable("audit_logs")) await insertSupabaseRows("audit_logs", resolvedSnapshot.auditLogs);
 }
 
 async function syncUsersToSupabase(snapshotUsers: Array<Record<string, unknown>>) {
@@ -2580,10 +2088,12 @@ async function runDesktopRowSync(options: { pullOnly: boolean }): Promise<SyncSt
   }
 
   const desktopApi = window.desktopApi;
+  // New PC without a device code yet: it can already receive the shop's data, but not send.
+  const { deviceCode } = await desktopApi.rowSyncGetState();
   try {
     const client = await ensureDesktopSupabaseSession();
     const report = await runRowSync(client, desktopApi, {
-      pullOnly: options.pullOnly,
+      pullOnly: options.pullOnly || !deviceCode,
       pushUsers: async (usernames) => {
         // Users go through the login-account flow (cloud account creation), not a plain upsert.
         const snapshot = (await desktopApi.exportSyncSnapshot()) as SyncSnapshot;
@@ -2599,6 +2109,12 @@ async function runDesktopRowSync(options: { pullOnly: boolean }): Promise<SyncSt
     }
   } catch (error) {
     throw normalizeSupabaseSyncError(error);
+  }
+
+  if (!deviceCode && !options.pullOnly) {
+    throw new Error(
+      "Les donnees du cloud ont ete recuperees. Pour envoyer les changements de ce PC, le super administrateur doit d'abord definir son code poste (P1, P2...) dans Stock initial."
+    );
   }
 
   return repository.getSyncStatus();
