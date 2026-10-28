@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { hasSupabaseConfig, supabase } from "./supabase";
+import { runRowSync } from "./row-sync-engine";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -2559,6 +2560,44 @@ async function ensureSuperAdminAccess(message: string) {
   }
 }
 
+async function runDesktopRowSync(options: { pullOnly: boolean }): Promise<SyncStatus> {
+  if (!window.desktopApi) {
+    throw new Error("La synchronisation locale est reservee a l'application desktop.");
+  }
+
+  if (!supabase) {
+    throw new Error("Supabase n'est pas configure sur cette application.");
+  }
+
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    throw new Error("Aucune connexion internet disponible pour la synchronisation.");
+  }
+
+  const desktopApi = window.desktopApi;
+  try {
+    const client = await ensureDesktopSupabaseSession();
+    const report = await runRowSync(client, desktopApi, {
+      pullOnly: options.pullOnly,
+      pushUsers: async (usernames) => {
+        // Users go through the login-account flow (cloud account creation), not a plain upsert.
+        const snapshot = (await desktopApi.exportSyncSnapshot()) as SyncSnapshot;
+        const wanted = new Set(usernames.map((username) => username.toLowerCase()));
+        await syncUsersToSupabase((snapshot.users ?? []).filter((user) => wanted.has(String(user.username ?? "").toLowerCase())));
+      },
+    });
+
+    if (report.failures.length > 0) {
+      const shown = report.failures.slice(0, 3).join(" | ");
+      const more = report.failures.length > 3 ? ` (+${report.failures.length - 3} autre(s))` : "";
+      throw new Error(`Synchronisation partielle : ${report.pushed} element(s) envoye(s), mais certains restent en attente. ${shown}${more}`);
+    }
+  } catch (error) {
+    throw normalizeSupabaseSyncError(error);
+  }
+
+  return repository.getSyncStatus();
+}
+
 export const repository = {
   isDesktop: Boolean(window.desktopApi),
   hasSupabaseConfig,
@@ -2622,142 +2661,17 @@ export const repository = {
     }
   },
 
-  async syncDesktopToCloud(forcePush = false, selectedBucketKeys?: string[]): Promise<SyncStatus> {
-    try {
-      if (!window.desktopApi) {
-        throw new Error("La synchronisation locale est reservee a l'application desktop.");
-      }
-
-      if (!supabase) {
-        throw new Error("Supabase n'est pas configure sur cette application.");
-      }
-
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        throw new Error("Aucune connexion internet disponible pour la synchronisation.");
-      }
-
-      await assertSupabaseSyncSchema();
-      const syncCredentials = (await window.desktopApi.getCurrentSyncCredentials()) as DesktopSyncCredentials;
-      const canSyncUsers = syncCredentials.role === "Super admin";
-      const localStatus = await window.desktopApi.getSyncStatus();
-      const localOverview = groupSyncBuckets((await window.desktopApi.getPendingSyncOverview()).buckets);
-      const localBucketKeys = selectedBucketKeys && selectedBucketKeys.length > 0 ? selectedBucketKeys : getSyncBucketKeysWithChanges(localOverview);
-      const selectedTables =
-        selectedBucketKeys && selectedBucketKeys.length > 0 ? getTablesForSyncBucketKeys(selectedBucketKeys) : null;
-      const cloudOverview = await getCloudSyncOverview(localStatus.lastSyncedAt);
-      const cloudBucketKeys = getSyncBucketKeysWithChanges(cloudOverview.buckets);
-      // Only real data changes count (logins/logouts are ignored by the overview).
-      const cloudLastChangeAt = cloudOverview.latestChangedAt;
-      const cloudHasChanges = Boolean(
-        selectedBucketKeys && selectedBucketKeys.length > 0
-          ? sumSelectedSyncBuckets(cloudOverview.buckets, selectedBucketKeys) > 0
-          : cloudLastChangeAt &&
-            (!localStatus.lastSyncedAt || new Date(cloudLastChangeAt).getTime() > new Date(localStatus.lastSyncedAt).getTime())
-      );
-      const localPendingChanges = selectedBucketKeys && selectedBucketKeys.length > 0
-        ? sumSelectedSyncBuckets(localOverview, selectedBucketKeys)
-        : localStatus.pendingChanges;
-      const hasOverlappingChanges = hasSyncBucketOverlap(localBucketKeys, cloudBucketKeys);
-
-      if (!forcePush && localPendingChanges > 0 && cloudHasChanges && hasOverlappingChanges) {
-        throw new Error("Conflit detecte : le cloud et ce poste ont tous les deux des changements non synchronises.");
-      }
-
-      if (!forcePush && localPendingChanges === 0 && cloudHasChanges) {
-        const cloudSnapshot = await getCloudSnapshot();
-        await window.desktopApi.importSyncSnapshot(cloudSnapshot);
-        await window.desktopApi.markSyncComplete(cloudLastChangeAt);
-        return this.getSyncStatus();
-      }
-
-      const snapshot = await window.desktopApi.exportSyncSnapshot();
-      const syncSnapshot = filterSyncSnapshot(snapshot as SyncSnapshot, selectedTables);
-      const changedTables = selectedTables ?? [
-        "users",
-        "products",
-        "services",
-        "cybercafe_tariffs",
-        "clients",
-        "expenses",
-        "inventory_cycles",
-        "invoice_sequences",
-        "initial_stocks",
-        "replenishments",
-        "sales",
-        "sale_items",
-        "sale_service_items",
-        "cybercafe_sales",
-        "mikhmon_sales",
-        "stock_movements",
-        "audit_logs",
-      ];
-
-      const effectiveChangedTables = canSyncUsers ? changedTables : changedTables.filter((table) => table !== "users");
-
-      if (!forcePush && localPendingChanges > 0 && cloudHasChanges && !hasOverlappingChanges) {
-        const mergedSnapshot = mergeSnapshotsForCloudSync(
-          await getCloudSnapshot(),
-          snapshot as SyncSnapshot,
-          effectiveChangedTables.filter((table) => table !== "audit_logs")
-        );
-
-        await replaceSupabaseSyncTables(mergedSnapshot, null, canSyncUsers, snapshot as SyncSnapshot);
-        await syncSupabaseIdentitySequences();
-
-        const syncedAt = new Date().toISOString();
-        if (selectedTables && selectedTables.length > 0) {
-          await window.desktopApi.markSyncBucketsComplete(effectiveChangedTables, syncedAt);
-        } else {
-          await window.desktopApi.importSyncSnapshot(mergedSnapshot);
-          await window.desktopApi.markSyncComplete(syncedAt);
-        }
-
-        return this.getSyncStatus();
-      }
-
-      await replaceSupabaseSyncTables(
-        syncSnapshot,
-        selectedTables ? [...effectiveChangedTables, "audit_logs"] : null,
-        canSyncUsers,
-        snapshot as SyncSnapshot
-      );
-      await syncSupabaseIdentitySequences();
-
-      const syncedAt = new Date().toISOString();
-      if (selectedTables && selectedTables.length > 0) {
-        await window.desktopApi.markSyncBucketsComplete(effectiveChangedTables, syncedAt);
-      } else {
-        await window.desktopApi.markSyncComplete(syncedAt);
-      }
-      return this.getSyncStatus();
-    } catch (error) {
-      throw normalizeSupabaseSyncError(error);
-    }
+  /**
+   * Row-level sync: receives the other devices' changes, then sends this PC's changes.
+   * Several PCs and the web can work at the same time; the most recent change wins.
+   * (The arguments of the former full-replace sync are no longer needed and are ignored.)
+   */
+  async syncDesktopToCloud(_forcePush = false, _selectedBucketKeys?: string[]): Promise<SyncStatus> {
+    return runDesktopRowSync({ pullOnly: false });
   },
 
   async pullCloudToDesktop(): Promise<SyncStatus> {
-    try {
-      if (!window.desktopApi) {
-        throw new Error("La synchronisation cloud vers local est reservee a l'application desktop.");
-      }
-
-      if (!supabase) {
-        throw new Error("Supabase n'est pas configure sur cette application.");
-      }
-
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        throw new Error("Aucune connexion internet disponible pour recuperer les donnees du cloud.");
-      }
-
-      await assertSupabaseSyncSchema();
-      const cloudSnapshot = await getCloudSnapshot();
-      const cloudLastChangeAt = await getCloudLastChangeAt();
-      await window.desktopApi.importSyncSnapshot(cloudSnapshot);
-      await window.desktopApi.markSyncComplete(cloudLastChangeAt ?? new Date().toISOString());
-      return this.getSyncStatus();
-    } catch (error) {
-      throw normalizeSupabaseSyncError(error);
-    }
+    return runDesktopRowSync({ pullOnly: true });
   },
 
   async listProducts(): Promise<Product[]> {

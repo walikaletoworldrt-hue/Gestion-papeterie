@@ -4,6 +4,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { LocalDatabase } from "./database";
 import { buildInvoiceHtml } from "./invoice-template";
 import type { SyncSnapshot } from "../src/types";
+import type { RowSyncPulledChanges, RowSyncPushedRow } from "../src/lib/row-sync-schema";
 import type {
   ClientDraft,
   CybercafeSaleDraft,
@@ -231,6 +232,13 @@ function registerIpc() {
   ipcMain.handle("sync:status", () => database.getSyncStatus());
   ipcMain.handle("sync:pending-overview", () => database.getPendingSyncOverview());
   ipcMain.handle("sync:snapshot", () => database.exportSyncSnapshot({ includeSyncSecrets: true }));
+  ipcMain.handle("row-sync:state", () => database.rowSyncGetState());
+  ipcMain.handle("row-sync:collect", () => database.rowSyncCollect());
+  ipcMain.handle("row-sync:apply", (_event, changes: RowSyncPulledChanges) => database.rowSyncApply(changes));
+  ipcMain.handle("row-sync:mark-pushed", (_event, pushed: Record<string, RowSyncPushedRow[]>, tombstoneIds: number[]) =>
+    database.rowSyncMarkPushed(pushed, tombstoneIds)
+  );
+  ipcMain.handle("row-sync:finish", (_event, syncedAt: string) => database.rowSyncFinish(syncedAt));
   ipcMain.handle("sync:import", (_event, snapshot) => {
     database.importSyncSnapshot(snapshot);
   });

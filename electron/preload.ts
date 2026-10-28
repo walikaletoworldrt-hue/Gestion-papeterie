@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { RowSyncPulledChanges, RowSyncPushedRow } from "../src/lib/row-sync-schema";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -94,6 +95,12 @@ contextBridge.exposeInMainWorld("desktopApi", {
   getPendingSyncOverview: () => ipcRenderer.invoke("sync:pending-overview"),
   exportSyncSnapshot: (): Promise<SyncSnapshot> => ipcRenderer.invoke("sync:snapshot"),
   importSyncSnapshot: (snapshot: SyncSnapshot): Promise<void> => ipcRenderer.invoke("sync:import", snapshot),
+  rowSyncGetState: () => ipcRenderer.invoke("row-sync:state"),
+  rowSyncCollect: () => ipcRenderer.invoke("row-sync:collect"),
+  rowSyncApply: (changes: RowSyncPulledChanges) => ipcRenderer.invoke("row-sync:apply", changes),
+  rowSyncMarkPushed: (pushed: Record<string, RowSyncPushedRow[]>, tombstoneIds: number[]) =>
+    ipcRenderer.invoke("row-sync:mark-pushed", pushed, tombstoneIds),
+  rowSyncFinish: (syncedAt: string) => ipcRenderer.invoke("row-sync:finish", syncedAt),
   markSyncComplete: (syncedAt?: string | null): Promise<void> => ipcRenderer.invoke("sync:complete", syncedAt),
   markSyncBucketsComplete: (tables: string[], syncedAt?: string | null): Promise<void> =>
     ipcRenderer.invoke("sync:complete-buckets", tables, syncedAt),

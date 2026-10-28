@@ -27,14 +27,28 @@ create table if not exists public.sync_tombstones (
 
 create index if not exists sync_tombstones_sync_version_idx on public.sync_tombstones(sync_version);
 
--- Poste a l'origine de l'ecriture en cours. Le moteur de synchronisation desktop le renseigne
--- avec set_config('app.origin_device', 'P1', true) ; sinon l'ecriture vient du web.
+-- Poste a l'origine de l'ecriture en cours. Le moteur de synchronisation desktop envoie
+-- l'en-tete HTTP x-origin-device (P1, P2...) ; sans en-tete, l'ecriture vient du web.
 create or replace function public.row_sync_origin_device()
 returns text
-language sql
+language plpgsql
 stable
 as $$
-  select coalesce(nullif(current_setting('app.origin_device', true), ''), 'web');
+declare
+  header_value text;
+begin
+  begin
+    header_value := nullif(current_setting('request.headers', true), '')::json ->> 'x-origin-device';
+  exception when others then
+    header_value := null;
+  end;
+
+  return coalesce(
+    nullif(current_setting('app.origin_device', true), ''),
+    nullif(header_value, ''),
+    'web'
+  );
+end;
 $$;
 
 create or replace function public.row_sync_stamp()
@@ -42,17 +56,19 @@ returns trigger
 language plpgsql
 as $$
 begin
-  new.sync_version := nextval('public.row_sync_version_seq');
-  new.server_updated_at := now();
-  new.origin_device := public.row_sync_origin_device();
-
   if tg_op = 'INSERT' then
     new.modified_at := coalesce(new.modified_at, now());
   elsif new.modified_at is not distinct from old.modified_at then
     -- Ecriture qui ne precise pas son heure de modification (version web) : on prend l'heure du serveur.
     new.modified_at := now();
+  elsif new.modified_at < old.modified_at then
+    -- La derniere modification gagne : une modification plus ancienne que celle du cloud est ignoree.
+    return null;
   end if;
 
+  new.sync_version := nextval('public.row_sync_version_seq');
+  new.server_updated_at := now();
+  new.origin_device := public.row_sync_origin_device();
   return new;
 end;
 $$;
@@ -204,3 +220,65 @@ $$;
 
 grant execute on function public.invoice_series_label(integer) to authenticated;
 grant execute on function public.next_web_invoice_reference() to authenticated;
+
+-- Etape 3 : registre des postes. Un code poste (P1, P2...) ne peut appartenir qu'a un seul PC,
+-- sinon deux PC produiraient les memes numeros de facture.
+create table if not exists public.sync_devices (
+  code text primary key,
+  device_id uuid not null,
+  device_label text not null,
+  claimed_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now()
+);
+
+alter table public.sync_devices enable row level security;
+
+drop policy if exists sync_devices_select_policy on public.sync_devices;
+create policy sync_devices_select_policy on public.sync_devices
+for select
+to authenticated
+using (true);
+
+grant select on public.sync_devices to authenticated;
+
+-- Reserve le code pour ce PC. Un PC reinstalle garde son nom Windows : il peut reprendre son code.
+create or replace function public.row_sync_claim_device(p_code text, p_device_id uuid, p_device_label text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  existing public.sync_devices;
+begin
+  if auth.uid() is null then
+    raise exception 'Connexion requise pour synchroniser.';
+  end if;
+
+  select * into existing from public.sync_devices where code = p_code for update;
+
+  if existing.code is null then
+    insert into public.sync_devices (code, device_id, device_label) values (p_code, p_device_id, p_device_label);
+  elsif existing.device_id = p_device_id or existing.device_label = p_device_label then
+    update public.sync_devices
+    set device_id = p_device_id, device_label = p_device_label, last_seen_at = now()
+    where code = p_code;
+  else
+    raise exception 'Le code poste % est deja utilise par le PC "%". Choisissez un autre code pour ce poste.', p_code, existing.device_label;
+  end if;
+end;
+$$;
+
+-- Correspondance id cloud <-> nom d'utilisateur, sans donnee sensible, pour traduire les references aux utilisateurs.
+create or replace function public.row_sync_user_directory()
+returns table (id bigint, username text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select u.id, u.username from public.users u where auth.uid() is not null;
+$$;
+
+grant execute on function public.row_sync_claim_device(text, uuid, text) to authenticated;
+grant execute on function public.row_sync_user_directory() to authenticated;

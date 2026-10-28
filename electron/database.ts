@@ -4,7 +4,21 @@ import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { safeStorage } from "electron";
-import { installRowSyncSupport, withRemoteChangesApplied } from "./row-sync";
+import {
+  applyRemoteChanges,
+  collectLocalChanges,
+  countLocalChanges,
+  getRowSyncDeviceState,
+  installRowSyncSupport,
+  markChangesPushed,
+  withRemoteChangesApplied,
+} from "./row-sync";
+import type {
+  RowSyncApplyResult,
+  RowSyncLocalChanges,
+  RowSyncPulledChanges,
+  RowSyncPushedRow,
+} from "../src/lib/row-sync-schema";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -587,7 +601,7 @@ export class LocalDatabase {
       FROM products p
       LEFT JOIN stock_movements sm
         ON sm.product_id = p.id
-       AND sm.cycle_id = (SELECT COALESCE(MAX(id), 1) FROM inventory_cycles)
+       AND sm.cycle_id = COALESCE((SELECT id FROM inventory_cycles ORDER BY started_at DESC, id DESC LIMIT 1), 1)
       GROUP BY p.id, p.name, p.alert_threshold;
     `);
 
@@ -1403,9 +1417,11 @@ export class LocalDatabase {
     const now = new Date().toISOString();
     const actorUserId = this.getActorUserId();
     const lastCycle = this.db
-      .prepare("SELECT id, label, started_at FROM inventory_cycles ORDER BY id DESC LIMIT 1")
+      .prepare("SELECT id, label, started_at FROM inventory_cycles ORDER BY started_at DESC, id DESC LIMIT 1")
       .get() as InventoryCycleRow | undefined;
-    const nextCycleNumber = (lastCycle?.id ?? 0) + 1;
+    // Cycle number from its label ("Cycle 3"): local ids differ between PCs once cycles are synced.
+    const lastCycleNumber = Number(/(\d+)\s*$/.exec(lastCycle?.label ?? "")?.[1] ?? lastCycle?.id ?? 0);
+    const nextCycleNumber = lastCycleNumber + 1;
     const resetTransaction = this.db.transaction(() => {
       this.db.prepare("DELETE FROM sale_items").run();
       this.db.prepare("DELETE FROM sale_service_items").run();
@@ -1436,53 +1452,54 @@ export class LocalDatabase {
     const row = this.db
       .prepare("SELECT last_synced_at FROM sync_settings WHERE id = 1")
       .get() as { last_synced_at: string | null } | undefined;
-    const lastSyncedAt = row?.last_synced_at ?? null;
-    const pendingRow = this.db
-      .prepare("SELECT COUNT(*) AS count FROM audit_logs WHERE synced_at IS NULL")
-      .get() as { count: number };
+    const pendingChanges = this.getPendingSyncOverview().buckets.reduce((total, bucket) => total + bucket.count, 0);
 
     return {
       available: true,
       online: true,
-      lastSyncedAt,
-      pendingChanges: pendingRow.count,
+      lastSyncedAt: row?.last_synced_at ?? null,
+      pendingChanges,
     };
   }
 
+  /** Rows created, changed or deleted on this PC and not sent to the cloud yet. */
   getPendingSyncOverview(): SyncPendingOverview {
-    const rows = this.db
-      .prepare(
-        `
-          SELECT target_table, COUNT(*) AS count, MAX(created_at) AS latest_changed_at
-          FROM audit_logs
-          WHERE synced_at IS NULL
-          GROUP BY target_table
-        `
-      )
-      .all() as Array<{ target_table: string; count: number; latest_changed_at: string | null }>;
+    const sessionUser = this.sessionUserId ? this.getUserRowById(this.sessionUserId) : undefined;
+    const buckets: SyncConflictBucket[] = countLocalChanges(this.db, { includeUsers: sessionUser?.role === "Super admin" });
+    return { buckets, latestChangedAt: null };
+  }
 
-    const buckets: SyncConflictBucket[] = rows.map((row) => ({
-      key: row.target_table,
-      label: row.target_table,
-      count: row.count,
-    }));
+  // --- Row-level sync (exchange with the sync engine) ---
 
-    const latestChangedAt = rows.reduce<string | null>((latest, row) => {
-      if (!row.latest_changed_at) {
-        return latest;
-      }
+  rowSyncGetState() {
+    this.requireAuthenticatedUser();
+    return { ...getRowSyncDeviceState(this.db), deviceLabel: this.getSourceDeviceLabel() };
+  }
 
-      if (!latest || new Date(row.latest_changed_at).getTime() > new Date(latest).getTime()) {
-        return row.latest_changed_at;
-      }
+  rowSyncCollect(): RowSyncLocalChanges {
+    const actor = this.requireAuthenticatedUser();
+    return collectLocalChanges(this.db, {
+      includeUsers: actor.role === "Super admin",
+      deviceLabel: this.getSourceDeviceLabel(),
+    });
+  }
 
-      return latest;
-    }, null);
+  rowSyncApply(changes: RowSyncPulledChanges): RowSyncApplyResult {
+    this.requireAuthenticatedUser();
+    return applyRemoteChanges(this.db, changes, { deviceCode: this.getDeviceCode() });
+  }
 
-    return {
-      buckets,
-      latestChangedAt,
-    };
+  rowSyncMarkPushed(pushed: Record<string, RowSyncPushedRow[]>, tombstoneIds: number[]) {
+    this.requireAuthenticatedUser();
+    markChangesPushed(this.db, pushed, tombstoneIds);
+  }
+
+  rowSyncFinish(syncedAt: string) {
+    this.ensureSyncSettings();
+    this.db
+      .prepare("UPDATE sync_settings SET last_synced_at = ?, updated_at = ? WHERE id = 1")
+      .run(syncedAt, new Date().toISOString());
+    return this.getSyncStatus();
   }
 
   /**
@@ -2973,7 +2990,7 @@ export class LocalDatabase {
   private getCurrentInventoryCycleId() {
     this.ensureInventoryCycleSeed();
     const cycle = this.db
-      .prepare("SELECT id FROM inventory_cycles ORDER BY id DESC LIMIT 1")
+      .prepare("SELECT id FROM inventory_cycles ORDER BY started_at DESC, id DESC LIMIT 1")
       .get() as { id: number } | undefined;
 
     if (!cycle) {

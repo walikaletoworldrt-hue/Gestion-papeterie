@@ -3275,9 +3275,13 @@ export default function App() {
       setSyncStatus(nextStatus);
       setSyncSelectionState(null);
       setPendingSyncRequestKeys(null);
-      showToast("success", "Synchronisation vers Supabase terminee.");
+      // Changes made on the other devices are now on this PC: refresh the screens.
+      await loadData();
+      showToast("success", "Synchronisation terminee : les changements des autres postes sont recuperes et ceux de ce poste envoyes.");
     } catch (error) {
       setPendingSyncRequestKeys(null);
+      // A partial sync may still have brought data: refresh anyway.
+      await loadData().catch(() => undefined);
       showToast("error", error instanceof Error ? error.message : "Synchronisation impossible.");
     } finally {
       setSyncBusy(false);
@@ -3310,7 +3314,7 @@ export default function App() {
       setSyncSelectionState(null);
       setPendingSyncRequestKeys(null);
       await loadData();
-      showToast("success", "Les donnees du cloud ont remplace les donnees locales.");
+      showToast("success", "Les changements du cloud ont ete recuperes sur ce poste.");
     } catch (error) {
       setPendingSyncRequestKeys(null);
       showToast("error", error instanceof Error ? error.message : "Recuperation du cloud impossible.");
