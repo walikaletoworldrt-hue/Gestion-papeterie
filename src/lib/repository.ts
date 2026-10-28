@@ -1517,8 +1517,22 @@ function hasSyncBucketOverlap(leftKeys: string[], rightKeys: string[]) {
   return leftKeys.some((key) => rightSet.has(key));
 }
 
+// Logins and logouts stay in the history but change no data, so they never count as sync changes.
+// Keep in sync with SESSION_AUDIT_DETAIL_PREFIXES in electron/database.ts.
+const SESSION_AUDIT_DETAIL_PREFIXES = [
+  "Connexion utilisateur",
+  "Deconnexion utilisateur",
+  "Connexion cloud synchronisee localement",
+  "Compte cloud memorise localement",
+];
+
+function isSessionAuditLog(row: { target_table?: string | null; details?: string | null }) {
+  const details = row.details ?? "";
+  return row.target_table === "users" && SESSION_AUDIT_DETAIL_PREFIXES.some((prefix) => details.startsWith(prefix));
+}
+
 function buildSyncBucketsFromAuditLogs(
-  rows: Array<{ target_table?: string | null; created_at?: string | null }>,
+  rows: Array<{ target_table?: string | null; details?: string | null; created_at?: string | null }>,
   since: string | null
 ) {
   const counts = new Map<string, number>();
@@ -1526,6 +1540,10 @@ function buildSyncBucketsFromAuditLogs(
   const sinceTime = since ? new Date(since).getTime() : null;
 
   rows.forEach((row) => {
+    if (isSessionAuditLog(row)) {
+      return;
+    }
+
     const createdAt = row.created_at ?? null;
     const createdTime = createdAt ? new Date(createdAt).getTime() : null;
 
@@ -1583,7 +1601,7 @@ async function getCloudSnapshot(): Promise<SyncSnapshot> {
     client.from("clients").select("id, name, phone, address, email, created_at").order("id", { ascending: true }),
     client.from("expenses").select("id, detail, nature, amount, expense_date, user_id, approved_by, purpose").order("id", { ascending: true }),
     client.from("initial_stocks").select("id, product_id, quantity, purchase_price, stock_date, cycle_id, user_id, note").order("id", { ascending: true }),
-    client.from("replenishments").select("id, product_id, quantity, purchase_price, supplier, replenished_at, cycle_id, user_id, note").order("id", { ascending: true }),
+    client.from("replenishments").select("id, product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, user_id, note").order("id", { ascending: true }),
     client.from("sales").select("id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id").order("id", { ascending: true }),
     client.from("sale_items").select("id, sale_id, product_id, quantity, unit_price, line_total").order("id", { ascending: true }),
     client.from("sale_service_items").select("id, sale_id, service_id, quantity, unit_price, line_total").order("id", { ascending: true }),
@@ -1628,13 +1646,14 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
     window.desktopApi.getPendingSyncOverview(),
     getSupabaseClient()
       .from("audit_logs")
-      .select("target_table, created_at")
+      .select("target_table, details, created_at")
       .order("created_at", { ascending: false })
       .limit(500),
   ]);
 
   const cloudAuditLogs = ensureData(cloudAuditLogsResult.data, cloudAuditLogsResult.error) as Array<{
     target_table?: string | null;
+    details?: string | null;
     created_at?: string | null;
   }>;
 
@@ -1653,12 +1672,13 @@ async function getSyncConflictPreviewFromSupabaseAndDesktop(
 async function getCloudSyncOverview(since: string | null) {
   const cloudAuditLogsResult = await getSupabaseClient()
     .from("audit_logs")
-    .select("target_table, created_at")
+    .select("target_table, details, created_at")
     .order("created_at", { ascending: false })
     .limit(500);
 
   const cloudAuditLogs = ensureData(cloudAuditLogsResult.data, cloudAuditLogsResult.error) as Array<{
     target_table?: string | null;
+    details?: string | null;
     created_at?: string | null;
   }>;
 
@@ -2621,7 +2641,8 @@ export const repository = {
         selectedBucketKeys && selectedBucketKeys.length > 0 ? getTablesForSyncBucketKeys(selectedBucketKeys) : null;
       const cloudOverview = await getCloudSyncOverview(localStatus.lastSyncedAt);
       const cloudBucketKeys = getSyncBucketKeysWithChanges(cloudOverview.buckets);
-      const cloudLastChangeAt = cloudOverview.latestChangedAt ?? (await getCloudLastChangeAt());
+      // Only real data changes count (logins/logouts are ignored by the overview).
+      const cloudLastChangeAt = cloudOverview.latestChangedAt;
       const cloudHasChanges = Boolean(
         selectedBucketKeys && selectedBucketKeys.length > 0
           ? sumSelectedSyncBuckets(cloudOverview.buckets, selectedBucketKeys) > 0

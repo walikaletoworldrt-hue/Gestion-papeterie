@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
+import { safeStorage } from "electron";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -301,6 +302,42 @@ const seedUsers = [
 
 const DEFAULT_PASSWORD = "Walikale123";
 
+// Cloud sync passwords are stored encrypted with the Windows account key (DPAPI via Electron safeStorage).
+const SYNC_SECRET_PREFIX = "enc:v1:";
+
+// Logins and logouts stay in the history but change no data, so they are never pending sync changes.
+// Keep in sync with SESSION_AUDIT_DETAIL_PREFIXES in src/lib/repository.ts.
+const SESSION_AUDIT_DETAIL_PREFIXES = [
+  "Connexion utilisateur",
+  "Deconnexion utilisateur",
+  "Connexion cloud synchronisee localement",
+  "Compte cloud memorise localement",
+];
+
+// Cloud rows can hold booleans (Postgres) or miss optional columns: give SQLite only values it can store.
+function toSqliteParams(statement: Database.Statement, row: Record<string, unknown>) {
+  const params: Record<string, unknown> = {};
+
+  for (const [, name] of statement.source.matchAll(/@(\w+)/g)) {
+    const value = row[name];
+    if (value === undefined || value === null) {
+      params[name] = null;
+    } else if (typeof value === "boolean") {
+      params[name] = value ? 1 : 0;
+    } else if (typeof value === "object" && !Buffer.isBuffer(value)) {
+      params[name] = value instanceof Date ? value.toISOString() : JSON.stringify(value);
+    } else {
+      params[name] = value;
+    }
+  }
+
+  return params;
+}
+
+function isSessionAuditLog(targetTable: string, details: string) {
+  return targetTable === "users" && SESSION_AUDIT_DETAIL_PREFIXES.some((prefix) => details.startsWith(prefix));
+}
+
 type Permission =
   | "manage_inventory"
   | "manage_clients"
@@ -310,6 +347,8 @@ type Permission =
 export class LocalDatabase {
   private db: Database.Database;
   private sessionUserId: number | null = null;
+  // Password typed at login, kept in memory only, so sync works even if encryption is unavailable.
+  private sessionSyncSecret: { userId: number; password: string } | null = null;
 
   constructor(storageDir: string) {
     fs.mkdirSync(storageDir, { recursive: true });
@@ -560,6 +599,72 @@ export class LocalDatabase {
     this.ensureSyncSettings();
     this.seedIfNeeded();
     this.ensureMissingUserPasswords();
+    this.encryptLegacySyncSecrets();
+    this.clearPendingSessionAuditLogs();
+  }
+
+  private clearPendingSessionAuditLogs() {
+    const pending = this.db
+      .prepare("SELECT id, target_table, details, created_at FROM audit_logs WHERE synced_at IS NULL AND target_table = 'users'")
+      .all() as Array<{ id: number; target_table: string; details: string | null; created_at: string }>;
+    const update = this.db.prepare("UPDATE audit_logs SET synced_at = ? WHERE id = ?");
+
+    this.db.transaction(() => {
+      pending
+        .filter((row) => isSessionAuditLog(row.target_table, row.details ?? ""))
+        .forEach((row) => update.run(row.created_at, row.id));
+    })();
+  }
+
+  private encryptSyncSecret(plain: string | null | undefined): string | null {
+    const value = typeof plain === "string" ? plain.trim() : "";
+
+    if (!value) {
+      return null;
+    }
+
+    if (value.startsWith(SYNC_SECRET_PREFIX)) {
+      return value;
+    }
+
+    if (!safeStorage.isEncryptionAvailable()) {
+      return null;
+    }
+
+    return SYNC_SECRET_PREFIX + safeStorage.encryptString(value).toString("base64");
+  }
+
+  private decryptSyncSecret(stored: string | null | undefined): string | null {
+    const value = typeof stored === "string" ? stored.trim() : "";
+
+    if (!value) {
+      return null;
+    }
+
+    if (!value.startsWith(SYNC_SECRET_PREFIX)) {
+      return value;
+    }
+
+    try {
+      return safeStorage.decryptString(Buffer.from(value.slice(SYNC_SECRET_PREFIX.length), "base64"));
+    } catch {
+      return null;
+    }
+  }
+
+  private encryptLegacySyncSecrets() {
+    const legacyRows = this.db
+      .prepare("SELECT id, auth_sync_password FROM users WHERE auth_sync_password IS NOT NULL AND auth_sync_password NOT LIKE ?")
+      .all(`${SYNC_SECRET_PREFIX}%`) as Array<{ id: number; auth_sync_password: string }>;
+
+    if (legacyRows.length === 0) {
+      return;
+    }
+
+    const update = this.db.prepare("UPDATE users SET auth_sync_password = ? WHERE id = ?");
+    this.db.transaction(() => {
+      legacyRows.forEach((row) => update.run(this.encryptSyncSecret(row.auth_sync_password), row.id));
+    })();
   }
 
   private ensureUserColumns() {
@@ -701,7 +806,7 @@ export class LocalDatabase {
           user.username,
           user.email,
           this.hashPassword(DEFAULT_PASSWORD),
-          DEFAULT_PASSWORD,
+          this.encryptSyncSecret(DEFAULT_PASSWORD),
           user.role,
           user.active,
           user.createdAt,
@@ -1346,9 +1451,24 @@ export class LocalDatabase {
     };
   }
 
-  exportSyncSnapshot(): SyncSnapshot {
+  /**
+   * Sync passwords never leave this machine, except the ones a Super admin needs to create
+   * cloud accounts for users not yet linked to Supabase (includeSyncSecrets, cloud sync only).
+   * Backups never contain them.
+   */
+  exportSyncSnapshot(options: { includeSyncSecrets?: boolean } = {}): SyncSnapshot {
+    const sessionUser = this.sessionUserId ? this.getUserRowById(this.sessionUserId) : undefined;
+    const canExportSecrets = Boolean(options.includeSyncSecrets) && sessionUser?.role === "Super admin";
+    const userRows = this.db
+      .prepare("SELECT id, auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at FROM users ORDER BY id ASC")
+      .all() as Array<Record<string, unknown>>;
+
     return {
-      users: this.db.prepare("SELECT id, auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at FROM users ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      users: userRows.map((row) => ({
+        ...row,
+        auth_sync_password:
+          canExportSecrets && !row.auth_user_id ? this.decryptSyncSecret(row.auth_sync_password as string | null) : null,
+      })),
       products: this.db.prepare("SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at FROM products ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       clients: this.db.prepare("SELECT id, name, phone, address, email, created_at FROM clients ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       expenses: this.db.prepare("SELECT id, detail, nature, amount, expense_date, user_id, approved_by, purpose FROM expenses ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1370,6 +1490,27 @@ export class LocalDatabase {
 
   importSyncSnapshot(snapshot: SyncSnapshot) {
     this.ensureSyncSettings();
+
+    // Snapshots (backups, cloud data) carry no sync password: keep the ones already stored on this machine.
+    const existingSecrets = this.db
+      .prepare("SELECT auth_user_id, username, email, auth_sync_password FROM users WHERE auth_sync_password IS NOT NULL")
+      .all() as Array<{ auth_user_id: string | null; username: string; email: string | null; auth_sync_password: string }>;
+    const findExistingSecret = (row: Record<string, unknown>) => {
+      const authUserId = typeof row.auth_user_id === "string" ? row.auth_user_id : "";
+      const email = typeof row.email === "string" ? row.email.toLowerCase() : "";
+      const username = typeof row.username === "string" ? row.username.toLowerCase() : "";
+      const match =
+        (authUserId && existingSecrets.find((entry) => entry.auth_user_id === authUserId)) ||
+        (email && existingSecrets.find((entry) => entry.email?.toLowerCase() === email)) ||
+        (username && existingSecrets.find((entry) => entry.username.toLowerCase() === username));
+      return match ? match.auth_sync_password : null;
+    };
+    const usersToInsert = (snapshot.users ?? []).map((row) => ({
+      ...row,
+      auth_sync_password:
+        this.encryptSyncSecret(row.auth_sync_password as string | null | undefined) ?? findExistingSecret(row),
+    }));
+
     const replaceTransaction = this.db.transaction(() => {
       this.db.prepare("DELETE FROM sale_items").run();
       this.db.prepare("DELETE FROM sale_service_items").run();
@@ -1458,24 +1599,24 @@ export class LocalDatabase {
         VALUES (@id, @label, @started_at, @user_id)
       `);
 
-      (snapshot.users ?? []).forEach((row) => insertUsers.run(row));
-      (snapshot.products ?? []).forEach((row) => insertProducts.run(row));
-      (snapshot.clients ?? []).forEach((row) => insertClients.run(row));
-      (snapshot.expenses ?? []).forEach((row) => insertExpenses.run(row));
-      (snapshot.services ?? []).forEach((row) => insertServices.run(row));
-      (snapshot.cybercafeTariffs ?? []).forEach((row) => insertCybercafeTariffs.run(row));
-      (snapshot.inventoryCycles ?? []).forEach((row) => insertInventoryCycles.run(row));
-      (snapshot.invoiceSequences ?? []).forEach((row) => insertInvoiceSequences.run(row));
-      (snapshot.initialStocks ?? []).forEach((row) => insertInitialStocks.run(row));
-      (snapshot.replenishments ?? []).forEach((row) => insertReplenishments.run(row));
-      (snapshot.sales ?? []).forEach((row) => insertSales.run(row));
-      (snapshot.saleItems ?? []).forEach((row) => insertSaleItems.run(row));
-      (snapshot.saleServiceItems ?? []).forEach((row) => insertSaleServiceItems.run(row));
-      (snapshot.cybercafeSales ?? []).forEach((row) => insertCybercafeSales.run(row));
-      (snapshot.mikhmonSales ?? []).forEach((row) => insertMikhmonSales.run(row));
-      (snapshot.stockMovements ?? []).forEach((row) => insertStockMovements.run(row));
+      usersToInsert.forEach((row) => insertUsers.run(toSqliteParams(insertUsers, row)));
+      (snapshot.products ?? []).forEach((row) => insertProducts.run(toSqliteParams(insertProducts, row)));
+      (snapshot.clients ?? []).forEach((row) => insertClients.run(toSqliteParams(insertClients, row)));
+      (snapshot.expenses ?? []).forEach((row) => insertExpenses.run(toSqliteParams(insertExpenses, row)));
+      (snapshot.services ?? []).forEach((row) => insertServices.run(toSqliteParams(insertServices, row)));
+      (snapshot.cybercafeTariffs ?? []).forEach((row) => insertCybercafeTariffs.run(toSqliteParams(insertCybercafeTariffs, row)));
+      (snapshot.inventoryCycles ?? []).forEach((row) => insertInventoryCycles.run(toSqliteParams(insertInventoryCycles, row)));
+      (snapshot.invoiceSequences ?? []).forEach((row) => insertInvoiceSequences.run(toSqliteParams(insertInvoiceSequences, row)));
+      (snapshot.initialStocks ?? []).forEach((row) => insertInitialStocks.run(toSqliteParams(insertInitialStocks, row)));
+      (snapshot.replenishments ?? []).forEach((row) => insertReplenishments.run(toSqliteParams(insertReplenishments, row)));
+      (snapshot.sales ?? []).forEach((row) => insertSales.run(toSqliteParams(insertSales, row)));
+      (snapshot.saleItems ?? []).forEach((row) => insertSaleItems.run(toSqliteParams(insertSaleItems, row)));
+      (snapshot.saleServiceItems ?? []).forEach((row) => insertSaleServiceItems.run(toSqliteParams(insertSaleServiceItems, row)));
+      (snapshot.cybercafeSales ?? []).forEach((row) => insertCybercafeSales.run(toSqliteParams(insertCybercafeSales, row)));
+      (snapshot.mikhmonSales ?? []).forEach((row) => insertMikhmonSales.run(toSqliteParams(insertMikhmonSales, row)));
+      (snapshot.stockMovements ?? []).forEach((row) => insertStockMovements.run(toSqliteParams(insertStockMovements, row)));
       const importedAt = new Date().toISOString();
-      (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run({ ...row, synced_at: importedAt }));
+      (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run(toSqliteParams(insertAuditLogs, { ...row, synced_at: importedAt })));
     });
 
     replaceTransaction();
@@ -2078,7 +2219,7 @@ export class LocalDatabase {
         INSERT INTO users (full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
       `)
-      .run(fullName, username, email, this.hashPassword(password), password, draft.role, now, now);
+      .run(fullName, username, email, this.hashPassword(password), this.encryptSyncSecret(password), draft.role, now, now);
 
     const userId = Number(result.lastInsertRowid);
     this.logAction(this.getActorUserId(userId), "create", "users", userId, `Creation utilisateur ${email}`);
@@ -2111,8 +2252,17 @@ export class LocalDatabase {
     }
 
     const now = new Date().toISOString();
-    this.db.prepare("UPDATE users SET active = 1, last_login_at = ? WHERE id = ?").run(now, user.id);
+    // Refresh the encrypted sync password at each login (repairs it after a restore or on a new machine).
+    const syncSecret = this.encryptSyncSecret(password);
+    if (syncSecret) {
+      this.db
+        .prepare("UPDATE users SET active = 1, last_login_at = ?, auth_sync_password = ? WHERE id = ?")
+        .run(now, syncSecret, user.id);
+    } else {
+      this.db.prepare("UPDATE users SET active = 1, last_login_at = ? WHERE id = ?").run(now, user.id);
+    }
     this.sessionUserId = user.id;
+    this.sessionSyncSecret = { userId: user.id, password };
     this.logAction(user.id, "update", "users", user.id, "Connexion utilisateur");
 
     const refreshed = this.getUserRowById(user.id);
@@ -2150,8 +2300,9 @@ export class LocalDatabase {
               role = ?, active = 1, last_login_at = ?
           WHERE id = ?
         `)
-        .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, existing.id);
+        .run(authUserId, fullName, username, email, this.hashPassword(password), this.encryptSyncSecret(password), draft.role, now, existing.id);
       this.sessionUserId = existing.id;
+      this.sessionSyncSecret = { userId: existing.id, password };
       this.logAction(existing.id, "update", "users", existing.id, `Connexion cloud synchronisee localement pour ${email}`);
       const refreshed = this.getUserRowById(existing.id);
       if (!refreshed) {
@@ -2165,10 +2316,11 @@ export class LocalDatabase {
         INSERT INTO users (auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       `)
-      .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, now);
+      .run(authUserId, fullName, username, email, this.hashPassword(password), this.encryptSyncSecret(password), draft.role, now, now);
 
     const userId = Number(result.lastInsertRowid);
     this.sessionUserId = userId;
+    this.sessionSyncSecret = { userId, password };
     this.logAction(userId, "create", "users", userId, `Compte cloud memorise localement pour ${email}`);
     const created = this.getUserRowById(userId);
     if (!created) {
@@ -2209,7 +2361,7 @@ export class LocalDatabase {
               role = ?, active = 1, last_login_at = ?
           WHERE id = ?
         `)
-        .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, existing.id);
+        .run(authUserId, fullName, username, email, this.hashPassword(password), this.encryptSyncSecret(password), draft.role, now, existing.id);
       this.logAction(this.getActorUserId(existing.id), "update", "users", existing.id, `Compte cloud lie a ${email}`);
       return this.listUsers();
     }
@@ -2219,7 +2371,7 @@ export class LocalDatabase {
         INSERT INTO users (auth_user_id, full_name, username, email, password_hash, auth_sync_password, role, active, created_at, last_login_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       `)
-      .run(authUserId, fullName, username, email, this.hashPassword(password), password, draft.role, now, now);
+      .run(authUserId, fullName, username, email, this.hashPassword(password), this.encryptSyncSecret(password), draft.role, now, now);
 
     const userId = Number(result.lastInsertRowid);
     this.logAction(this.getActorUserId(userId), "create", "users", userId, `Profil cloud importe pour ${email}`);
@@ -2229,7 +2381,8 @@ export class LocalDatabase {
   getCurrentSyncCredentials(): DesktopSyncCredentials {
     const actor = this.requireAuthenticatedUser();
     const email = actor.email?.trim().toLowerCase() ?? "";
-    const password = actor.auth_sync_password?.trim() ?? "";
+    const sessionPassword = this.sessionSyncSecret?.userId === actor.id ? this.sessionSyncSecret.password : null;
+    const password = (sessionPassword ?? this.decryptSyncSecret(actor.auth_sync_password) ?? "").trim();
 
     if (!email) {
       throw new Error("Le compte local connecte n'a pas d'email. Ajoutez un email utilisateur avant de synchroniser.");
@@ -2237,7 +2390,7 @@ export class LocalDatabase {
 
     if (!password) {
       throw new Error(
-        "Le mot de passe de synchronisation cloud n'est pas disponible pour cet utilisateur. Reinitialisez son mot de passe local puis relancez la synchronisation."
+        "Le mot de passe de synchronisation cloud n'est pas disponible pour cet utilisateur. Deconnectez-vous puis reconnectez-vous, puis relancez la synchronisation."
       );
     }
 
@@ -2266,6 +2419,7 @@ export class LocalDatabase {
       this.logAction(this.sessionUserId, "update", "users", this.sessionUserId, "Deconnexion utilisateur");
     }
     this.sessionUserId = null;
+    this.sessionSyncSecret = null;
   }
 
   changeUserPassword(draft: PasswordChangeDraft): AppUser[] {
@@ -2297,7 +2451,10 @@ export class LocalDatabase {
 
     this.db
       .prepare("UPDATE users SET password_hash = ?, auth_sync_password = ? WHERE id = ?")
-      .run(this.hashPassword(newPassword), newPassword, targetUser.id);
+      .run(this.hashPassword(newPassword), this.encryptSyncSecret(newPassword), targetUser.id);
+    if (targetUser.id === this.sessionUserId) {
+      this.sessionSyncSecret = { userId: targetUser.id, password: newPassword };
+    }
     this.logAction(actor.id, "update", "users", targetUser.id, `Mot de passe mis a jour pour ${targetUser.email ?? targetUser.username}`);
     return this.listUsers();
   }
@@ -2558,6 +2715,7 @@ export class LocalDatabase {
 
   private logAction(userId: number | null, action: string, targetTable: string, targetId: number, details: string) {
     const actor = userId ? this.getUserRowById(userId) : undefined;
+    const createdAt = new Date().toISOString();
     this.db
       .prepare(`
         INSERT INTO audit_logs (user_id, action, target_table, target_id, details, actor_name, actor_username, source_device, source_platform, created_at, synced_at)
@@ -2573,8 +2731,8 @@ export class LocalDatabase {
         actor?.username ?? null,
         this.getSourceDeviceLabel(),
         "desktop",
-        new Date().toISOString(),
-        null
+        createdAt,
+        isSessionAuditLog(targetTable, details) ? createdAt : null
       );
   }
 

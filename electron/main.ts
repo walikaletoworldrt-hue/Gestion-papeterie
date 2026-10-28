@@ -229,7 +229,7 @@ function registerIpc() {
   ipcMain.handle("stock:current", () => database.getCurrentStock());
   ipcMain.handle("sync:status", () => database.getSyncStatus());
   ipcMain.handle("sync:pending-overview", () => database.getPendingSyncOverview());
-  ipcMain.handle("sync:snapshot", () => database.exportSyncSnapshot());
+  ipcMain.handle("sync:snapshot", () => database.exportSyncSnapshot({ includeSyncSecrets: true }));
   ipcMain.handle("sync:import", (_event, snapshot) => {
     database.importSyncSnapshot(snapshot);
   });
@@ -573,7 +573,10 @@ async function getAvailablePdfPath(initialPath: string) {
 }
 
 function createWindow() {
-  const preloadFile = app.isPackaged ? "preload.js" : "preload.cjs";
+  // Sandboxed preloads can't load TypeScript through tsx, so dev also uses the compiled preload.
+  const preloadPath = app.isPackaged
+    ? path.join(__dirname, "preload.js")
+    : path.join(getAppRoot(), "dist-electron", "electron", "preload.js");
   mainWindow = new BrowserWindow({
     width: 1340,
     height: 860,
@@ -583,7 +586,7 @@ function createWindow() {
     title: "Walikale Papeterie",
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, preloadFile),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
     },
