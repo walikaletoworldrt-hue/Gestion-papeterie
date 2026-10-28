@@ -1,0 +1,19 @@
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-01.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-02.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-03.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-04.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-05.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-06.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-07.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-08.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-09.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-09.png'

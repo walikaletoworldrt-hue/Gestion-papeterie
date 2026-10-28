@@ -228,6 +228,54 @@ button {
   background: #fff;
 }
 
+.login-forgot-password {
+  justify-self: start;
+  padding: 0.15rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--brand);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.login-forgot-password:hover {
+  text-decoration: underline;
+}
+
+.login-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.login-recovery-actions .login-submit-btn {
+  flex: 1 1 190px;
+}
+
+.login-recovery-note,
+.success-text {
+  margin: 0;
+  padding: 0.7rem 0.8rem;
+  border-radius: 0.75rem;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.login-recovery-note {
+  border: 1px solid #d7e4f4;
+  background: #f7faff;
+  color: #58708f;
+}
+
+.success-text {
+  border: 1px solid #9cdec2;
+  background: #f2fcf6;
+  color: #16683a;
+}
+
 .password-input-wrap {
   position: relative;
 }

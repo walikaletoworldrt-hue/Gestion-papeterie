@@ -4,7 +4,7 @@
 Walikale Papeterie
 
 ## Objet du document
-Ce document decrit l'etat fonctionnel reel de l'application au 21 aout 2026.
+Ce document decrit l'etat fonctionnel reel de l'application au 14 octobre 2026.
 
 Il sert a :
 - valider les fonctionnalites effectivement disponibles
@@ -137,8 +137,13 @@ Specificites :
 - en web, la connexion passe par Supabase Auth
 - les comptes relies au cloud doivent etre correctement associes a `auth_user_id`
 
+Recuperation de mot de passe :
+- lien `Mot de passe oublie ?` sur l'ecran de connexion
+- envoi d'un lien de reinitialisation par Supabase pour les adresses e-mail reelles
+- choix et confirmation d'un nouveau mot de passe depuis le lien recu
+- reinitialisation locale par le Super admin pour les comptes internes ou adresses inexistantes
+
 Limites actuelles :
-- pas de recuperation automatique du mot de passe par e-mail dans l'application
 - pas de double authentification
 
 ## 5. Tableau de bord
@@ -321,11 +326,14 @@ Fonctionnalites disponibles :
 - creation d'un nouvel approvisionnement
 - selection du produit
 - saisie de la quantite
-- saisie du prix d'achat
-- saisie du prix de vente
 - saisie du fournisseur
 - enregistrement de l'historique
 - mise a jour immediate du stock
+
+Droits sensibles :
+- le prix d'achat est visible et modifiable uniquement par le Super admin
+- le prix de vente reste utilise pour le suivi commercial
+- les Administrateurs ajoutent les quantites sans visualiser ni modifier le prix d'achat
 
 Regle ergonomique actuelle :
 - l'approvisionnement doit passer par le bouton principal `Nouvel approvisionnement`
@@ -334,8 +342,10 @@ Regle ergonomique actuelle :
 ### 11.1 Approvisionnement par lot
 
 Le flux d'approvisionnement prend maintenant en charge :
-- un numero `LOT commande`
-- un `Transport global du lot`
+- un numero `LOT commande` obligatoire
+- un `Transport global du lot` obligatoire et strictement superieur a zero
+- une generation automatique de numero au format `LOT-AAAAMMJJ-001`
+- une personnalisation possible du numero par le Super admin
 
 Objectif :
 - rattacher plusieurs produits a une meme commande
@@ -346,6 +356,13 @@ Les informations de lot sont stockees dans :
 - Supabase
 - l'historique d'approvisionnement
 - les imports/exports CSV
+
+Regles de gestion :
+- le Super admin cree un nouveau lot, renseigne son cout de transport et peut reutiliser ce lot pour plusieurs produits d'une meme commande
+- un meme numero de lot doit toujours conserver le meme cout de transport
+- l'Administrateur selectionne uniquement un lot deja cree par le Super admin
+- le cout de transport reste masque a l'Administrateur mais est repris automatiquement pour l'approvisionnement
+- aucun nouvel approvisionnement ne peut etre valide sans numero de lot ni cout de transport configure
 
 ### 11.2 Import et export
 
@@ -520,6 +537,7 @@ La synchronisation concerne :
 - journaux d'audit
 - sequences de facture
 - cycles d'inventaire
+- ventes Cybercafe et imports Mikhmon
 
 Fonctionnalites disponibles :
 - detection du statut en ligne
@@ -538,6 +556,12 @@ Les indicateurs ont une vraie fonction :
 - `Synchroniser` lance la synchronisation
 
 Le bouton `En attente` permet maintenant d'ouvrir une selection des blocs a synchroniser, afin d'eviter de tout pousser d'un coup.
+
+Protection des relations :
+- avant l'envoi des ventes, l'application rapproche les utilisateurs, produits, clients, services et factures entre le poste local et Supabase
+- le rapprochement utilise des identifiants metier stables, notamment le code ou le nom du produit et la reference de facture
+- si une vente locale utilise un produit absent du cloud, ce produit est publie avant ses lignes de vente
+- cette protection evite les erreurs de cle etrangere sur les lignes de vente lors de l'utilisation de plusieurs ordinateurs
 
 ### 17.2 Gestion des conflits
 
@@ -582,7 +606,38 @@ Le rapport est concu pour :
 - aider a comprendre rapidement si l'activite est rentable
 - orienter la prise de decision du responsable
 
-## 20. Ergonomie et experience utilisateur
+## 20. Module Cybercafe
+
+Le module Cybercafe est separe des ventes de papeterie afin de ne pas melanger les recettes de connexion internet avec les ventes de produits et services.
+
+Fonctionnalites disponibles :
+- enregistrement du total journalier de caisse
+- import d'un fichier CSV de rapport Mikhmon
+- rapprochement entre le total de caisse saisi et l'analyse du fichier importe
+- conservation de l'historique des imports par date
+- filtres par periode
+- graphiques de ventes journalieres, distribution par forfait et ventes par heure
+- statistiques globales sur les tickets et les montants
+- rapport de synthese pre-rempli pour envoi par e-mail
+
+Regles d'e-mail :
+- le nom de l'utilisateur expediteur est inclus dans le rapport
+- l'adresse du responsable est configuree par le Super admin uniquement
+- l'Administrateur peut declencher l'envoi sans modifier le destinataire
+- l'envoi ouvre le logiciel de messagerie configure sur le poste ; il ne s'agit pas encore d'un envoi automatise par serveur
+
+## 21. Sauvegarde, deploiement et exploitation
+
+Avant toute mise a jour de l'application desktop, une sauvegarde doit etre realisee puis verifiee. La restauration permet de recuperer les produits, clients, ventes, services, depenses, utilisateurs et autres donnees locales apres une reinstallation.
+
+Recommandations d'exploitation :
+- conserver une copie des sauvegardes en dehors du poste de travail
+- synchroniser regulierement chaque poste lorsqu'Internet est disponible
+- traiter les rubriques en attente une par une en cas de conflit
+- installer la meme version de l'application sur les postes appeles a synchroniser
+- executer les migrations SQL Supabase fournies avant une premiere mise en production
+
+## 22. Ergonomie et experience utilisateur
 
 Fonctionnalites visibles :
 - interface a onglets
@@ -594,7 +649,7 @@ Fonctionnalites visibles :
 - version web responsive amelioree
 - ajustements sur la version portable pour limiter les zones encombrantes
 
-## 21. Structures de donnees principales
+## 23. Structures de donnees principales
 
 Les structures actuellement couvertes comprennent notamment :
 - `users`
@@ -611,6 +666,9 @@ Les structures actuellement couvertes comprennent notamment :
 - `audit_logs`
 - `invoice_sequences`
 - `inventory_cycles`
+- `cybercafe_tariffs`
+- `cybercafe_sales`
+- `mikhmon_sales`
 
 Vue utilisee :
 - `current_stock_view`
@@ -620,18 +678,18 @@ Colonnes metier importantes ajoutees ou confirmees :
 - `replenishments.transport_total`
 - `users.auth_user_id`
 
-## 22. Limites et points encore a venir
+## 24. Limites et points encore a venir
 
 Les points suivants restent hors perimetre ou a renforcer :
 - envoi direct de rapport par e-mail depuis l'application
 - mecanisme PWA installable depuis le navigateur pour usage hors ligne complet
-- recuperation de mot de passe automatisee
+- prise en charge des comptes internes qui n'utilisent pas une adresse e-mail reelle pour la recuperation autonome du mot de passe
 - fusion avancee des conflits de synchronisation
 - permissions encore plus fines par action metier
 - module fournisseur autonome
 - gestion avancee des avoirs, remises et fiscalite
 
-## 23. Conclusion
+## 25. Conclusion
 
 L'application a atteint un niveau fonctionnel avance pour une mise en exploitation dans la papeterie.
 

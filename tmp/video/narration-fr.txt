@@ -1,0 +1,19 @@
+Découvrez Walikale Papeterie, la solution de gestion pensée pour les réalités quotidiennes des petites et moyennes entreprises.
+
+L'accès est sécurisé par une page de connexion simple, avec récupération du mot de passe et gestion des rôles.
+
+Une fois connecté, le tableau de bord donne une vision immédiate du stock, des ventes, des dépenses, des alertes et du solde net.
+
+Le module Produits centralise les articles, les catégories, les prix et les seuils d'alerte. Chaque référence reste facile à retrouver.
+
+Les approvisionnements sont organisés par commande et numéro de lot. Les coûts de transport sont répartis pour mieux suivre la rentabilité.
+
+Avec Ventes, enregistrez les produits ou les prestations de service, créez des factures professionnelles et mettez le stock à jour automatiquement.
+
+Les rapports financiers comparent les ventes et les dépenses sur la période choisie. Ils expliquent clairement si l'activité est excédentaire ou déficitaire.
+
+Le module Cybercafé, séparé de la papeterie, rapproche la recette de caisse avec les données importées depuis Mikhmon et présente des analyses utiles.
+
+Walikale Papeterie continue de fonctionner hors ligne sur Windows. Dès que la connexion revient, les données peuvent être synchronisées vers le cloud.
+
+Une solution fiable, évolutive et conçue pour aider les responsables à piloter, sécuriser et développer leurs activités.

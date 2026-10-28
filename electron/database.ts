@@ -1021,7 +1021,7 @@ export class LocalDatabase {
     const now = new Date().toISOString();
     const userId = this.getActorUserId();
     const cycleId = this.getCurrentInventoryCycleId();
-    const normalizedDraft = {
+    let normalizedDraft = {
       code: draft.code?.trim() || this.generateProductCode(draft.category?.trim() || "Papeterie"),
       name: draft.name.trim(),
       category: draft.category?.trim() || "Papeterie",
@@ -1052,6 +1052,37 @@ export class LocalDatabase {
       | undefined;
 
     if (existing) {
+      const lotNumber = normalizedDraft.replenishmentLotNumber;
+      if (!lotNumber) {
+        throw new Error("Le numero de lot est obligatoire pour chaque approvisionnement.");
+      }
+
+      if (actor.role === "Super admin") {
+        if (!Number.isFinite(normalizedDraft.replenishmentTransportTotal) || normalizedDraft.replenishmentTransportTotal <= 0) {
+          throw new Error("Le cout global de transport du lot est obligatoire et doit etre superieur a zero.");
+        }
+        const existingLot = this.db
+          .prepare("SELECT transport_total FROM replenishments WHERE LOWER(lot_number) = LOWER(?) AND transport_total > 0 ORDER BY id DESC LIMIT 1")
+          .get(lotNumber) as { transport_total: number } | undefined;
+        if (existingLot && Number(existingLot.transport_total) !== normalizedDraft.replenishmentTransportTotal) {
+          throw new Error("Ce numero de lot existe deja avec un autre cout de transport. Utilisez le meme cout ou creez un nouveau numero de lot.");
+        }
+      } else {
+        const configuredLot = this.db
+          .prepare("SELECT transport_total FROM replenishments WHERE LOWER(lot_number) = LOWER(?) AND transport_total > 0 ORDER BY id DESC LIMIT 1")
+          .get(lotNumber) as { transport_total: number } | undefined;
+        if (!configuredLot) {
+          throw new Error("Ce lot n'est pas configure. Selectionnez un lot cree par le super-admin.");
+        }
+
+        // Administrators may add quantities only. The approved lot keeps its transport cost.
+        normalizedDraft = {
+          ...normalizedDraft,
+          purchasePrice: Number(existing.purchase_price),
+          replenishmentTransportTotal: Number(configuredLot.transport_total),
+        };
+      }
+
       const isMetadataChanged =
         existing.code !== normalizedDraft.code ||
         existing.name !== normalizedDraft.name ||
@@ -1828,8 +1859,13 @@ export class LocalDatabase {
     return { imported, skipped, errors };
   }
 
-  pruneActivityHistory(months: number): number {
+  pruneActivityHistory(months: number | "all"): number {
     this.requireSuperAdminAccess("Seul le super administrateur peut nettoyer l'historique.");
+
+    if (months === "all") {
+      // Do not create a new audit entry: the user explicitly requested an empty history.
+      return this.db.prepare("DELETE FROM audit_logs").run().changes;
+    }
 
     const normalizedMonths = Math.max(1, Math.floor(months));
     const cutoffDate = new Date();

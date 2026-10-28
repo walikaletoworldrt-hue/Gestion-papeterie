@@ -1821,10 +1821,94 @@ async function getCloudSyncUserIdentities(): Promise<SyncUserIdentityRow[]> {
   return ensureData(result.data ?? [], result.error) as SyncUserIdentityRow[];
 }
 
-function remapSnapshotUserReferences(
+function normalizeSyncIdentity(value: unknown) {
+  return String(value ?? "").trim().toLocaleLowerCase("fr-FR");
+}
+
+function buildSyncEntityIdMap(
+  localRows: Array<Record<string, unknown>> | undefined,
+  targetRows: Array<Record<string, unknown>> | undefined,
+  getKey: (row: Record<string, unknown>) => string
+) {
+  const targetByKey = new Map<string, number>();
+  (targetRows ?? []).forEach((row) => {
+    const id = Number(row.id);
+    const key = getKey(row);
+    if (Number.isFinite(id) && key) targetByKey.set(key, id);
+  });
+
+  const localToTargetId = new Map<number, number>();
+  (localRows ?? []).forEach((row) => {
+    const localId = Number(row.id);
+    const targetId = targetByKey.get(getKey(row));
+    if (Number.isFinite(localId) && targetId) localToTargetId.set(localId, targetId);
+  });
+
+  return localToTargetId;
+}
+
+function addMissingSyncMappings(
+  primary: Map<number, number>,
+  fallback: Map<number, number>
+) {
+  fallback.forEach((targetId, localId) => {
+    if (!primary.has(localId)) primary.set(localId, targetId);
+  });
+  return primary;
+}
+
+function isCloudProductMatch(
+  localProduct: Record<string, unknown>,
+  cloudProduct: Record<string, unknown>
+) {
+  const localCode = normalizeSyncIdentity(localProduct.code);
+  const cloudCode = normalizeSyncIdentity(cloudProduct.code);
+  if (localCode && localCode === cloudCode) return true;
+
+  const localName = normalizeSyncIdentity(localProduct.name);
+  const cloudName = normalizeSyncIdentity(cloudProduct.name);
+  if (!localName || localName !== cloudName) return false;
+
+  const localCategory = normalizeSyncIdentity(localProduct.category);
+  const cloudCategory = normalizeSyncIdentity(cloudProduct.category);
+  return !localCategory || !cloudCategory || localCategory === cloudCategory;
+}
+
+async function ensureProductsReferencedBySales(
   snapshot: SyncSnapshot,
+  cloudSnapshot: SyncSnapshot
+) {
+  const referencedProductIds = new Set(
+    [...(snapshot.saleItems ?? []), ...(snapshot.stockMovements ?? [])]
+      .map((row) => Number(row.product_id))
+      .filter((id) => Number.isFinite(id))
+  );
+  if (referencedProductIds.size === 0) return cloudSnapshot;
+
+  const localProducts = (snapshot.products ?? []).filter((row) => referencedProductIds.has(Number(row.id)));
+  const missingProducts = localProducts.filter(
+    (localProduct) => !(cloudSnapshot.products ?? []).some((cloudProduct) => isCloudProductMatch(localProduct, cloudProduct))
+  );
+  if (missingProducts.length === 0) return cloudSnapshot;
+
+  // A local sale cannot be valid in Supabase without its parent product. Publish only
+  // the missing parent records, then reload their cloud IDs before inserting the sale.
+  const productPayload = missingProducts.map(({ id: _id, ...product }) => product);
+  const result = await (await ensureDesktopSupabaseSession())
+    .from("products")
+    .insert(productPayload);
+  ensureData(result.data ?? [], result.error);
+  return getCloudSnapshot();
+}
+
+function remapSnapshotReferences(
+  snapshot: SyncSnapshot,
+  localReferenceSnapshot: SyncSnapshot,
+  cloudSnapshot: SyncSnapshot,
+  included: Set<string> | null,
   cloudUsers: SyncUserIdentityRow[]
 ): SyncSnapshot {
+  const hasTable = (table: string) => !included || included.has(table);
   const byAuthUserId = new Map(
     cloudUsers.filter((user) => user.auth_user_id).map((user) => [String(user.auth_user_id), user.id])
   );
@@ -1836,7 +1920,7 @@ function remapSnapshotUserReferences(
   );
   const localToCloudUserId = new Map<number, number>();
 
-  (snapshot.users ?? []).forEach((rawUser) => {
+  (localReferenceSnapshot.users ?? []).forEach((rawUser) => {
     const localId = Number(rawUser.id);
     if (!Number.isFinite(localId)) return;
     const authUserId = rawUser.auth_user_id ? String(rawUser.auth_user_id) : "";
@@ -1848,30 +1932,123 @@ function remapSnapshotUserReferences(
     if (cloudId) localToCloudUserId.set(localId, cloudId);
   });
 
-  const remapRows = (rows: Array<Record<string, unknown>> | undefined) => (rows ?? []).map((row) => {
-    if (row.user_id === null || row.user_id === undefined) return row;
-    const mappedUserId = localToCloudUserId.get(Number(row.user_id));
-    // Local IDs are device-specific. Never send an unmatched ID to Supabase.
-    return { ...row, user_id: mappedUserId ?? null };
+  // When a parent table is included it is recreated with this device's IDs. Otherwise,
+  // resolve the local ID against the existing cloud record using a stable business key.
+  const targetProducts = hasTable("products") ? localReferenceSnapshot.products : cloudSnapshot.products;
+  const targetServices = hasTable("services") ? localReferenceSnapshot.services : cloudSnapshot.services;
+  const targetClients = hasTable("clients") ? localReferenceSnapshot.clients : cloudSnapshot.clients;
+  const targetTariffs = hasTable("cybercafe_tariffs")
+    ? localReferenceSnapshot.cybercafeTariffs
+    : cloudSnapshot.cybercafeTariffs;
+  const targetCycles = hasTable("inventory_cycles")
+    ? localReferenceSnapshot.inventoryCycles
+    : cloudSnapshot.inventoryCycles;
+  const targetSales = hasTable("sales") ? localReferenceSnapshot.sales : cloudSnapshot.sales;
+
+  const productIds = buildSyncEntityIdMap(
+    localReferenceSnapshot.products,
+    targetProducts,
+    (row) => normalizeSyncIdentity(row.code)
+  );
+  addMissingSyncMappings(productIds, buildSyncEntityIdMap(
+    localReferenceSnapshot.products,
+    targetProducts,
+    (row) => `${normalizeSyncIdentity(row.name)}|${normalizeSyncIdentity(row.category)}`
+  ));
+  addMissingSyncMappings(productIds, buildSyncEntityIdMap(
+    localReferenceSnapshot.products,
+    targetProducts,
+    (row) => normalizeSyncIdentity(row.name)
+  ));
+  const serviceIds = buildSyncEntityIdMap(
+    localReferenceSnapshot.services,
+    targetServices,
+    (row) => `${normalizeSyncIdentity(row.name)}|${normalizeSyncIdentity(row.category)}`
+  );
+  const clientIds = buildSyncEntityIdMap(
+    localReferenceSnapshot.clients,
+    targetClients,
+    (row) => {
+      const email = normalizeSyncIdentity(row.email);
+      if (email) return `email:${email}`;
+      const phone = normalizeSyncIdentity(row.phone);
+      const name = normalizeSyncIdentity(row.name);
+      return phone ? `phone:${phone}|${name}` : `name:${name}`;
+    }
+  );
+  const tariffIds = buildSyncEntityIdMap(
+    localReferenceSnapshot.cybercafeTariffs,
+    targetTariffs,
+    (row) => normalizeSyncIdentity(row.name)
+  );
+  const cycleIds = buildSyncEntityIdMap(
+    localReferenceSnapshot.inventoryCycles,
+    targetCycles,
+    (row) => `${normalizeSyncIdentity(row.label)}|${String(row.started_at ?? "")}`
+  );
+  const saleIds = buildSyncEntityIdMap(
+    localReferenceSnapshot.sales,
+    targetSales,
+    (row) => normalizeSyncIdentity(row.reference)
+  );
+
+  const remapRows = (
+    rows: Array<Record<string, unknown>> | undefined,
+    references: Record<string, Map<number, number>>
+  ) => (rows ?? []).map((row) => {
+    const mapped = { ...row };
+    Object.entries(references).forEach(([column, ids]) => {
+      if (mapped[column] === null || mapped[column] === undefined) return;
+      const targetId = ids.get(Number(mapped[column]));
+      if (targetId) mapped[column] = targetId;
+    });
+    return mapped;
   });
 
   return {
     ...snapshot,
-    expenses: remapRows(snapshot.expenses),
-    initialStocks: remapRows(snapshot.initialStocks),
-    replenishments: remapRows(snapshot.replenishments),
-    sales: remapRows(snapshot.sales),
-    cybercafeSales: remapRows(snapshot.cybercafeSales),
-    mikhmonSales: remapRows(snapshot.mikhmonSales),
-    stockMovements: remapRows(snapshot.stockMovements),
-    auditLogs: remapRows(snapshot.auditLogs),
-    inventoryCycles: remapRows(snapshot.inventoryCycles),
+    expenses: remapRows(snapshot.expenses, { user_id: localToCloudUserId }),
+    initialStocks: remapRows(snapshot.initialStocks, {
+      product_id: productIds,
+      cycle_id: cycleIds,
+      user_id: localToCloudUserId,
+    }),
+    replenishments: remapRows(snapshot.replenishments, {
+      product_id: productIds,
+      cycle_id: cycleIds,
+      user_id: localToCloudUserId,
+    }),
+    sales: remapRows(snapshot.sales, {
+      client_id: clientIds,
+      cycle_id: cycleIds,
+      user_id: localToCloudUserId,
+    }),
+    saleItems: remapRows(snapshot.saleItems, { sale_id: saleIds, product_id: productIds }),
+    saleServiceItems: remapRows(snapshot.saleServiceItems, { sale_id: saleIds, service_id: serviceIds }),
+    cybercafeSales: remapRows(snapshot.cybercafeSales, { tariff_id: tariffIds, user_id: localToCloudUserId }),
+    mikhmonSales: remapRows(snapshot.mikhmonSales, { user_id: localToCloudUserId }),
+    stockMovements: remapRows(snapshot.stockMovements, {
+      product_id: productIds,
+      cycle_id: cycleIds,
+      user_id: localToCloudUserId,
+    }),
+    auditLogs: remapRows(snapshot.auditLogs, { user_id: localToCloudUserId }),
+    inventoryCycles: remapRows(snapshot.inventoryCycles, { user_id: localToCloudUserId }),
   };
 }
 
-async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTables: string[] | null, canSyncUsers: boolean) {
+async function replaceSupabaseSyncTables(
+  syncSnapshot: SyncSnapshot,
+  selectedTables: string[] | null,
+  canSyncUsers: boolean,
+  localReferenceSnapshot: SyncSnapshot = syncSnapshot
+) {
   const included = selectedTables ? new Set(selectedTables) : null;
   const hasTable = (table: string) => !included || included.has(table);
+  // Keep the pre-replacement cloud IDs. They are required when this device sends
+  // sales while products and clients were created or received on another device.
+  let cloudSnapshot = await getCloudSnapshot();
+  cloudSnapshot = await ensureProductsReferencedBySales(localReferenceSnapshot, cloudSnapshot);
 
   if (hasTable("sale_items")) await deleteSupabaseRows("sale_items");
   if (hasTable("sale_service_items")) await deleteSupabaseRows("sale_service_items");
@@ -1894,7 +2071,13 @@ async function replaceSupabaseSyncTables(syncSnapshot: SyncSnapshot, selectedTab
     await syncUsersToSupabase(syncSnapshot.users ?? []);
   }
 
-  const resolvedSnapshot = remapSnapshotUserReferences(syncSnapshot, await getCloudSyncUserIdentities());
+  const resolvedSnapshot = remapSnapshotReferences(
+    syncSnapshot,
+    localReferenceSnapshot,
+    cloudSnapshot,
+    included,
+    await getCloudSyncUserIdentities()
+  );
 
   if (hasTable("products")) await insertSupabaseRows("products", resolvedSnapshot.products);
   if (hasTable("services")) await insertSupabaseRows("services", resolvedSnapshot.services);
@@ -2492,7 +2675,7 @@ export const repository = {
           effectiveChangedTables.filter((table) => table !== "audit_logs")
         );
 
-        await replaceSupabaseSyncTables(mergedSnapshot, null, canSyncUsers);
+        await replaceSupabaseSyncTables(mergedSnapshot, null, canSyncUsers, snapshot as SyncSnapshot);
         await syncSupabaseIdentitySequences();
 
         const syncedAt = new Date().toISOString();
@@ -2506,7 +2689,12 @@ export const repository = {
         return this.getSyncStatus();
       }
 
-      await replaceSupabaseSyncTables(syncSnapshot, selectedTables ? [...effectiveChangedTables, "audit_logs"] : null, canSyncUsers);
+      await replaceSupabaseSyncTables(
+        syncSnapshot,
+        selectedTables ? [...effectiveChangedTables, "audit_logs"] : null,
+        canSyncUsers,
+        snapshot as SyncSnapshot
+      );
       await syncSupabaseIdentitySequences();
 
       const syncedAt = new Date().toISOString();
@@ -2621,6 +2809,45 @@ export const repository = {
       } | null;
 
       if (existing) {
+        const isSuperAdmin = profile?.role === "Super admin";
+        const lotNumber = draft.replenishmentLotNumber?.trim() ?? "";
+        if (!lotNumber) {
+          throw new Error("Le numero de lot est obligatoire pour chaque approvisionnement.");
+        }
+        let configuredLotTransportTotal = 0;
+        const configuredLotResult = await client
+          .from("replenishments")
+          .select("transport_total")
+          .ilike("lot_number", lotNumber)
+          .gt("transport_total", 0)
+          .order("id", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (configuredLotResult.error) {
+          throw new Error(configuredLotResult.error.message || "Impossible de verifier le lot selectionne.");
+        }
+        configuredLotTransportTotal = Number(configuredLotResult.data?.transport_total ?? 0);
+        if (!isSuperAdmin) {
+          if (!Number.isFinite(configuredLotTransportTotal) || configuredLotTransportTotal <= 0) {
+            throw new Error("Ce lot n'est pas configure. Selectionnez un lot cree par le super-admin.");
+          }
+        }
+        const replenishmentPurchasePrice = isSuperAdmin
+          ? Number(draft.purchasePrice)
+          : Number(existing.purchase_price);
+        const replenishmentTransportTotal = isSuperAdmin
+          ? Number(draft.replenishmentTransportTotal ?? 0)
+          : configuredLotTransportTotal;
+        if (!Number.isFinite(replenishmentTransportTotal) || replenishmentTransportTotal <= 0) {
+          throw new Error("Le cout global de transport du lot est obligatoire et doit etre superieur a zero.");
+        }
+        if (isSuperAdmin && configuredLotTransportTotal > 0 && configuredLotTransportTotal !== replenishmentTransportTotal) {
+          throw new Error("Ce numero de lot existe deja avec un autre cout de transport. Utilisez le meme cout ou creez un nouveau numero de lot.");
+        }
+        if (!isSuperAdmin) {
+          // Desktop and web follow the same rule: only the super-admin controls costs.
+          normalizedProduct.purchase_price = replenishmentPurchasePrice;
+        }
         const isMetadataChanged =
           existing.code !== normalizedProduct.code ||
           existing.name !== normalizedProduct.name ||
@@ -2646,10 +2873,10 @@ export const repository = {
           .insert({
             product_id: existing.id,
             quantity: Number(draft.quantity),
-            purchase_price: Number(draft.purchasePrice),
+            purchase_price: replenishmentPurchasePrice,
             supplier: trimmedSupplier,
-            lot_number: draft.replenishmentLotNumber?.trim() || null,
-            transport_total: Number(draft.replenishmentTransportTotal ?? 0),
+            lot_number: lotNumber,
+            transport_total: replenishmentTransportTotal,
             cycle_id: cycleId,
             note: "Reapprovisionnement",
           })
@@ -3362,12 +3589,14 @@ export const repository = {
     throw new Error("L'import CSV d'approvisionnement est disponible dans l'application desktop.");
   },
 
-  async pruneActivityHistory(months: number): Promise<number> {
+  async pruneActivityHistory(months: number | "all"): Promise<number> {
     if (window.desktopApi) {
       return window.desktopApi.pruneActivityHistory(months);
     }
 
-    const normalizedMonths = Math.max(1, Math.floor(months));
+    const clearEverything = months === "all";
+
+    const normalizedMonths = clearEverything ? 0 : Math.max(1, Math.floor(months));
     const cutoffDate = new Date();
     cutoffDate.setMonth(cutoffDate.getMonth() - normalizedMonths);
     cutoffDate.setHours(0, 0, 0, 0);
@@ -3377,6 +3606,14 @@ export const repository = {
       await ensureSuperAdminAccess("Seul le super administrateur peut nettoyer l'historique.");
 
       const client = getSupabaseClient();
+      if (clearEverything) {
+        const countResult = await client.from("audit_logs").select("id", { count: "exact", head: true });
+        ensureData(countResult.data, countResult.error);
+        const deleteResult = await client.from("audit_logs").delete().gte("id", 0);
+        ensureData(deleteResult.data, deleteResult.error);
+        return countResult.count ?? 0;
+      }
+
       const selectResult = await client.from("audit_logs").select("id").lt("created_at", cutoffIso);
       const rows = ensureData(selectResult.data, selectResult.error) as { id: number }[];
 
@@ -3391,6 +3628,11 @@ export const repository = {
 
     await ensureSuperAdminAccess("Seul le super administrateur peut nettoyer l'historique.");
     const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
+    if (clearEverything) {
+      persistWebActivityHistory([]);
+      return activityHistory.length;
+    }
+
     const nextActivityHistory = activityHistory.filter((item) => {
       if (!item.timestamp) {
         return true;
@@ -4303,6 +4545,45 @@ export const repository = {
     }
 
     window.sessionStorage.removeItem(webSessionStorageKey);
+  },
+
+  async requestPasswordReset(email: string): Promise<void> {
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      throw new Error("Saisissez l'adresse e-mail de votre compte.");
+    }
+
+    if (!isSupabaseEnabled()) {
+      throw new Error("La recuperation par e-mail exige une connexion Internet. Contactez le super-admin pour reinitialiser votre acces local.");
+    }
+
+    const configuredRedirectUrl = import.meta.env.VITE_PASSWORD_RESET_REDIRECT_URL?.trim();
+    const webRedirectUrl = typeof window !== "undefined" && /^https?:/i.test(window.location.origin)
+      ? `${window.location.origin}/?recover-password=1`
+      : "https://papeterieww.netlify.app/?recover-password=1";
+    const result = await getSupabaseClient().auth.resetPasswordForEmail(normalizedEmail, {
+      redirectTo: configuredRedirectUrl || webRedirectUrl,
+    });
+
+    if (result.error) {
+      throw new Error(result.error.message || "Impossible d'envoyer le lien de reinitialisation.");
+    }
+  },
+
+  async completePasswordRecovery(newPassword: string): Promise<void> {
+    const password = newPassword.trim();
+    if (password.length < 6) {
+      throw new Error("Le nouveau mot de passe doit contenir au moins 6 caracteres.");
+    }
+
+    if (!isSupabaseEnabled()) {
+      throw new Error("Cette reinitialisation doit etre finalisee en ligne.");
+    }
+
+    const result = await getSupabaseClient().auth.updateUser({ password });
+    if (result.error) {
+      throw new Error(result.error.message || "Le lien de reinitialisation est invalide ou expire.");
+    }
   },
 
   async changeUserPassword(draft: PasswordChangeDraft): Promise<AppUser[]> {

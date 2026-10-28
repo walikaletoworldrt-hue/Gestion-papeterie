@@ -60,7 +60,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   importReplenishmentCsv: (): Promise<ReplenishmentImportSummary | null> => ipcRenderer.invoke("replenishments:import"),
   getSupplyHistory: (): Promise<SupplyHistoryItem[]> => ipcRenderer.invoke("history:supply"),
   getActivityHistory: (): Promise<ActivityHistoryItem[]> => ipcRenderer.invoke("history:activity"),
-  pruneActivityHistory: (months: number): Promise<number> => ipcRenderer.invoke("history:prune", months),
+  pruneActivityHistory: (months: number | "all"): Promise<number> => ipcRenderer.invoke("history:prune", months),
   listExpenses: (): Promise<ExpenseItem[]> => ipcRenderer.invoke("expenses:list"),
   saveExpense: (draft: ExpenseDraft): Promise<ExpenseItem[]> => ipcRenderer.invoke("expenses:save", draft),
   getDashboardMetrics: (): Promise<DashboardMetrics> => ipcRenderer.invoke("dashboard:metrics"),

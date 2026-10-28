@@ -219,7 +219,7 @@ type MonthlyComparisonPoint = {
 type SalesPeriodPreset = "all" | "today" | "7d" | "30d" | "90d" | "month" | "year" | "custom";
 type ExpenseReportPeriodPreset = "today" | "30d" | "month" | "year" | "all" | "custom";
 type HistoryVisibilityPreset = "3m" | "6m" | "12m" | "all";
-type HistoryCleanupPreset = 6 | 12 | 24;
+type HistoryCleanupPreset = 6 | 12 | 24 | "all";
 
 function formatCurrency(value: number) {
   const safeValue = Number.isFinite(value) ? value : 0;
@@ -944,6 +944,19 @@ function createEmptyReplenishmentDraft(products: Product[]): ReplenishmentDraft 
   };
 }
 
+function buildNextSupplyLotNumber(history: SupplyHistoryItem[]) {
+  const today = new Date();
+  const dateKey = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+  const prefix = `LOT-${dateKey}-`;
+  const highestSequence = history.reduce((highest, entry) => {
+    const lotNumber = entry.lotNumber?.trim().toUpperCase() ?? "";
+    if (!lotNumber.startsWith(prefix)) return highest;
+    const sequence = Number(lotNumber.slice(prefix.length));
+    return Number.isInteger(sequence) && sequence > highest ? sequence : highest;
+  }, 0);
+  return `${prefix}${String(highestSequence + 1).padStart(3, "0")}`;
+}
+
 const sessionStorageKey = "walikale-active-user-id";
 
 function Modal({
@@ -1097,6 +1110,14 @@ export default function App() {
   const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
+  const [passwordRecoveryMode, setPasswordRecoveryMode] = useState(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("recover-password") === "1"
+  );
+  const [passwordRecoveryEmail, setPasswordRecoveryEmail] = useState("");
+  const [passwordRecoveryDraft, setPasswordRecoveryDraft] = useState({ password: "", confirmation: "" });
+  const [passwordRecoveryMessage, setPasswordRecoveryMessage] = useState("");
+  const [passwordRecoveryError, setPasswordRecoveryError] = useState("");
+  const [passwordRecoveryBusy, setPasswordRecoveryBusy] = useState(false);
   const [passwordModalState, setPasswordModalState] = useState<PasswordModalState | null>(null);
   const [passwordDraft, setPasswordDraft] = useState({
     currentPassword: "",
@@ -1263,9 +1284,7 @@ export default function App() {
               ...item,
               productId: item.productId || nextProducts[0]?.id || 0,
             }))
-          : nextProducts.length > 0
-            ? [createSaleLine(nextProducts[0]?.id || 0)]
-            : [],
+          : [],
       serviceItems:
         current.serviceItems.length > 0
           ? current.serviceItems.map((item) => ({
@@ -1473,6 +1492,63 @@ export default function App() {
     }
   }
 
+  async function handlePasswordRecoveryRequest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPasswordRecoveryError("");
+    setPasswordRecoveryMessage("");
+
+    try {
+      setPasswordRecoveryBusy(true);
+      await repository.requestPasswordReset(passwordRecoveryEmail);
+      setPasswordRecoveryMessage("Si ce compte existe, un lien de reinitialisation vient d'etre envoye. Verifiez votre boite e-mail.");
+    } catch (error) {
+      setPasswordRecoveryError(error instanceof Error ? error.message : "Impossible d'envoyer le lien de reinitialisation.");
+    } finally {
+      setPasswordRecoveryBusy(false);
+    }
+  }
+
+  async function handlePasswordRecoveryCompletion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setPasswordRecoveryError("");
+    setPasswordRecoveryMessage("");
+
+    if (passwordRecoveryDraft.password !== passwordRecoveryDraft.confirmation) {
+      setPasswordRecoveryError("La confirmation du mot de passe ne correspond pas.");
+      return;
+    }
+
+    try {
+      setPasswordRecoveryBusy(true);
+      await repository.completePasswordRecovery(passwordRecoveryDraft.password);
+      setPasswordRecoveryDraft({ password: "", confirmation: "" });
+      setPasswordRecoveryMode(false);
+      window.history.replaceState({}, "", window.location.pathname);
+      showToast("success", "Mot de passe mis a jour. Vous pouvez maintenant vous connecter.");
+    } catch (error) {
+      setPasswordRecoveryError(error instanceof Error ? error.message : "Impossible de finaliser la reinitialisation.");
+    } finally {
+      setPasswordRecoveryBusy(false);
+    }
+  }
+
+  function openPasswordRecovery() {
+    setPasswordRecoveryMode(true);
+    setPasswordRecoveryEmail(loginIdentifier.includes("@") ? loginIdentifier : "");
+    setPasswordRecoveryDraft({ password: "", confirmation: "" });
+    setPasswordRecoveryError("");
+    setPasswordRecoveryMessage("");
+  }
+
+  function closePasswordRecovery() {
+    setPasswordRecoveryMode(false);
+    setPasswordRecoveryError("");
+    setPasswordRecoveryMessage("");
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("recover-password") === "1") {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }
+
   async function handleLogout() {
     await repository.logoutUser();
     window.sessionStorage.removeItem(sessionStorageKey);
@@ -1597,7 +1673,7 @@ export default function App() {
     setSaleDraft((current) => ({
       ...current,
       clientId: current.clientId ?? clients[0]?.id ?? null,
-      items: current.items.length > 0 ? current.items : products.length > 0 ? [createSaleLine(products[0]?.id ?? 0)] : [],
+      items: current.items,
       serviceItems: current.serviceItems.length > 0 ? current.serviceItems : [],
     }));
     setActiveModal("sale");
@@ -1707,14 +1783,31 @@ export default function App() {
     }
 
     const selectedProduct = product ?? products[0];
+    const configuredLots = supplyHistory
+      .filter((entry) => entry.movementType === "reapprovisionnement" && entry.lotNumber && Number(entry.transportTotal) > 0)
+      .reduce<Array<{ number: string; transportTotal: number }>>((lots, entry) => {
+        const number = entry.lotNumber?.trim() ?? "";
+        if (!number || lots.some((lot) => lot.number.toLocaleLowerCase("fr-FR") === number.toLocaleLowerCase("fr-FR"))) {
+          return lots;
+        }
+        lots.push({ number, transportTotal: Number(entry.transportTotal) });
+        return lots;
+      }, []);
+
+    if (!isSuperAdmin && configuredLots.length === 0) {
+      showAccessDenied("Aucun lot avec transport n'est disponible. Le super-admin doit d'abord creer un lot.");
+      return;
+    }
+
+    const selectedLot = configuredLots[0];
     setReplenishmentDraft({
       productId: selectedProduct.id,
       quantity: "",
       purchasePrice: selectedProduct.purchasePrice,
       sellingPrice: selectedProduct.sellingPrice,
       supplier: selectedProduct.supplier,
-      lotNumber: "",
-      transportTotal: 0,
+      lotNumber: isSuperAdmin ? buildNextSupplyLotNumber(supplyHistory) : selectedLot.number,
+      transportTotal: isSuperAdmin ? 0 : selectedLot.transportTotal,
     });
     setActiveModal("replenishment");
   }
@@ -2121,18 +2214,39 @@ export default function App() {
       return;
     }
 
+    const lotNumber = replenishmentDraft.lotNumber.trim();
+    if (!lotNumber) {
+      showToast("error", "Le numero de lot est obligatoire pour chaque approvisionnement.");
+      return;
+    }
+
+    const configuredLot = supplyHistory.find(
+      (entry) => entry.movementType === "reapprovisionnement" &&
+        entry.lotNumber?.trim().toLocaleLowerCase("fr-FR") === lotNumber.toLocaleLowerCase("fr-FR") &&
+        Number(entry.transportTotal) > 0
+    );
+    const transportTotal = isSuperAdmin
+      ? Number(replenishmentDraft.transportTotal)
+      : Number(configuredLot?.transportTotal ?? 0);
+
+    if (!Number.isFinite(transportTotal) || transportTotal <= 0) {
+      showToast("error", "Le cout global de transport du lot est obligatoire et doit etre superieur a zero.");
+      return;
+    }
+
     await repository.saveProduct({
       code: selectedProduct.code,
       name: selectedProduct.name,
       category: selectedProduct.category,
-      purchasePrice: Number(replenishmentDraft.purchasePrice),
+      // Administrators replenish existing stock but cannot view or alter its cost data.
+      purchasePrice: isSuperAdmin ? Number(replenishmentDraft.purchasePrice) : selectedProduct.purchasePrice,
       sellingPrice: Number(replenishmentDraft.sellingPrice),
       quantity: replenishmentQuantity,
       unit: selectedProduct.unit,
       alertThreshold: selectedProduct.alertThreshold,
       supplier: replenishmentDraft.supplier.trim() || selectedProduct.supplier,
-      replenishmentLotNumber: replenishmentDraft.lotNumber.trim(),
-      replenishmentTransportTotal: Number(replenishmentDraft.transportTotal || 0),
+      replenishmentLotNumber: lotNumber,
+      replenishmentTransportTotal: transportTotal,
     });
 
     await loadData();
@@ -2195,7 +2309,7 @@ export default function App() {
       setSaleDraft({
         clientId: clients[0]?.id ?? null,
         paymentMethod: "Especes",
-        items: products.length > 0 ? [createSaleLine(products[0]?.id ?? 0)] : [],
+        items: [],
         serviceItems: [],
       });
       await loadData();
@@ -2386,10 +2500,15 @@ export default function App() {
       const refreshedHistory = await repository.getActivityHistory();
       setActivityHistory(refreshedHistory);
 
+      const isFullCleanup = historyCleanupPreset === "all";
       const message =
         deletedCount > 0
-          ? `${deletedCount} journal(aux) d'activite de plus de ${historyCleanupPreset} mois ont ete supprimes.`
-          : `Aucun journal d'activite de plus de ${historyCleanupPreset} mois a supprimer.`;
+          ? isFullCleanup
+            ? `${deletedCount} journal(aux) d'activite ont ete supprimes.`
+            : `${deletedCount} journal(aux) d'activite de plus de ${historyCleanupPreset} mois ont ete supprimes.`
+          : isFullCleanup
+            ? "Aucun journal d'activite a supprimer."
+            : `Aucun journal d'activite de plus de ${historyCleanupPreset} mois a supprimer.`;
       setUserMessage(message);
       showToast(deletedCount > 0 ? "success" : "info", message);
     } catch (error) {
@@ -2484,7 +2603,7 @@ export default function App() {
       const nextItems = current.items.filter((_, itemIndex) => itemIndex !== index);
       return {
         ...current,
-        items: nextItems.length > 0 ? nextItems : [createSaleLine(products[0]?.id ?? 0)],
+        items: nextItems,
       };
     });
   }
@@ -3447,10 +3566,45 @@ export default function App() {
           </div>
 
           <div className="login-panel-header login-panel-section">
-            <h2>Connexion</h2>
-            <p>Connectez-vous pour acceder a votre espace de travail.</p>
+            <h2>{passwordRecoveryMode ? "Recuperer mon acces" : "Connexion"}</h2>
+            <p>{passwordRecoveryMode ? "Reinitialisez votre mot de passe de maniere securisee." : "Connectez-vous pour acceder a votre espace de travail."}</p>
           </div>
 
+          {passwordRecoveryMode ? (
+            new URLSearchParams(window.location.search).get("recover-password") === "1" ? (
+              <form className="login-form" onSubmit={handlePasswordRecoveryCompletion}>
+                <p className="login-copy">Choisissez un nouveau mot de passe pour votre compte.</p>
+                <label>
+                  Nouveau mot de passe
+                  <input type="password" minLength={6} autoComplete="new-password" value={passwordRecoveryDraft.password} onChange={(event) => setPasswordRecoveryDraft((current) => ({ ...current, password: event.target.value }))} required />
+                </label>
+                <label>
+                  Confirmer le nouveau mot de passe
+                  <input type="password" minLength={6} autoComplete="new-password" value={passwordRecoveryDraft.confirmation} onChange={(event) => setPasswordRecoveryDraft((current) => ({ ...current, confirmation: event.target.value }))} required />
+                </label>
+                {passwordRecoveryError ? <p className="error-text">{passwordRecoveryError}</p> : null}
+                <div className="login-recovery-actions">
+                  <button className="ghost-btn muted" type="button" onClick={closePasswordRecovery} disabled={passwordRecoveryBusy}>Retour</button>
+                  <button className="primary-btn login-submit-btn" type="submit" disabled={passwordRecoveryBusy}>{passwordRecoveryBusy ? "Mise a jour..." : "Enregistrer le nouveau mot de passe"}</button>
+                </div>
+              </form>
+            ) : (
+              <form className="login-form" onSubmit={handlePasswordRecoveryRequest}>
+                <p className="login-copy">Entrez l'adresse e-mail reelle associee au compte. Nous vous enverrons un lien valable une seule fois.</p>
+                <label>
+                  Adresse e-mail du compte
+                  <input type="email" value={passwordRecoveryEmail} onChange={(event) => setPasswordRecoveryEmail(event.target.value)} placeholder="votre@email.com" autoComplete="email" required />
+                </label>
+                {passwordRecoveryMessage ? <p className="success-text">{passwordRecoveryMessage}</p> : null}
+                {passwordRecoveryError ? <p className="error-text">{passwordRecoveryError}</p> : null}
+                <p className="login-recovery-note">Pour une adresse e-mail interne ou inexistante, demandez au super-admin de reinitialiser le mot de passe dans « Utilisateurs ».</p>
+                <div className="login-recovery-actions">
+                  <button className="ghost-btn muted" type="button" onClick={closePasswordRecovery} disabled={passwordRecoveryBusy}>Retour a la connexion</button>
+                  <button className="primary-btn login-submit-btn" type="submit" disabled={passwordRecoveryBusy}>{passwordRecoveryBusy ? "Envoi..." : "Envoyer le lien"}</button>
+                </div>
+              </form>
+            )
+          ) : (
           <form className="login-form" onSubmit={handleLogin}>
             <label>
               Adresse e-mail ou identifiant
@@ -3492,7 +3646,11 @@ export default function App() {
             >
               {loginBusy ? "Connexion..." : "Se connecter"}
             </button>
+            <button className="login-forgot-password" type="button" onClick={openPasswordRecovery}>
+              Mot de passe oublie ?
+            </button>
           </form>
+          )}
 
           {!repository.hasSupabaseConfig && activeAccounts.length === 0 ? (
             <EmptyState
@@ -4077,11 +4235,13 @@ export default function App() {
                           Categorie{getProductSortIndicator("category")}
                         </button>
                       </th>
-                      <th>
-                        <button className="sort-header-btn" type="button" onClick={() => handleProductSort("purchasePrice")}>
-                          Prix achat{getProductSortIndicator("purchasePrice")}
-                        </button>
-                      </th>
+                      {isSuperAdmin ? (
+                        <th>
+                          <button className="sort-header-btn" type="button" onClick={() => handleProductSort("purchasePrice")}>
+                            Prix achat{getProductSortIndicator("purchasePrice")}
+                          </button>
+                        </th>
+                      ) : null}
                       <th>
                         <button className="sort-header-btn" type="button" onClick={() => handleProductSort("sellingPrice")}>
                           Prix de vente{getProductSortIndicator("sellingPrice")}
@@ -4103,7 +4263,7 @@ export default function App() {
                         <td>
                           <span className="products-category-badge">{item.category}</span>
                         </td>
-                        <td>{formatCurrency(item.purchasePrice)}</td>
+                        {isSuperAdmin ? <td>{formatCurrency(item.purchasePrice)}</td> : null}
                         <td className="products-price-cell">{formatCurrency(item.sellingPrice)}</td>
                         <td>
                           <span className={`products-threshold-badge ${item.quantity <= item.alertThreshold ? "warning" : "success"}`}>
@@ -4494,7 +4654,7 @@ export default function App() {
                   <tr>
                     <th>Produit</th>
                     <th>Quantite initiale</th>
-                    <th>Prix d'achat</th>
+                    {isSuperAdmin ? <th>Prix d'achat</th> : null}
                     <th>Unite</th>
                   </tr>
                 </thead>
@@ -4503,7 +4663,7 @@ export default function App() {
                     <tr key={item.id}>
                       <td>{item.name}</td>
                       <td>{item.quantity}</td>
-                      <td>{formatCurrency(item.purchasePrice)}</td>
+                      {isSuperAdmin ? <td>{formatCurrency(item.purchasePrice)}</td> : null}
                       <td>{item.unit}</td>
                     </tr>
                   ))}
@@ -4560,7 +4720,7 @@ export default function App() {
                   <thead>
                     <tr>
                       <th>Nom</th>
-                      <th>Prix d'achat</th>
+                      {isSuperAdmin ? <th>Prix d'achat</th> : null}
                       <th>Prix de vente</th>
                       <th>Stock</th>
                       <th>Fournisseur</th>
@@ -4571,7 +4731,7 @@ export default function App() {
                     {replenishmentProducts.map((item) => (
                       <tr key={item.id}>
                         <td>{item.name}</td>
-                        <td>{formatCurrency(item.purchasePrice)}</td>
+                        {isSuperAdmin ? <td>{formatCurrency(item.purchasePrice)}</td> : null}
                         <td>{formatCurrency(item.sellingPrice)}</td>
                         <td>{item.quantity}</td>
                       <td>{item.supplier}</td>
@@ -5214,8 +5374,13 @@ export default function App() {
                   Nettoyage des anciens logs
                   <select
                     value={String(historyCleanupPreset)}
-                    onChange={(event) => setHistoryCleanupPreset(Number(event.target.value) as HistoryCleanupPreset)}
+                    onChange={(event) =>
+                      setHistoryCleanupPreset(
+                        event.target.value === "all" ? "all" : (Number(event.target.value) as HistoryCleanupPreset)
+                      )
+                    }
                   >
+                    <option value="all">Supprimer tout l'historique et les logs</option>
                     <option value="6">Supprimer les logs de plus de 6 mois</option>
                     <option value="12">Supprimer les logs de plus de 12 mois</option>
                     <option value="24">Supprimer les logs de plus de 24 mois</option>
@@ -5233,14 +5398,20 @@ export default function App() {
                       askConfirmation({
                         title: "Nettoyer l'historique",
                         message:
-                          "Cette action supprime uniquement les journaux d'activite anciens. Les ventes, depenses, produits, clients et stocks ne seront pas effaces.",
-                        actionLabel: "Nettoyer maintenant",
+                          historyCleanupPreset === "all"
+                            ? "Cette action supprime definitivement tous les journaux d'activite et logs. Les ventes, depenses, produits, clients et stocks ne seront pas effaces."
+                            : "Cette action supprime uniquement les journaux d'activite anciens. Les ventes, depenses, produits, clients et stocks ne seront pas effaces.",
+                        actionLabel: historyCleanupPreset === "all" ? "Tout supprimer" : "Nettoyer maintenant",
                         tone: "danger",
                         onConfirm: handlePruneHistory,
                       })
                     }
                   >
-                    {historyCleanupBusy ? "Nettoyage..." : "Nettoyer ancien historique"}
+                    {historyCleanupBusy
+                      ? "Nettoyage..."
+                      : historyCleanupPreset === "all"
+                        ? "Supprimer tous les logs"
+                        : "Nettoyer ancien historique"}
                   </button>
                 </div>
               </div>
@@ -5823,39 +5994,77 @@ export default function App() {
                 required
               />
             </label>
-            <label>
-              LOT commande
-              <input
-                value={replenishmentDraft.lotNumber}
-                onChange={(event) => setReplenishmentDraft((current) => ({ ...current, lotNumber: event.target.value }))}
-                placeholder="Ex: LOT-AOUT-001"
-              />
-            </label>
-            <label>
-              Transport global du lot
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={replenishmentDraft.transportTotal}
-                onChange={(event) =>
-                  setReplenishmentDraft((current) => ({ ...current, transportTotal: Number(event.target.value) || 0 }))
-                }
-              />
-            </label>
-            <label>
-              Prix d'achat
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={replenishmentDraft.purchasePrice}
-                onChange={(event) =>
-                  setReplenishmentDraft((current) => ({ ...current, purchasePrice: Number(event.target.value) }))
-                }
-                required
-              />
-            </label>
+            {isSuperAdmin ? (
+              <label>
+                LOT commande
+                <input
+                  value={replenishmentDraft.lotNumber}
+                  onChange={(event) => setReplenishmentDraft((current) => ({ ...current, lotNumber: event.target.value.toUpperCase() }))}
+                  placeholder="Ex: LOT-20261014-001"
+                  required
+                />
+                <small>Numero genere automatiquement, modifiable si necessaire.</small>
+              </label>
+            ) : (
+              <label>
+                LOT commande
+                <select
+                  value={replenishmentDraft.lotNumber}
+                  onChange={(event) => {
+                    const selectedLot = supplyHistory.find(
+                      (entry) => entry.movementType === "reapprovisionnement" &&
+                        entry.lotNumber?.trim() === event.target.value &&
+                        Number(entry.transportTotal) > 0
+                    );
+                    setReplenishmentDraft((current) => ({
+                      ...current,
+                      lotNumber: event.target.value,
+                      transportTotal: Number(selectedLot?.transportTotal ?? 0),
+                    }));
+                  }}
+                  required
+                >
+                  {[...new Map(
+                    supplyHistory
+                      .filter((entry) => entry.movementType === "reapprovisionnement" && entry.lotNumber && Number(entry.transportTotal) > 0)
+                      .map((entry) => [entry.lotNumber?.trim() ?? "", entry])
+                  ).values()].map((entry) => (
+                    <option key={entry.lotNumber} value={entry.lotNumber}>{entry.lotNumber}</option>
+                  ))}
+                </select>
+                <small>Lot cree par le super-admin. Son cout de transport reste confidentiel.</small>
+              </label>
+            )}
+            {isSuperAdmin ? (
+              <>
+                <label>
+                  Transport global du lot
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={replenishmentDraft.transportTotal}
+                    onChange={(event) =>
+                      setReplenishmentDraft((current) => ({ ...current, transportTotal: Number(event.target.value) || 0 }))
+                    }
+                    required
+                  />
+                </label>
+                <label>
+                  Prix d'achat
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={replenishmentDraft.purchasePrice}
+                    onChange={(event) =>
+                      setReplenishmentDraft((current) => ({ ...current, purchasePrice: Number(event.target.value) }))
+                    }
+                    required
+                  />
+                </label>
+              </>
+            ) : null}
             <label>
               Prix de vente
               <input
@@ -5956,6 +6165,7 @@ export default function App() {
             <div className="sales-modern-products">
               <p className="sales-modern-label">Produits achetes</p>
               {products.length === 0 ? <p className="hero-copy">Aucun produit en stock. Tu peux tout de meme facturer uniquement des services.</p> : null}
+              {products.length > 0 && saleDraft.items.length === 0 ? <p className="hero-copy">Aucun produit ajoute. Cette facture peut contenir uniquement un ou plusieurs services.</p> : null}
               {saleDraft.items.map((line, index) => {
                 const selectedProduct = products.find((item) => item.id === line.productId);
                 const requestedQuantity = requestedProductQuantities.get(line.productId) ?? 0;
@@ -6292,7 +6502,7 @@ export default function App() {
                       <th>Produit</th>
                       <th>LOT</th>
                       <th>Quantite</th>
-                      <th>Prix d'achat</th>
+                      {canViewReplenishmentAmounts ? <th>Prix d'achat</th> : null}
                       <th>Prix de vente</th>
                       <th>Fournisseur</th>
                       {canViewReplenishmentAmounts ? <th>Transport lot</th> : null}
@@ -6306,7 +6516,7 @@ export default function App() {
                         <td>{item.product}</td>
                         <td>{item.lotNumber || "-"}</td>
                         <td>{item.quantity}</td>
-                        <td>{formatCurrency(item.purchasePrice)}</td>
+                        {canViewReplenishmentAmounts ? <td>{formatCurrency(item.purchasePrice)}</td> : null}
                         <td>{formatCurrency(item.sellingPrice)}</td>
                         <td>{item.supplier}</td>
                         {canViewReplenishmentAmounts ? <td>{formatCurrency(item.transportTotal ?? 0)}</td> : null}

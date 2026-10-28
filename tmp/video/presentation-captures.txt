@@ -1,0 +1,19 @@
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-01.png'
+duration 5
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/screens/01-connexion.png'
+duration 8
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/screens/02-tableau-de-bord.png'
+duration 13
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/screens/03-produits.png'
+duration 10
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/screens/04-approvisionnement.png'
+duration 11
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/screens/05-ventes.png'
+duration 12
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/screens/06-rapports.png'
+duration 12
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/screens/07-cybercafe.png'
+duration 12
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-09.png'
+duration 7
+file 'C:/Users/User/OneDrive/Projet Code/Walikale to world App/tmp/video/slides/slide-09.png'

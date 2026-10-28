@@ -166,7 +166,7 @@ def add_cover(doc):
     set_table_borders(meta)
     rows = [
         ("Structure", "Walikale to World"),
-        ("Date de mise a jour", "21 aout 2026"),
+        ("Date de mise a jour", "14 octobre 2026"),
         ("Objet", "Validation de l'existant avant deploiement"),
     ]
     for row, (label, value) in zip(meta.rows, rows):
