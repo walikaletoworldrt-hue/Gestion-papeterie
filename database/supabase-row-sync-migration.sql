@@ -147,3 +147,60 @@ grant select on public.sync_tombstones to authenticated;
 grant usage on sequence public.row_sync_version_seq to authenticated;
 grant execute on function public.row_sync_origin_device() to authenticated;
 grant execute on function public.row_sync_server_time() to authenticated;
+
+-- Etape 2 : numero de facture web (serie W), attribue par le serveur en une seule operation
+-- pour que deux navigateurs ne recoivent jamais le meme numero.
+-- Format : Fact-SA26-W-0001 (les PC utilisent P1, P2...).
+create or replace function public.invoice_series_label(series_index integer)
+returns text
+language plpgsql
+immutable
+as $$
+declare
+  idx integer := series_index;
+  label text := '';
+begin
+  loop
+    label := chr(65 + (idx % 26)) || label;
+    idx := (idx / 26) - 1;
+    exit when idx < 0;
+  end loop;
+  return label;
+end;
+$$;
+
+create or replace function public.next_web_invoice_reference()
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_year_value integer := extract(year from now())::integer;
+  seq record;
+begin
+  if auth.uid() is null then
+    raise exception 'Connexion requise pour creer une facture.';
+  end if;
+
+  insert into public.invoice_sequences (id, current_year, series_index, next_number)
+  values (1, current_year_value, 0, 1)
+  on conflict (id) do nothing;
+
+  -- Les expressions du SET lisent les anciennes valeurs : le numero attribue est l'ancien next_number.
+  update public.invoice_sequences
+  set series_index = case when current_year = current_year_value then series_index else 0 end,
+      next_number = case when current_year = current_year_value then next_number + 1 else 2 end,
+      current_year = current_year_value,
+      updated_at = now()
+  where id = 1
+  returning current_year, series_index, next_number - 1 as issued_number
+  into seq;
+
+  return 'Fact-S' || public.invoice_series_label(seq.series_index) || right(seq.current_year::text, 2)
+    || '-W-' || lpad(seq.issued_number::text, 4, '0');
+end;
+$$;
+
+grant execute on function public.invoice_series_label(integer) to authenticated;
+grant execute on function public.next_web_invoice_reference() to authenticated;

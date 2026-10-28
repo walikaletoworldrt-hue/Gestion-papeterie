@@ -306,6 +306,8 @@ export type InvoiceSeriesInfo = {
   nextNumber: number;
   nextReference: string;
   lastReference: string | null;
+  /** Code of the device that issues the invoices (P1, P2... for PCs, W for the web). Null until configured. */
+  deviceCode: string | null;
 };
 
 export type SyncStatus = {
@@ -404,6 +406,7 @@ export type DesktopApi = {
   getCurrentStock: () => Promise<StockRow[]>;
   getInvoiceSeriesInfo: () => Promise<InvoiceSeriesInfo>;
   advanceInvoiceSeries: () => Promise<InvoiceSeriesInfo>;
+  setDeviceCode: (code: string) => Promise<InvoiceSeriesInfo>;
   resetInventoryCycle: () => Promise<void>;
   getSyncStatus: () => Promise<SyncStatus>;
   getPendingSyncOverview: () => Promise<SyncPendingOverview>;

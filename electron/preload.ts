@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   getCurrentStock: (): Promise<StockRow[]> => ipcRenderer.invoke("stock:current"),
   getInvoiceSeriesInfo: (): Promise<InvoiceSeriesInfo> => ipcRenderer.invoke("sales:invoice-series"),
   advanceInvoiceSeries: (): Promise<InvoiceSeriesInfo> => ipcRenderer.invoke("sales:advance-series"),
+  setDeviceCode: (code: string): Promise<InvoiceSeriesInfo> => ipcRenderer.invoke("sales:set-device-code", code),
   resetInventoryCycle: (): Promise<void> => ipcRenderer.invoke("inventory:reset-cycle"),
   getSyncStatus: (): Promise<SyncStatus> => ipcRenderer.invoke("sync:status"),
   getPendingSyncOverview: () => ipcRenderer.invoke("sync:pending-overview"),

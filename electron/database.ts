@@ -1363,7 +1363,39 @@ export class LocalDatabase {
         lastNumber === null
           ? null
           : this.buildInvoiceReference(sequence.current_year, sequence.series_index, lastNumber),
+      deviceCode: this.getDeviceCode(),
     };
+  }
+
+  /** Code of this PC in invoice numbers (P1, P2...). Each PC must have its own code. */
+  getDeviceCode(): string | null {
+    const row = this.db.prepare("SELECT device_code FROM row_sync_state WHERE id = 1").get() as
+      | { device_code: string | null }
+      | undefined;
+    return row?.device_code?.trim() || null;
+  }
+
+  setDeviceCode(code: string): InvoiceSeriesInfo {
+    this.requireSuperAdminAccess("Seul le super administrateur peut definir le code de ce poste.");
+    const normalized = code.trim().toUpperCase();
+
+    if (!/^P[1-9][0-9]?$/.test(normalized)) {
+      throw new Error("Le code poste doit etre P suivi d'un numero entre 1 et 99 (exemple : P1, P2).");
+    }
+
+    const previous = this.getDeviceCode();
+    this.db
+      .prepare("UPDATE row_sync_state SET device_code = ?, updated_at = ? WHERE id = 1")
+      .run(normalized, new Date().toISOString());
+    this.logAction(
+      this.getActorUserId(),
+      "update",
+      "invoice_sequence_settings",
+      1,
+      previous ? `Code poste change de ${previous} a ${normalized}` : `Code poste defini : ${normalized}`
+    );
+
+    return this.getInvoiceSeriesInfo();
   }
 
   resetInventoryCycle() {
@@ -2898,6 +2930,12 @@ export class LocalDatabase {
   }
 
   private generateSaleReference() {
+    if (!this.getDeviceCode()) {
+      throw new Error(
+        "Ce poste n'a pas encore de code (P1, P2...). Le super administrateur doit le definir dans Stock initial > Code poste avant la premiere vente."
+      );
+    }
+
     const sequence = this.getCurrentInvoiceSequence();
     const reference = this.buildInvoiceReference(sequence.current_year, sequence.series_index, sequence.next_number);
 
@@ -2926,8 +2964,10 @@ export class LocalDatabase {
   }
 
   private buildInvoiceReference(year: number, seriesIndex: number, nextNumber: number) {
+    // Format Fact-SA26-P1-0001: the device code keeps numbers unique across PCs, even offline.
     const seriesCode = `S${this.getInvoiceSeriesLabel(seriesIndex)}${String(year).slice(-2)}`;
-    return `Fact-${seriesCode}-${String(nextNumber).padStart(4, "0")}`;
+    const deviceCode = this.getDeviceCode() ?? "P?";
+    return `Fact-${seriesCode}-${deviceCode}-${String(nextNumber).padStart(4, "0")}`;
   }
 
   private getCurrentInventoryCycleId() {

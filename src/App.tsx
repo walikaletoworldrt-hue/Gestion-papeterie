@@ -1023,6 +1023,7 @@ export default function App() {
   const [mikhmonSales, setMikhmonSales] = useState<MikhmonSale[]>([]);
   const [currentStock, setCurrentStock] = useState<StockRow[]>([]);
   const [invoiceSeriesInfo, setInvoiceSeriesInfo] = useState<InvoiceSeriesInfo | null>(null);
+  const [deviceCodeDraft, setDeviceCodeDraft] = useState("");
   const [syncStatus, setSyncStatus] = useState<SyncStatus>({
     available: false,
     online: true,
@@ -3223,6 +3224,24 @@ export default function App() {
     showToast("success", `La numerotation passe maintenant en serie ${nextInfo.seriesLabel}${nextInfo.yearCode}.`);
   }
 
+  async function handleSaveDeviceCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!isSuperAdmin) {
+      showAccessDenied("Seul le super administrateur peut definir le code de ce poste.");
+      return;
+    }
+
+    try {
+      const nextInfo = await repository.setDeviceCode(deviceCodeDraft);
+      setInvoiceSeriesInfo(nextInfo);
+      setDeviceCodeDraft("");
+      showToast("success", `Ce poste utilise maintenant le code ${nextInfo.deviceCode}. Prochaine facture : ${nextInfo.nextReference}.`);
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'enregistrer le code poste.");
+    }
+  }
+
   async function handleResetInventoryCycle() {
     if (!canManageInventoryCycles) {
       showAccessDenied("Seul le super administrateur peut reinitialiser l'inventaire et demarrer un nouveau cycle.");
@@ -4640,7 +4659,33 @@ export default function App() {
                   <span>Prochaine facture</span>
                   <strong>{invoiceSeriesInfo.nextReference}</strong>
                 </div>
+                <div className={`sales-indicator ${invoiceSeriesInfo.deviceCode ? "neutral" : "warning"}`}>
+                  <span>Code poste</span>
+                  <strong>{invoiceSeriesInfo.deviceCode ?? "Non defini"}</strong>
+                </div>
               </div>
+            ) : null}
+            {repository.isDesktop && invoiceSeriesInfo && !invoiceSeriesInfo.deviceCode ? (
+              <p className="error-text">
+                Ce poste n'a pas encore de code : les ventes sont bloquees. Chaque PC doit avoir un code different (P1, P2...)
+                pour que deux postes ne produisent jamais le meme numero de facture.
+                {isSuperAdmin ? "" : " Demandez au super administrateur de le definir."}
+              </p>
+            ) : null}
+            {repository.isDesktop && isSuperAdmin ? (
+              <form className="section-tools" onSubmit={handleSaveDeviceCode}>
+                <input
+                  className="table-search-input"
+                  placeholder={invoiceSeriesInfo?.deviceCode ? `Nouveau code poste (actuel : ${invoiceSeriesInfo.deviceCode})` : "Code de ce poste, ex. P1"}
+                  value={deviceCodeDraft}
+                  onChange={(event) => setDeviceCodeDraft(event.target.value)}
+                  maxLength={3}
+                  required
+                />
+                <button className="ghost-btn" type="submit">
+                  {invoiceSeriesInfo?.deviceCode ? "Changer le code poste" : "Definir le code poste"}
+                </button>
+              </form>
             ) : null}
             {products.length === 0 ? (
               <EmptyState

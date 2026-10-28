@@ -54,6 +54,7 @@ function registerIpc() {
   ipcMain.handle("sales:create", (_event, draft: SaleDraft) => database.createSale(draft));
   ipcMain.handle("sales:invoice-series", () => database.getInvoiceSeriesInfo());
   ipcMain.handle("sales:advance-series", () => database.advanceInvoiceSeries());
+  ipcMain.handle("sales:set-device-code", (_event, code: string) => database.setDeviceCode(code));
   ipcMain.handle("sales:detail", (_event, saleId: number) => database.getSaleDetail(saleId));
   ipcMain.handle("sales:print", async (_event, saleId: number) => {
     try {

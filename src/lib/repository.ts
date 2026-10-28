@@ -470,13 +470,16 @@ type SupabaseInventoryCycleRow = {
   id: number;
 };
 
+const WEB_DEVICE_CODE = "W";
+
 const webSeedInvoiceSeries: InvoiceSeriesInfo = {
   seriesLabel: "A",
   year: 2026,
   yearCode: "26",
   nextNumber: 2,
-  nextReference: "Fact-SA26-0002",
-  lastReference: "Fact-SA26-0001",
+  nextReference: "Fact-SA26-W-0002",
+  lastReference: "Fact-SA26-W-0001",
+  deviceCode: WEB_DEVICE_CODE,
 };
 
 function persistWebUsers(users: AppUser[]) {
@@ -506,9 +509,10 @@ function getInvoiceSeriesIndex(label: string) {
     .reduce((accumulator, character) => accumulator * 26 + (character.charCodeAt(0) - 64), 0) - 1;
 }
 
-function buildInvoiceReference(year: number, seriesIndex: number, number: number) {
+// Same format as the PCs (Fact-SA26-P1-0001), with W as the web device code.
+function buildInvoiceReference(year: number, seriesIndex: number, number: number, deviceCode = WEB_DEVICE_CODE) {
   const yearCode = String(year).slice(-2);
-  return `Fact-S${getInvoiceSeriesLabel(seriesIndex)}${yearCode}-${String(number).padStart(4, "0")}`;
+  return `Fact-S${getInvoiceSeriesLabel(seriesIndex)}${yearCode}-${deviceCode}-${String(number).padStart(4, "0")}`;
 }
 
 function buildInvoiceSeriesInfo(year: number, seriesIndex: number, nextNumber: number): InvoiceSeriesInfo {
@@ -519,6 +523,7 @@ function buildInvoiceSeriesInfo(year: number, seriesIndex: number, nextNumber: n
     nextNumber,
     nextReference: buildInvoiceReference(year, seriesIndex, nextNumber),
     lastReference: nextNumber > 1 ? buildInvoiceReference(year, seriesIndex, nextNumber - 1) : null,
+    deviceCode: WEB_DEVICE_CODE,
   };
 }
 
@@ -532,7 +537,7 @@ function loadWebInvoiceSeries() {
     return resetInfo;
   }
 
-  return stored;
+  return { ...stored, deviceCode: WEB_DEVICE_CODE };
 }
 
 function persistWebInvoiceSeries(info: InvoiceSeriesInfo) {
@@ -3748,41 +3753,14 @@ export const repository = {
         };
       });
 
-      const currentYear = getCurrentInvoiceYear();
-      const sequenceResult = await client
-        .from("invoice_sequences")
-        .select("current_year, series_index, next_number")
-        .eq("id", 1)
-        .maybeSingle();
-      let sequence = ensureOptionalData(sequenceResult.data, sequenceResult.error) as SupabaseInvoiceSequenceRow | null;
-
-      if (!sequence) {
-        const insertSequenceResult = await client
-          .from("invoice_sequences")
-          .insert({
-            id: 1,
-            current_year: currentYear,
-            series_index: 0,
-            next_number: 1,
-          })
-          .select("current_year, series_index, next_number")
-          .single();
-        sequence = ensureData(insertSequenceResult.data, insertSequenceResult.error) as SupabaseInvoiceSequenceRow;
-      } else if (sequence.current_year !== currentYear) {
-        const resetSequenceResult = await client
-          .from("invoice_sequences")
-          .update({
-            current_year: currentYear,
-            series_index: 0,
-            next_number: 1,
-          })
-          .eq("id", 1)
-          .select("current_year, series_index, next_number")
-          .single();
-        sequence = ensureData(resetSequenceResult.data, resetSequenceResult.error) as SupabaseInvoiceSequenceRow;
+      // The server hands out the number in one step, so two browsers never get the same one.
+      const referenceResult = await client.rpc("next_web_invoice_reference");
+      if (referenceResult.error) {
+        throw new Error(
+          `Impossible d'obtenir un numero de facture web. Verifiez que la migration supabase-row-sync-migration.sql a ete executee. (${referenceResult.error.message})`
+        );
       }
-
-      const reference = buildInvoiceReference(sequence.current_year, sequence.series_index, sequence.next_number);
+      const reference = String(referenceResult.data);
       const saleInsertResult = await client
         .from("sales")
         .insert({
@@ -3795,14 +3773,6 @@ export const repository = {
         .select("id")
         .single();
       const insertedSale = ensureData(saleInsertResult.data, saleInsertResult.error) as { id: number };
-
-      const advanceSequenceResult = await client
-        .from("invoice_sequences")
-        .update({
-          next_number: sequence.next_number + 1,
-        })
-        .eq("id", 1);
-      ensureData(advanceSequenceResult.data ?? [], advanceSequenceResult.error);
 
       const saleItemsResult = await client.from("sale_items").insert(
         saleItemsPayload.map((item) => ({
@@ -4864,6 +4834,14 @@ export const repository = {
     }
 
     return loadWebInvoiceSeries();
+  },
+
+  async setDeviceCode(code: string): Promise<InvoiceSeriesInfo> {
+    if (!window.desktopApi) {
+      throw new Error("Le code poste se definit uniquement dans l'application desktop. La version web utilise toujours W.");
+    }
+
+    return window.desktopApi.setDeviceCode(code);
   },
 
   async advanceInvoiceSeries(): Promise<InvoiceSeriesInfo> {
