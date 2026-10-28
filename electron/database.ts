@@ -4,6 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { safeStorage } from "electron";
+import { installRowSyncSupport, withRemoteChangesApplied } from "./row-sync";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -601,6 +602,7 @@ export class LocalDatabase {
     this.ensureMissingUserPasswords();
     this.encryptLegacySyncSecrets();
     this.clearPendingSessionAuditLogs();
+    installRowSyncSupport(this.db);
   }
 
   private clearPendingSessionAuditLogs() {
@@ -1619,7 +1621,8 @@ export class LocalDatabase {
       (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run(toSqliteParams(insertAuditLogs, { ...row, synced_at: importedAt })));
     });
 
-    replaceTransaction();
+    // Old full-replace sync: replacing every row must not be recorded as local deletions.
+    withRemoteChangesApplied(this.db, replaceTransaction);
   }
 
   markSyncComplete(syncedAt?: string) {
