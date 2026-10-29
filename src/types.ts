@@ -37,7 +37,6 @@ export type ProductDraft = {
   alertThreshold?: number;
   supplier: string;
   replenishmentLotNumber?: string;
-  replenishmentTransportTotal?: number;
 };
 
 /** Product information edited from "Modifier": never the quantity, which only changes through stock movements. */

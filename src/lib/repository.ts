@@ -2320,36 +2320,9 @@ export const repository = {
         if (!lotNumber) {
           throw new Error("Le numero de lot est obligatoire pour chaque approvisionnement.");
         }
-        let configuredLotTransportTotal = 0;
-        const configuredLotResult = await client
-          .from("replenishments")
-          .select("transport_total")
-          .ilike("lot_number", lotNumber)
-          .gt("transport_total", 0)
-          .order("id", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (configuredLotResult.error) {
-          throw new Error(configuredLotResult.error.message || "Impossible de verifier le lot selectionne.");
-        }
-        configuredLotTransportTotal = Number(configuredLotResult.data?.transport_total ?? 0);
-        if (!isSuperAdmin) {
-          if (!Number.isFinite(configuredLotTransportTotal) || configuredLotTransportTotal <= 0) {
-            throw new Error("Ce lot n'est pas configure. Selectionnez un lot cree par le super-admin.");
-          }
-        }
         const replenishmentPurchasePrice = isSuperAdmin
           ? Number(draft.purchasePrice)
           : Number(existing.purchase_price);
-        const replenishmentTransportTotal = isSuperAdmin
-          ? Number(draft.replenishmentTransportTotal ?? 0)
-          : configuredLotTransportTotal;
-        if (!Number.isFinite(replenishmentTransportTotal) || replenishmentTransportTotal <= 0) {
-          throw new Error("Le cout global de transport du lot est obligatoire et doit etre superieur a zero.");
-        }
-        if (isSuperAdmin && configuredLotTransportTotal > 0 && configuredLotTransportTotal !== replenishmentTransportTotal) {
-          throw new Error("Ce numero de lot existe deja avec un autre cout de transport. Utilisez le meme cout ou creez un nouveau numero de lot.");
-        }
         if (!isSuperAdmin) {
           // Desktop and web follow the same rule: only the super-admin controls costs.
           normalizedProduct.purchase_price = replenishmentPurchasePrice;
@@ -2382,7 +2355,6 @@ export const repository = {
             purchase_price: replenishmentPurchasePrice,
             supplier: trimmedSupplier,
             lot_number: lotNumber,
-            transport_total: replenishmentTransportTotal,
             cycle_id: cycleId,
             note: "Reapprovisionnement",
           })
@@ -2505,7 +2477,6 @@ export const repository = {
       sellingPrice: draft.sellingPrice,
       amount: draft.purchasePrice * draft.quantity,
       lotNumber: draft.replenishmentLotNumber?.trim() || undefined,
-      transportTotal: Number(draft.replenishmentTransportTotal ?? 0),
       movementType: existing ? "reapprovisionnement" : "stock_initial",
     });
 

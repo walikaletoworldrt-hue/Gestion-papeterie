@@ -198,7 +198,6 @@ type ReplenishmentDraft = {
   sellingPrice: number;
   supplier: string;
   lotNumber: string;
-  transportTotal: number;
 };
 
 type SalesTrendPreset = "7d" | "30d" | "90d" | "month" | "year" | "custom";
@@ -899,8 +898,8 @@ function downloadCsv(filename: string, content: string) {
 
 function buildReplenishmentTemplateCsvContent() {
   return [
-    "product_code,product_name,quantity,purchase_price,selling_price,supplier,lot_number,transport_total",
-    "PAP-PAP-001,Classeur,10,4.2,6,Papeterie Kivu,LOT-AOUT-001,35000",
+    "product_code,product_name,quantity,purchase_price,selling_price,supplier,lot_number",
+    "PAP-PAP-001,Classeur,10,4.2,6,Papeterie Kivu,LOT-AOUT-001",
   ].join("\n");
 }
 
@@ -940,7 +939,6 @@ function createEmptyReplenishmentDraft(products: Product[]): ReplenishmentDraft 
     sellingPrice: firstProduct?.sellingPrice ?? 0,
     supplier: firstProduct?.supplier ?? "",
     lotNumber: "",
-    transportTotal: 0,
   };
 }
 
@@ -1796,31 +1794,13 @@ export default function App() {
     }
 
     const selectedProduct = product ?? products[0];
-    const configuredLots = supplyHistory
-      .filter((entry) => entry.movementType === "reapprovisionnement" && entry.lotNumber && Number(entry.transportTotal) > 0)
-      .reduce<Array<{ number: string; transportTotal: number }>>((lots, entry) => {
-        const number = entry.lotNumber?.trim() ?? "";
-        if (!number || lots.some((lot) => lot.number.toLocaleLowerCase("fr-FR") === number.toLocaleLowerCase("fr-FR"))) {
-          return lots;
-        }
-        lots.push({ number, transportTotal: Number(entry.transportTotal) });
-        return lots;
-      }, []);
-
-    if (!isSuperAdmin && configuredLots.length === 0) {
-      showAccessDenied("Aucun lot avec transport n'est disponible. Le super-admin doit d'abord creer un lot.");
-      return;
-    }
-
-    const selectedLot = configuredLots[0];
     setReplenishmentDraft({
       productId: selectedProduct.id,
       quantity: "",
       purchasePrice: selectedProduct.purchasePrice,
       sellingPrice: selectedProduct.sellingPrice,
       supplier: selectedProduct.supplier,
-      lotNumber: isSuperAdmin ? buildNextSupplyLotNumber(supplyHistory) : selectedLot.number,
-      transportTotal: isSuperAdmin ? 0 : selectedLot.transportTotal,
+      lotNumber: buildNextSupplyLotNumber(supplyHistory),
     });
     setActiveModal("replenishment");
   }
@@ -2291,20 +2271,6 @@ export default function App() {
       return;
     }
 
-    const configuredLot = supplyHistory.find(
-      (entry) => entry.movementType === "reapprovisionnement" &&
-        entry.lotNumber?.trim().toLocaleLowerCase("fr-FR") === lotNumber.toLocaleLowerCase("fr-FR") &&
-        Number(entry.transportTotal) > 0
-    );
-    const transportTotal = isSuperAdmin
-      ? Number(replenishmentDraft.transportTotal)
-      : Number(configuredLot?.transportTotal ?? 0);
-
-    if (!Number.isFinite(transportTotal) || transportTotal <= 0) {
-      showToast("error", "Le cout global de transport du lot est obligatoire et doit etre superieur a zero.");
-      return;
-    }
-
     await repository.saveProduct({
       code: selectedProduct.code,
       name: selectedProduct.name,
@@ -2317,7 +2283,6 @@ export default function App() {
       alertThreshold: selectedProduct.alertThreshold,
       supplier: replenishmentDraft.supplier.trim() || selectedProduct.supplier,
       replenishmentLotNumber: lotNumber,
-      replenishmentTransportTotal: transportTotal,
     });
 
     await loadData();
@@ -3101,17 +3066,6 @@ export default function App() {
     );
   });
   const dashboardFilteredSalesAmount = dashboardFilteredSales.reduce((sum, sale) => sum + sale.amount, 0);
-  const replenishmentLotMetrics = supplyHistory
-    .filter((entry) => entry.movementType === "reapprovisionnement" && entry.lotNumber)
-    .reduce((map, entry) => {
-      const key = entry.lotNumber ?? "";
-      const current = map.get(key) ?? { quantity: 0, transportTotal: 0 };
-      current.quantity += entry.quantity;
-      current.transportTotal = Math.max(current.transportTotal, Number(entry.transportTotal ?? 0));
-      map.set(key, current);
-      return map;
-    }, new Map<string, { quantity: number; transportTotal: number }>());
-
   // Read from the initial stock table: the supply history only holds the last 100 movements.
   const initialStockByProduct = new Map(initialStocks.map((item) => [item.productId, item.quantity]));
   const stockRows = currentStock.map((item) => {
@@ -3123,26 +3077,8 @@ export default function App() {
     const salesUnits = supplyHistory
       .filter((entry) => entry.product === item.productName && entry.movementType === "vente")
       .reduce((sum, entry) => sum + entry.quantity, 0);
-    const replenishmentEntries = supplyHistory.filter(
-      (entry) => entry.product === item.productName && entry.movementType === "reapprovisionnement"
-    );
-    const transportCostAllocated = replenishmentEntries.reduce((sum, entry) => {
-      const lotNumber = entry.lotNumber ?? "";
-      if (!lotNumber) {
-        return sum;
-      }
-
-      const lotMetrics = replenishmentLotMetrics.get(lotNumber);
-      if (!lotMetrics || lotMetrics.quantity <= 0) {
-        return sum;
-      }
-
-      return sum + entry.quantity * (lotMetrics.transportTotal / lotMetrics.quantity);
-    }, 0);
-    const transportCostPerUnit = replenishments > 0 ? transportCostAllocated / replenishments : 0;
     const status =
       item.currentStock <= 0 ? "Rupture" : item.currentStock <= item.alertThreshold ? "Stock faible" : "OK";
-    const transportCostTotal = item.currentStock * transportCostPerUnit;
 
     return {
       ...item,
@@ -3155,8 +3091,6 @@ export default function App() {
       stockValue: item.currentStock * (product?.purchasePrice ?? 0),
       potentialRevenue: item.currentStock * (product?.sellingPrice ?? 0),
       potentialMargin: item.currentStock * ((product?.sellingPrice ?? 0) - (product?.purchasePrice ?? 0)),
-      transportCostPerUnit,
-      transportCostTotal,
       unit: product?.unit ?? "piece",
       status,
     };
@@ -3179,11 +3113,10 @@ export default function App() {
   const stockValueTotal = filteredStockRows.reduce((sum, item) => sum + item.stockValue, 0);
   const stockPotentialRevenueTotal = filteredStockRows.reduce((sum, item) => sum + item.potentialRevenue, 0);
   const stockPotentialMarginTotal = filteredStockRows.reduce((sum, item) => sum + item.potentialMargin, 0);
-  const stockTransportCostTotal = filteredStockRows.reduce((sum, item) => sum + item.transportCostTotal, 0);
   const stockLaborCostPerUnit = stockUnitsTotal > 0 ? stockWeeklyLaborCost / stockUnitsTotal : 0;
   const stockNetPotentialProfitTotal = filteredStockRows.reduce(
     (sum, item) =>
-      sum + item.currentStock * (item.sellingPrice - item.averagePurchasePrice - item.transportCostPerUnit - stockLaborCostPerUnit),
+      sum + item.currentStock * (item.sellingPrice - item.averagePurchasePrice - stockLaborCostPerUnit),
     0
   );
   const replenishmentSpendTotal = supplyHistory
@@ -3200,7 +3133,7 @@ export default function App() {
         "Ventes",
         "Stock actuel",
         ...(isSuperAdmin ? ["P.A. moyen", "Valeur du stock"] : []),
-        ...(isSuperAdmin ? ["Transport total", "Benefice net estime"] : []),
+        ...(isSuperAdmin ? ["Benefice net estime"] : []),
         "Unite",
         "Seuil",
         "Statut",
@@ -3216,10 +3149,9 @@ export default function App() {
           ...(isSuperAdmin ? [item.averagePurchasePrice.toFixed(2), item.stockValue.toFixed(2)] : []),
           ...(isSuperAdmin
             ? [
-                item.transportCostTotal.toFixed(2),
                 (
                   item.currentStock *
-                  (item.sellingPrice - item.averagePurchasePrice - item.transportCostPerUnit - stockLaborCostPerUnit)
+                  (item.sellingPrice - item.averagePurchasePrice - stockLaborCostPerUnit)
                 ).toFixed(2),
               ]
             : []),
@@ -5193,12 +5125,6 @@ export default function App() {
                 </div>
               ) : null}
               {isSuperAdmin ? (
-                <div className="stock-indicator warning">
-                  <span>Transport estime sur le stock</span>
-                  <strong>{formatCurrency(stockTransportCostTotal)}</strong>
-                </div>
-              ) : null}
-              {isSuperAdmin ? (
                 <div className="stock-indicator neutral">
                   <span>Charge travailleurs / semaine</span>
                   <strong>{formatCurrency(stockWeeklyLaborCost)}</strong>
@@ -5263,8 +5189,8 @@ export default function App() {
             </div>
             {isSuperAdmin ? (
               <p className="history-maintenance-note">
-                Calcul estime: benefice net = prix de vente - prix d'achat - transport moyen calcule depuis les lots
-                d'approvisionnement - part hebdomadaire travailleurs. La charge travailleurs est repartie sur les
+                Calcul estime: benefice net = prix de vente - prix d'achat - part hebdomadaire travailleurs. Le transport
+                se saisit dans Depenses et est deduit du resultat net du tableau de bord. La charge travailleurs est repartie sur les
                 unites encore en stock.
               </p>
             ) : null}
@@ -5289,7 +5215,6 @@ export default function App() {
                     <th>Stock actuel</th>
                     {isSuperAdmin ? <th>P.A. moyen</th> : null}
                     {isSuperAdmin ? <th>Valeur stock (achat)</th> : null}
-                    {isSuperAdmin ? <th>Transport</th> : null}
                     {isSuperAdmin ? <th>Benefice net</th> : null}
                     <th>Unite</th>
                     <th>Seuil</th>
@@ -5310,12 +5235,11 @@ export default function App() {
                       <td className="stock-current-cell">{item.currentStock}</td>
                       {isSuperAdmin ? <td>{formatCurrency(item.averagePurchasePrice)}</td> : null}
                       {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(item.stockValue)}</td> : null}
-                      {isSuperAdmin ? <td>{formatCurrency(item.transportCostTotal)}</td> : null}
                       {isSuperAdmin ? (
                         <td className="stock-value-cell">
                           {formatCurrency(
                             item.currentStock *
-                              (item.sellingPrice - item.averagePurchasePrice - item.transportCostPerUnit - stockLaborCostPerUnit)
+                              (item.sellingPrice - item.averagePurchasePrice - stockLaborCostPerUnit)
                           )}
                         </td>
                       ) : null}
@@ -5333,7 +5257,6 @@ export default function App() {
                     <td className="stock-current-cell">{stockUnitsTotal}</td>
                     {isSuperAdmin ? <td>-</td> : null}
                     {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(stockValueTotal)}</td> : null}
-                    {isSuperAdmin ? <td>{formatCurrency(stockTransportCostTotal)}</td> : null}
                     {isSuperAdmin ? <td className="stock-value-cell">{formatCurrency(stockNetPotentialProfitTotal)}</td> : null}
                     <td colSpan={isSuperAdmin ? 3 : 4}></td>
                   </tr>
@@ -6183,62 +6106,18 @@ export default function App() {
                 required
               />
             </label>
-            {isSuperAdmin ? (
-              <label>
-                LOT commande
-                <input
-                  value={replenishmentDraft.lotNumber}
-                  onChange={(event) => setReplenishmentDraft((current) => ({ ...current, lotNumber: event.target.value.toUpperCase() }))}
-                  placeholder="Ex: LOT-20261014-001"
-                  required
-                />
-                <small>Numero genere automatiquement, modifiable si necessaire.</small>
-              </label>
-            ) : (
-              <label>
-                LOT commande
-                <select
-                  value={replenishmentDraft.lotNumber}
-                  onChange={(event) => {
-                    const selectedLot = supplyHistory.find(
-                      (entry) => entry.movementType === "reapprovisionnement" &&
-                        entry.lotNumber?.trim() === event.target.value &&
-                        Number(entry.transportTotal) > 0
-                    );
-                    setReplenishmentDraft((current) => ({
-                      ...current,
-                      lotNumber: event.target.value,
-                      transportTotal: Number(selectedLot?.transportTotal ?? 0),
-                    }));
-                  }}
-                  required
-                >
-                  {[...new Map(
-                    supplyHistory
-                      .filter((entry) => entry.movementType === "reapprovisionnement" && entry.lotNumber && Number(entry.transportTotal) > 0)
-                      .map((entry) => [entry.lotNumber?.trim() ?? "", entry])
-                  ).values()].map((entry) => (
-                    <option key={entry.lotNumber} value={entry.lotNumber}>{entry.lotNumber}</option>
-                  ))}
-                </select>
-                <small>Lot cree par le super-admin. Son cout de transport reste confidentiel.</small>
-              </label>
-            )}
+            <label>
+              LOT commande
+              <input
+                value={replenishmentDraft.lotNumber}
+                onChange={(event) => setReplenishmentDraft((current) => ({ ...current, lotNumber: event.target.value.toUpperCase() }))}
+                placeholder="Ex: LOT-20261014-001"
+                required
+              />
+              <small>Numero genere automatiquement, modifiable si necessaire.</small>
+            </label>
             {isSuperAdmin ? (
               <>
-                <label>
-                  Transport global du lot
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={replenishmentDraft.transportTotal}
-                    onChange={(event) =>
-                      setReplenishmentDraft((current) => ({ ...current, transportTotal: Number(event.target.value) || 0 }))
-                    }
-                    required
-                  />
-                </label>
                 <label>
                   Prix d'achat
                   <input
@@ -6686,7 +6565,6 @@ export default function App() {
                       {canViewReplenishmentAmounts ? <th>Prix d'achat</th> : null}
                       <th>Prix de vente</th>
                       <th>Fournisseur</th>
-                      {canViewReplenishmentAmounts ? <th>Transport lot</th> : null}
                       {canViewReplenishmentAmounts ? <th>Montant</th> : null}
                     </tr>
                   </thead>
@@ -6700,7 +6578,6 @@ export default function App() {
                         {canViewReplenishmentAmounts ? <td>{formatCurrency(item.purchasePrice)}</td> : null}
                         <td>{formatCurrency(item.sellingPrice)}</td>
                         <td>{item.supplier}</td>
-                        {canViewReplenishmentAmounts ? <td>{formatCurrency(item.transportTotal ?? 0)}</td> : null}
                         {canViewReplenishmentAmounts ? <td>{formatCurrency(item.amount)}</td> : null}
                       </tr>
                     ))}

@@ -994,7 +994,6 @@ export class LocalDatabase {
       alertThreshold: draft.alertThreshold ?? 0,
       supplier: draft.supplier.trim(),
       replenishmentLotNumber: draft.replenishmentLotNumber?.trim() || "",
-      replenishmentTransportTotal: Number(draft.replenishmentTransportTotal ?? 0),
     };
 
     const existing = this.db
@@ -1019,30 +1018,9 @@ export class LocalDatabase {
         throw new Error("Le numero de lot est obligatoire pour chaque approvisionnement.");
       }
 
-      if (actor.role === "Super admin") {
-        if (!Number.isFinite(normalizedDraft.replenishmentTransportTotal) || normalizedDraft.replenishmentTransportTotal <= 0) {
-          throw new Error("Le cout global de transport du lot est obligatoire et doit etre superieur a zero.");
-        }
-        const existingLot = this.db
-          .prepare("SELECT transport_total FROM replenishments WHERE LOWER(lot_number) = LOWER(?) AND transport_total > 0 ORDER BY id DESC LIMIT 1")
-          .get(lotNumber) as { transport_total: number } | undefined;
-        if (existingLot && Number(existingLot.transport_total) !== normalizedDraft.replenishmentTransportTotal) {
-          throw new Error("Ce numero de lot existe deja avec un autre cout de transport. Utilisez le meme cout ou creez un nouveau numero de lot.");
-        }
-      } else {
-        const configuredLot = this.db
-          .prepare("SELECT transport_total FROM replenishments WHERE LOWER(lot_number) = LOWER(?) AND transport_total > 0 ORDER BY id DESC LIMIT 1")
-          .get(lotNumber) as { transport_total: number } | undefined;
-        if (!configuredLot) {
-          throw new Error("Ce lot n'est pas configure. Selectionnez un lot cree par le super-admin.");
-        }
-
-        // Administrators may add quantities only. The approved lot keeps its transport cost.
-        normalizedDraft = {
-          ...normalizedDraft,
-          purchasePrice: Number(existing.purchase_price),
-          replenishmentTransportTotal: Number(configuredLot.transport_total),
-        };
+      if (actor.role !== "Super admin") {
+        // Administrators may add quantities only: the purchase price stays the one set by the super admin.
+        normalizedDraft = { ...normalizedDraft, purchasePrice: Number(existing.purchase_price) };
       }
 
       const isMetadataChanged =
@@ -1085,8 +1063,7 @@ export class LocalDatabase {
         normalizedDraft.purchasePrice,
         normalizedDraft.supplier,
         userId,
-        normalizedDraft.replenishmentLotNumber,
-        normalizedDraft.replenishmentTransportTotal
+        normalizedDraft.replenishmentLotNumber
       );
       this.logAction(userId, "update", "products", existing.id, `Mise a jour produit ${normalizedDraft.name}`);
     } else {
@@ -2006,7 +1983,6 @@ export class LocalDatabase {
         : Number(matchedProduct.selling_price);
       const supplier = row.supplier.trim() || matchedProduct.supplier;
       const lotNumber = row.lotNumber?.trim() || "";
-      const transportTotal = Number.isFinite(Number(row.transportTotal)) ? Number(row.transportTotal) : 0;
       const now = new Date().toISOString();
 
       this.db
@@ -2019,7 +1995,7 @@ export class LocalDatabase {
         )
         .run(purchasePrice, sellingPrice, supplier, now, matchedProduct.id);
 
-      this.recordReplenishment(matchedProduct.id, quantity, purchasePrice, supplier, actorUserId, lotNumber, transportTotal);
+      this.recordReplenishment(matchedProduct.id, quantity, purchasePrice, supplier, actorUserId, lotNumber);
       imported += 1;
     }
 
@@ -2705,8 +2681,7 @@ export class LocalDatabase {
     purchasePrice: number,
     supplier: string,
     userId: number | null,
-    lotNumber = "",
-    transportTotal = 0
+    lotNumber = ""
   ) {
     const now = new Date().toISOString();
     const cycleId = this.getCurrentInventoryCycleId();
@@ -2715,7 +2690,7 @@ export class LocalDatabase {
         INSERT INTO replenishments (product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, user_id, note)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(productId, quantity, purchasePrice, supplier, lotNumber || null, Number(transportTotal || 0), now, cycleId, userId, "Reapprovisionnement");
+      .run(productId, quantity, purchasePrice, supplier, lotNumber || null, 0, now, cycleId, userId, "Reapprovisionnement");
 
     this.db
       .prepare(`
