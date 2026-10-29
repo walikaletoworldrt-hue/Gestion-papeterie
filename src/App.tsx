@@ -1,5 +1,7 @@
 import { ChangeEvent, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import brandLogo from "../img/logo-walikale1.png";
+// Same logo without the white margins, so it reads well at small sizes on screen.
+import brandLogoCropped from "../img/logo-walikale-recadre.png";
 import { repository } from "./lib/repository";
 import { toLocalDay } from "./lib/sale-client";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./lib/company";
@@ -3371,7 +3373,7 @@ export default function App() {
       <div className="login-shell">
         <div className="login-panel loading-panel">
           <div className="login-brand-mark loading-brand-mark">
-            <img className="login-logo" src={brandLogo} alt="Logo Walikale to World" />
+            <img className="login-logo" src={brandLogoCropped} alt="Logo Walikale to World" />
           </div>
           <p className="login-kicker">Ouverture en cours</p>
           <h1>Gestion papeterie Walikale to world</h1>
@@ -3389,7 +3391,7 @@ export default function App() {
       <div className="login-shell">
         <article className="login-panel login-panel-standalone">
           <div className="login-brand-mark login-brand-banner">
-            <img className="login-logo" src={brandLogo} alt="Logo Walikale to World" />
+            <img className="login-logo" src={brandLogoCropped} alt="Logo Walikale to World" />
           </div>
           <div className="login-panel-header">
             <h1 className="login-title">WALIKALE TO WORLD</h1>
@@ -3590,7 +3592,7 @@ export default function App() {
         <div className="topbar-main">
           <div className="brand">
             <div className="brand-logo-shell brand-logo-banner">
-              <img className="brand-logo" src={brandLogo} alt="Walikale to World Tech Adapt Hub" />
+              <img className="brand-logo" src={brandLogoCropped} alt="Walikale to World Tech Adapt Hub" />
             </div>
             <div className="brand-copy">
               <p className="brand-title">Walikale to World</p>
