@@ -37,7 +37,6 @@ const tabs: { id: TabId; label: string }[] = [
   { id: "dashboard", label: "Tableau de bord" },
   { id: "products", label: "Produits" },
   { id: "services", label: "Services" },
-  { id: "clients", label: "Clients" },
   { id: "expenses", label: "Depenses" },
   { id: "initial-stock", label: "Stock initial" },
   { id: "replenishments", label: "Reapprovisionnement" },
@@ -1051,6 +1050,8 @@ export default function App() {
   });
   const [draft, setDraft] = useState<ProductDraft>(emptyDraft);
   const [editingProductId, setEditingProductId] = useState<number | null>(null);
+  // Client name typed at the sale (free text); empty means "Client comptoir".
+  const [saleClientName, setSaleClientName] = useState("");
   const [serviceDraft, setServiceDraft] = useState<ServiceDraft>(emptyServiceDraft);
   const [serviceModalMode, setServiceModalMode] = useState<"create" | "edit">("create");
   const [clientDraft, setClientDraft] = useState<ClientDraft>(emptyClientDraft);
@@ -1289,7 +1290,6 @@ export default function App() {
     setSyncStatus(nextSyncStatus);
     setSaleDraft((current) => ({
       ...current,
-      clientId: current.clientId ?? nextClients[0]?.id ?? null,
       items:
         current.items.length > 0
           ? current.items.map((item) => ({
@@ -1682,10 +1682,10 @@ export default function App() {
     setSaleError("");
     setSaleDateDraft(new Date().toISOString().slice(0, 10));
     setSaleNoteDraft("");
+    setSaleClientName("");
     setSelectedSaleDetail(null);
     setSaleDraft((current) => ({
       ...current,
-      clientId: current.clientId ?? clients[0]?.id ?? null,
       items: current.items,
       serviceItems: current.serviceItems.length > 0 ? current.serviceItems : [],
     }));
@@ -2365,7 +2365,8 @@ export default function App() {
 
     try {
       await repository.createSale({
-        clientId: saleDraft.clientId,
+        clientId: null,
+        clientName: saleClientName,
         paymentMethod: saleDraft.paymentMethod,
         items: saleDraft.items.map((item) => ({
           productId: Number(item.productId),
@@ -2377,8 +2378,9 @@ export default function App() {
         })),
       });
 
+      setSaleClientName("");
       setSaleDraft({
-        clientId: clients[0]?.id ?? null,
+        clientId: null,
         paymentMethod: "Especes",
         items: [],
         serviceItems: [],
@@ -2711,8 +2713,6 @@ export default function App() {
     const service = services.find((item) => item.id === line.serviceId);
     return sum + (service?.unitPrice ?? 0) * line.quantity;
   }, 0);
-  const selectedSaleClient = clients.find((client) => client.id === saleDraft.clientId) ?? null;
-  const saleClientCode = selectedSaleClient ? `CL-${String(selectedSaleClient.id).padStart(4, "0")}` : "";
   const saleUnitsTotal =
     saleDraft.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0) +
     saleDraft.serviceItems.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
@@ -6310,34 +6310,26 @@ export default function App() {
           <form className="sales-form-modern" onSubmit={handleSaleSubmit}>
             <div className="sales-form-row">
               <label>
-                Code client
-                <input value={saleClientCode} placeholder="Ex: CL-AB2345" readOnly />
+                Nom du client
+                <input
+                  value={saleClientName}
+                  onChange={(event) => setSaleClientName(event.target.value)}
+                  placeholder="Client comptoir"
+                  list="sale-client-names"
+                  maxLength={120}
+                  autoComplete="off"
+                />
+                <datalist id="sale-client-names">
+                  {clients.map((client) => (
+                    <option key={client.id} value={client.name} />
+                  ))}
+                </datalist>
               </label>
               <label>
                 Date
                 <input type="date" value={saleDateDraft} onChange={(event) => setSaleDateDraft(event.target.value)} />
               </label>
             </div>
-
-            <label>
-              Nom du client
-              <select
-                value={saleDraft.clientId ?? ""}
-                onChange={(event) =>
-                  setSaleDraft((current) => ({
-                    ...current,
-                    clientId: event.target.value ? Number(event.target.value) : null,
-                  }))
-                }
-              >
-                <option value="">Client comptoir</option>
-                {clients.map((client) => (
-                  <option key={client.id} value={client.id}>
-                    {client.name}
-                  </option>
-                ))}
-              </select>
-            </label>
 
             <label>
               Mode de paiement

@@ -25,6 +25,7 @@ import {
   normalizeProductDetails,
   validateInitialStockCorrection,
 } from "../src/lib/initial-stock";
+import { normalizeSaleClientName } from "../src/lib/sale-client";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -1799,14 +1800,17 @@ export class LocalDatabase {
       VALUES (?, 'vente', ?, 'sales', ?, ?, ?, ?)
     `);
 
+    const clientName = normalizeSaleClientName(draft.clientName);
+
     const createSaleTransaction = this.db.transaction(() => {
+      const clientId = draft.clientName !== undefined ? this.findOrCreateSaleClient(clientName, now) : draft.clientId;
       const reference = this.generateSaleReference();
       const saleResult = this.db
         .prepare(`
           INSERT INTO sales (reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `)
-        .run(reference, draft.clientId, now, totalAmount, draft.paymentMethod, cycleId, userId);
+        .run(reference, clientId, now, totalAmount, draft.paymentMethod, cycleId, userId);
 
       const saleId = Number(saleResult.lastInsertRowid);
 
@@ -1833,6 +1837,23 @@ export class LocalDatabase {
     createSaleTransaction();
 
     return this.listSales();
+  }
+
+  /** Finds the client by name (ignoring case and extra spaces) or creates it. No name means a walk-in customer. */
+  private findOrCreateSaleClient(name: string, now: string): number | null {
+    if (!name) {
+      return null;
+    }
+
+    const existing = this.db
+      .prepare("SELECT id FROM clients WHERE LOWER(TRIM(name)) = LOWER(?) ORDER BY id ASC LIMIT 1")
+      .get(name) as { id: number } | undefined;
+    if (existing) {
+      return existing.id;
+    }
+
+    const result = this.db.prepare("INSERT INTO clients (name, created_at) VALUES (?, ?)").run(name, now);
+    return Number(result.lastInsertRowid);
   }
 
   getSupplyHistory(): SupplyHistoryItem[] {

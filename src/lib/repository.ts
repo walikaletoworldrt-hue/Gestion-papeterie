@@ -7,6 +7,7 @@ import {
   normalizeProductDetails,
   validateInitialStockCorrection,
 } from "./initial-stock";
+import { normalizeSaleClientName } from "./sale-client";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -2061,6 +2062,40 @@ async function ensureSuperAdminAccessForInventoryCycle() {
   }
 }
 
+/** Finds the client by name (ignoring case) or creates it. No name means a walk-in customer. */
+async function findOrCreateSupabaseSaleClient(client: ReturnType<typeof getSupabaseClient>, name: string): Promise<number | null> {
+  if (!name) {
+    return null;
+  }
+
+  // ilike treats % and _ as wildcards: escape them so only the exact name matches.
+  const pattern = name.replace(/[\\%_]/g, (char) => `\\${char}`);
+  const existingResult = await client.from("clients").select("id").ilike("name", pattern).order("id", { ascending: true }).limit(1);
+  const existing = ensureData(existingResult.data, existingResult.error) as Array<{ id: number }>;
+  if (existing.length > 0) {
+    return existing[0].id;
+  }
+
+  const insertResult = await client.from("clients").insert({ name }).select("id").single();
+  return (ensureData(insertResult.data, insertResult.error) as { id: number }).id;
+}
+
+function findOrCreateWebSaleClient(clients: Client[], name: string): Client | undefined {
+  if (!name) {
+    return undefined;
+  }
+
+  const existing = clients.find((item) => item.name.trim().toLowerCase() === name.toLowerCase());
+  if (existing) {
+    return existing;
+  }
+
+  const created: Client = { id: Date.now(), name, phone: "", address: "", email: "", createdAt: new Date().toISOString() };
+  clients.push(created);
+  localStorage.setItem("walikale-web-clients", JSON.stringify(clients));
+  return created;
+}
+
 async function ensureSuperAdminAccess(message: string) {
   if (window.desktopApi) {
     return;
@@ -3424,11 +3459,15 @@ export const repository = {
         );
       }
       const reference = String(referenceResult.data);
+      const saleClientId =
+        draft.clientName !== undefined
+          ? await findOrCreateSupabaseSaleClient(client, normalizeSaleClientName(draft.clientName))
+          : draft.clientId;
       const saleInsertResult = await client
         .from("sales")
         .insert({
           reference,
-          client_id: draft.clientId,
+          client_id: saleClientId,
           total_amount: totalAmount,
           payment_method: draft.paymentMethod,
           cycle_id: cycleId,
@@ -3497,7 +3536,10 @@ export const repository = {
     const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
     const clients = loadJson("walikale-web-clients", webSeedClients);
     const invoiceSeries = loadWebInvoiceSeries();
-    const client = clients.find((item) => item.id === draft.clientId);
+    const client =
+      draft.clientName !== undefined
+        ? findOrCreateWebSaleClient(clients, normalizeSaleClientName(draft.clientName))
+        : clients.find((item) => item.id === draft.clientId);
     const mergedItems = mergeSaleItems(draft.items);
     const mergedServiceItems = mergeSaleServiceItems(draft.serviceItems);
     let amount = 0;
