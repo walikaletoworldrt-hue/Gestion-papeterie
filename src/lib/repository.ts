@@ -2052,7 +2052,7 @@ async function ensureSuperAdminAccessForInventoryCycle() {
     return;
   }
 
-  const activeUserId = Number(localStorage.getItem(webSessionStorageKey) ?? "0");
+  const activeUserId = Number(window.sessionStorage.getItem(webSessionStorageKey) ?? "0");
   const users = loadJson("walikale-web-users", webSeedUsers);
   const activeUser = users.find((user) => user.id === activeUserId) ?? null;
 
@@ -2074,7 +2074,7 @@ async function ensureSuperAdminAccess(message: string) {
     return;
   }
 
-  const activeUserId = Number(localStorage.getItem(webSessionStorageKey) ?? "0");
+  const activeUserId = Number(window.sessionStorage.getItem(webSessionStorageKey) ?? "0");
   const users = loadJson("walikale-web-users", webSeedUsers);
   const activeUser = users.find((user) => user.id === activeUserId) ?? null;
 
@@ -2416,7 +2416,7 @@ export const repository = {
     const products = loadJson("walikale-web-products", webSeedProducts);
     const history = loadJson("walikale-web-history", webSeedHistory);
     const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
-    const activeUserId = Number(localStorage.getItem(webSessionStorageKey) ?? "0");
+    const activeUserId = Number(window.sessionStorage.getItem(webSessionStorageKey) ?? "0");
     const webUsers = loadJson("walikale-web-users", webSeedUsers);
     const activeUser = webUsers.find((user) => user.id === activeUserId) ?? null;
     const existing = products.find((item) => item.name.toLowerCase() === draft.name.toLowerCase());
