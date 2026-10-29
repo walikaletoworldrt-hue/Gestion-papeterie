@@ -328,6 +328,14 @@ Fonctionnalites disponibles :
 - integration dans le cycle d'inventaire
 - tableau affichant, par produit, la quantite initiale et le stock actuel
 
+Fonctionnalite de reinitialisation :
+- la reinitialisation d'inventaire vide les quantites et repart sur une nouvelle serie
+- les operations associees peuvent remettre a zero le stock initial, les ventes et les approvisionnements selon le flux prevu
+
+Restriction importante :
+- les Administrateurs et Employes ne doivent pas avoir acces a cette reinitialisation
+- cette action est reservee au Super admin
+
 ### 10.1 Correction du stock initial
 
 Le Super admin peut corriger le stock initial d'un produit (bouton `Corriger`).
@@ -339,14 +347,6 @@ Regles :
 - une correction qui rendrait le stock actuel negatif est refusee (ventes deja enregistrees)
 - l'ancienne valeur, la nouvelle valeur et le motif sont conserves dans l'historique d'activite
 - la correction est synchronisee vers les autres postes et le web
-
-Fonctionnalite de reinitialisation :
-- la reinitialisation d'inventaire vide les quantites et repart sur une nouvelle serie
-- les operations associees peuvent remettre a zero le stock initial, les ventes et les approvisionnements selon le flux prevu
-
-Restriction importante :
-- les Administrateurs et Employes ne doivent pas avoir acces a cette reinitialisation
-- cette action est reservee au Super admin
 
 ## 11. Reapprovisionnement
 
