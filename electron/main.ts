@@ -321,6 +321,7 @@ async function createAutomaticBackup(reason: "startup" | "before-update") {
 }
 
 async function createManualBackup() {
+  database.requireBackupAccess();
   const manualDir = await ensureBackupDir("Manual");
   const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
   const defaultPath = path.join(manualDir, `walikale-backup-${timestamp}.json`);
@@ -345,6 +346,7 @@ async function createManualBackup() {
 }
 
 async function restoreBackupFromDialog() {
+  database.requireRestoreAccess();
   const backupDir = await ensureBackupDir("Manual");
   const dialogOwner = mainWindow ?? BrowserWindow.getFocusedWindow() ?? null;
   const result = dialogOwner

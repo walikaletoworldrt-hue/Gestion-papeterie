@@ -3643,6 +3643,16 @@ export default function App() {
             >
               {syncBusy ? "Synchronisation..." : "Synchroniser"}
             </button>
+                {isSuperAdmin || isAdministrator ? (
+                  <button
+                    className="topbar-action-btn"
+                    type="button"
+                    title="Copie de toutes les donnees de ce PC dans un fichier"
+                    onClick={() => void handleCreateBackup()}
+                  >
+                    Sauvegarder
+                  </button>
+                ) : null}
               </>
             ) : null}
             <div className="user-inline-card">
@@ -4967,9 +4977,6 @@ export default function App() {
                 </button>
                 {repository.isDesktop ? (
                   <>
-                <button className="ghost-btn" type="button" onClick={() => void handleCreateBackup()}>
-                  Sauvegarder
-                </button>
                 <button
                   className="ghost-btn danger"
                   type="button"

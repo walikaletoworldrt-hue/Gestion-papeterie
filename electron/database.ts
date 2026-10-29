@@ -1641,6 +1641,19 @@ export class LocalDatabase {
       .run(timestamp, new Date().toISOString());
   }
 
+  /** Manual backups: super admin and administrators (automatic backups at startup need no user). */
+  requireBackupAccess() {
+    const actor = this.requireAuthenticatedUser();
+    if (actor.role !== "Super admin" && actor.role !== "Administrateur") {
+      throw new Error("Seuls le super administrateur et les administrateurs peuvent sauvegarder les donnees.");
+    }
+  }
+
+  /** Restoring replaces every piece of data on this PC: super admin only. */
+  requireRestoreAccess() {
+    this.requireSuperAdminAccess("Seul le super administrateur peut restaurer une sauvegarde.");
+  }
+
   private requireSuperAdminAccess(message = "Seul le super administrateur peut effectuer cette action.") {
     const actor = this.requireAuthenticatedUser();
     if (actor.role !== "Super admin") {
