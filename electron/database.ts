@@ -25,7 +25,7 @@ import {
   normalizeProductDetails,
   validateInitialStockCorrection,
 } from "../src/lib/initial-stock";
-import { normalizeSaleClientName } from "../src/lib/sale-client";
+import { normalizeSaleClientName, resolveSaleDate } from "../src/lib/sale-client";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -1681,6 +1681,7 @@ export class LocalDatabase {
     }
 
     const now = new Date().toISOString();
+    const soldAt = resolveSaleDate(draft.soldOn);
     const userId = this.getActorUserId();
     const cycleId = this.getCurrentInventoryCycleId();
     const normalizedItems = this.mergeSaleItems(draft.items);
@@ -1787,13 +1788,13 @@ export class LocalDatabase {
           INSERT INTO sales (reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id)
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `)
-        .run(reference, clientId, now, totalAmount, draft.paymentMethod, cycleId, userId);
+        .run(reference, clientId, soldAt, totalAmount, draft.paymentMethod, cycleId, userId);
 
       const saleId = Number(saleResult.lastInsertRowid);
 
       resolvedItems.forEach((item) => {
         insertSaleItem.run(saleId, item.productId, item.quantity, item.unitPrice, item.lineTotal);
-        insertMovement.run(item.productId, -item.quantity, saleId, now, cycleId, userId);
+        insertMovement.run(item.productId, -item.quantity, saleId, soldAt, cycleId, userId);
       });
 
       resolvedServiceItems.forEach((item) => {

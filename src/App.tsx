@@ -1,11 +1,11 @@
 import { ChangeEvent, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
 import brandLogo from "../img/logo-walikale1.png";
 import { repository } from "./lib/repository";
+import { toLocalDay } from "./lib/sale-client";
 import type {
   ActivityHistoryItem,
   AppUser,
   Client,
-  ClientDraft,
   CybercafeSale,
   CybercafeSaleDraft,
   MikhmonSale,
@@ -24,7 +24,6 @@ import type {
   Service,
   ServiceDraft,
   SyncConflictBucket,
-  SyncConflictPreview,
   SyncStatus,
   StockRow,
   SupplyHistoryItem,
@@ -111,13 +110,6 @@ const emptyServiceDraft: ServiceDraft = {
   active: true,
 };
 
-const emptyClientDraft: ClientDraft = {
-  name: "",
-  phone: "",
-  address: "",
-  email: "",
-};
-
 const emptyUserDraft: UserDraft = {
   fullName: "",
   username: "",
@@ -136,7 +128,7 @@ const emptyExpenseDraft: ExpenseDraft = {
 };
 
 const userRoles: UserRole[] = ["Administrateur", "Super admin", "Employe"];
-type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale" | "initialStockCorrection";
+type ModalId = "product" | "service" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale" | "initialStockCorrection";
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -182,13 +174,8 @@ type ExpenseReportState = {
   insights: string[];
 };
 
-type SyncConflictState = {
-  preview: SyncConflictPreview;
-} | null;
-
 type SyncSelectionState = {
   buckets: SyncConflictBucket[];
-  selectedKeys: string[];
 } | null;
 
 type ReplenishmentDraft = {
@@ -1052,8 +1039,6 @@ export default function App() {
   const [saleClientName, setSaleClientName] = useState("");
   const [serviceDraft, setServiceDraft] = useState<ServiceDraft>(emptyServiceDraft);
   const [serviceModalMode, setServiceModalMode] = useState<"create" | "edit">("create");
-  const [clientDraft, setClientDraft] = useState<ClientDraft>(emptyClientDraft);
-  const [clientModalMode, setClientModalMode] = useState<"create" | "edit">("create");
   const [userDraft, setUserDraft] = useState<UserDraft>(emptyUserDraft);
   const [expenseDraft, setExpenseDraft] = useState<ExpenseDraft>(emptyExpenseDraft);
   const [expenseReport, setExpenseReport] = useState<ExpenseReportState | null>(null);
@@ -1068,8 +1053,7 @@ export default function App() {
   });
   const mikhmonFileInputRef = useRef<HTMLInputElement>(null);
   const [replenishmentDraft, setReplenishmentDraft] = useState<ReplenishmentDraft>(createEmptyReplenishmentDraft([]));
-  const [saleDateDraft, setSaleDateDraft] = useState(() => new Date().toISOString().slice(0, 10));
-  const [saleNoteDraft, setSaleNoteDraft] = useState("");
+  const [saleDateDraft, setSaleDateDraft] = useState(() => toLocalDay());
   const [saleError, setSaleError] = useState("");
   const [userError, setUserError] = useState("");
   const [userMessage, setUserMessage] = useState("");
@@ -1085,7 +1069,6 @@ export default function App() {
   const [productSortKey, setProductSortKey] = useState<ProductSortKey>("name");
   const [productSortDirection, setProductSortDirection] = useState<"asc" | "desc">("asc");
   const [globalSearch, setGlobalSearch] = useState("");
-  const [clientSearch, setClientSearch] = useState("");
   const [saleSearch, setSaleSearch] = useState("");
   const [dashboardSalesPreset, setDashboardSalesPreset] = useState<SalesPeriodPreset>("month");
   const [dashboardSalesStart, setDashboardSalesStart] = useState(() => toInputDateValue(startOfMonth(new Date())));
@@ -1134,9 +1117,7 @@ export default function App() {
   });
   const [passwordError, setPasswordError] = useState("");
   const [passwordBusy, setPasswordBusy] = useState(false);
-  const [syncConflictState, setSyncConflictState] = useState<SyncConflictState>(null);
   const [syncSelectionState, setSyncSelectionState] = useState<SyncSelectionState>(null);
-  const [pendingSyncRequestKeys, setPendingSyncRequestKeys] = useState<string[] | null>(null);
   const [expenseReportBusy, setExpenseReportBusy] = useState(false);
   const [stockWeeklyLaborCost, setStockWeeklyLaborCost] = useState(50000);
   const currentDraftCategory = draft.category ?? productCategoryOptions[0];
@@ -1154,7 +1135,6 @@ export default function App() {
   const canDeleteInventory = isSuperAdmin;
   const canManageInventoryCycles = isSuperAdmin;
   const canManageExpenses = isSuperAdmin || isAdministrator;
-  const canCreateClients = Boolean(currentUser);
   const canCreateSales = Boolean(currentUser);
   const visibleTabs = tabs.filter((tab) => {
     if (canManageUsers) {
@@ -1393,7 +1373,11 @@ export default function App() {
       }
 
       if (restoredUser) {
-        setCurrentUser(restoredUser);
+        // Keep the same object when nothing changed: a new one would reload all data, which reloads the users,
+        // which runs this effect again, in an endless loop.
+        setCurrentUser((current) =>
+          current && JSON.stringify(current) === JSON.stringify(restoredUser) ? current : restoredUser
+        );
         return;
       }
 
@@ -1426,7 +1410,6 @@ export default function App() {
     setServiceDraft(emptyServiceDraft);
     setExpenseDraft(emptyExpenseDraft);
     setExpenseReport(null);
-    setSyncConflictState(null);
     setPasswordModalState(null);
     setPasswordDraft({
       currentPassword: "",
@@ -1452,7 +1435,6 @@ export default function App() {
     setGlobalSearch(value);
     setProductSearch(value);
     setServiceSearch(value);
-    setClientSearch(value);
     setSaleSearch(value);
     setStockSearch(value);
     setExpenseSearch(value);
@@ -1643,34 +1625,6 @@ export default function App() {
     setActiveModal("service");
   }
 
-  function openClientModal() {
-    if (!canCreateClients) {
-      showAccessDenied("Veuillez vous connecter pour ajouter un client.");
-      return;
-    }
-
-    setClientModalMode("create");
-    setClientDraft(emptyClientDraft);
-    setActiveModal("client");
-  }
-
-  function openClientEditModal(client: Client) {
-    if (!isSuperAdmin) {
-      showAccessDenied("Seul le super administrateur peut modifier un client.");
-      return;
-    }
-
-    setClientModalMode("edit");
-    setClientDraft({
-      id: client.id,
-      name: client.name,
-      phone: client.phone,
-      address: client.address,
-      email: client.email,
-    });
-    setActiveModal("client");
-  }
-
   function openSaleModal() {
     if (!canCreateSales) {
       showAccessDenied("Veuillez vous connecter pour enregistrer une vente.");
@@ -1678,8 +1632,7 @@ export default function App() {
     }
 
     setSaleError("");
-    setSaleDateDraft(new Date().toISOString().slice(0, 10));
-    setSaleNoteDraft("");
+    setSaleDateDraft(toLocalDay());
     setSaleClientName("");
     setSelectedSaleDetail(null);
     setSaleDraft((current) => ({
@@ -2181,48 +2134,6 @@ export default function App() {
     setActiveModal("product");
   }
 
-  async function handleClientSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (clientModalMode === "edit" && !isSuperAdmin) {
-      showAccessDenied("Seul le super administrateur peut modifier un client.");
-      return;
-    }
-
-    if (clientModalMode !== "edit" && !canCreateClients) {
-      showAccessDenied("Votre profil ne permet pas d'ajouter un client.");
-      return;
-    }
-
-    if (!clientDraft.name.trim()) {
-      return;
-    }
-
-    const nextClients = await repository.saveClient({
-      id: clientDraft.id,
-      name: clientDraft.name.trim(),
-      phone: clientDraft.phone,
-      address: clientDraft.address,
-      email: clientDraft.email,
-    });
-
-    setClients(nextClients);
-    setClientModalMode("create");
-    setClientDraft(emptyClientDraft);
-    closeModal();
-    showToast("success", clientModalMode === "edit" ? "Client mis a jour avec succes." : "Client enregistre avec succes.");
-  }
-
-  async function handleDeleteClient(client: Client) {
-    if (!isSuperAdmin) {
-      showAccessDenied("Seul le super administrateur peut supprimer un client.");
-      return;
-    }
-
-    const nextClients = await repository.deleteClient(client.id);
-    setClients(nextClients);
-    showToast("success", "Client supprime avec succes.");
-  }
-
   async function handleServiceSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -2332,6 +2243,7 @@ export default function App() {
       await repository.createSale({
         clientId: null,
         clientName: saleClientName,
+        soldOn: saleDateDraft,
         paymentMethod: saleDraft.paymentMethod,
         items: saleDraft.items.map((item) => ({
           productId: Number(item.productId),
@@ -2344,6 +2256,7 @@ export default function App() {
       });
 
       setSaleClientName("");
+      setSaleDateDraft(toLocalDay());
       setSaleDraft({
         clientId: null,
         paymentMethod: "Especes",
@@ -2728,13 +2641,6 @@ export default function App() {
   const allReplenishmentProducts = products.filter((item) => replenishedProductNames.has(normalizeText(item.name)));
   const replenishmentProducts = filteredProducts.filter((item) => replenishedProductNames.has(normalizeText(item.name)));
 
-  const filteredClients = clients.filter((item) => {
-    const query = normalizeText(clientSearch);
-    if (!query) return true;
-    return [item.name, item.phone, item.address, item.email].some((value) => normalizeText(value).includes(query));
-  });
-  const clientsWithEmailCount = filteredClients.filter((item) => item.email.trim().length > 0).length;
-  const clientsWithPhoneCount = filteredClients.filter((item) => item.phone.trim().length > 0).length;
   const cybercafeReportRangeStart = parseSaleDate(cybercafeReportStart);
   const cybercafeReportRangeEnd = parseSaleDate(cybercafeReportEnd);
   const filteredCybercafeSales = cybercafeSales.filter((sale) => {
@@ -3256,70 +3162,18 @@ export default function App() {
   }
 
   async function handleSyncNow() {
-    await handleSyncNowWithSelection();
-  }
-
-  async function handleSyncNowWithSelection(selectedKeys?: string[]) {
     try {
       setSyncBusy(true);
-      setPendingSyncRequestKeys(selectedKeys && selectedKeys.length > 0 ? selectedKeys : null);
-      const currentSyncStatus = await repository.getSyncStatus();
-
-      if (currentSyncStatus.pendingChanges > 0 && currentSyncStatus.cloudHasChanges) {
-        const preview = await repository.getSyncConflictPreview();
-        setSyncConflictState({
-          preview,
-        });
-        return;
-      }
-
-      const nextStatus = await repository.syncDesktopToCloud(false, selectedKeys);
+      const nextStatus = await repository.syncDesktopToCloud();
       setSyncStatus(nextStatus);
       setSyncSelectionState(null);
-      setPendingSyncRequestKeys(null);
       // Changes made on the other devices are now on this PC: refresh the screens.
       await loadData();
       showToast("success", "Synchronisation terminee : les changements des autres postes sont recuperes et ceux de ce poste envoyes.");
     } catch (error) {
-      setPendingSyncRequestKeys(null);
       // A partial sync may still have brought data: refresh anyway.
       await loadData().catch(() => undefined);
       showToast("error", error instanceof Error ? error.message : "Synchronisation impossible.");
-    } finally {
-      setSyncBusy(false);
-    }
-  }
-
-  async function handleKeepLocalDuringConflict() {
-    try {
-      setSyncBusy(true);
-      const nextStatus = await repository.syncDesktopToCloud(true, pendingSyncRequestKeys ?? undefined);
-      setSyncStatus(nextStatus);
-      setSyncConflictState(null);
-      setSyncSelectionState(null);
-      setPendingSyncRequestKeys(null);
-      showToast("success", "Les donnees locales ont ete poussees vers Supabase.");
-    } catch (error) {
-      setPendingSyncRequestKeys(null);
-      showToast("error", error instanceof Error ? error.message : "Synchronisation impossible.");
-    } finally {
-      setSyncBusy(false);
-    }
-  }
-
-  async function handleTakeCloudDuringConflict() {
-    try {
-      setSyncBusy(true);
-      const nextStatus = await repository.pullCloudToDesktop();
-      setSyncStatus(nextStatus);
-      setSyncConflictState(null);
-      setSyncSelectionState(null);
-      setPendingSyncRequestKeys(null);
-      await loadData();
-      showToast("success", "Les changements du cloud ont ete recuperes sur ce poste.");
-    } catch (error) {
-      setPendingSyncRequestKeys(null);
-      showToast("error", error instanceof Error ? error.message : "Recuperation du cloud impossible.");
     } finally {
       setSyncBusy(false);
     }
@@ -3442,59 +3296,10 @@ export default function App() {
 
       setSyncSelectionState({
         buckets: overview.buckets,
-        selectedKeys: overview.buckets.map((bucket) => bucket.key),
       });
     } catch (error) {
       showToast("error", error instanceof Error ? error.message : "Impossible de charger les changements en attente.");
     }
-  }
-
-  function handleToggleSyncBucket(bucketKey: string) {
-    setSyncSelectionState((current) => {
-      if (!current) {
-        return current;
-      }
-
-      const selectedKeys = current.selectedKeys.includes(bucketKey)
-        ? current.selectedKeys.filter((key) => key !== bucketKey)
-        : [...current.selectedKeys, bucketKey];
-
-      return {
-        ...current,
-        selectedKeys,
-      };
-    });
-  }
-
-  function handleSelectAllSyncBuckets() {
-    setSyncSelectionState((current) =>
-      current
-        ? {
-            ...current,
-            selectedKeys: current.buckets.map((bucket) => bucket.key),
-          }
-        : current
-    );
-  }
-
-  function handleClearSyncBuckets() {
-    setSyncSelectionState((current) =>
-      current
-        ? {
-            ...current,
-            selectedKeys: [],
-          }
-        : current
-    );
-  }
-
-  async function handleSyncSelectedBuckets() {
-    if (!syncSelectionState || syncSelectionState.selectedKeys.length === 0) {
-      showToast("info", "Choisissez au moins une rubrique a synchroniser.");
-      return;
-    }
-
-    await handleSyncNowWithSelection(syncSelectionState.selectedKeys);
   }
 
   const filteredUsers = users.filter((item) => {
@@ -3808,6 +3613,8 @@ export default function App() {
             <span className={`status-chip ${syncStatus.online && repository.hasSupabaseConfig ? "online" : ""}`}>
               {!repository.hasSupabaseConfig ? "Sync non configuree" : syncStatus.online ? "En ligne" : "Hors ligne"}
             </span>
+            {repository.isDesktop ? (
+              <>
             {syncStatus.pendingChanges > 0 ? (
               <button
                 className={`status-chip sync-chip status-chip-button ${syncStatus.cloudHasChanges ? "warning" : ""}`}
@@ -3830,6 +3637,8 @@ export default function App() {
             >
               {syncBusy ? "Synchronisation..." : "Synchroniser"}
             </button>
+              </>
+            ) : null}
             <div className="user-inline-card">
               <span className="user-inline-name">{currentUser.email}</span>
               <span className="role-pill">{currentUser.role}</span>
@@ -4419,102 +4228,6 @@ export default function App() {
           </section>
         )}
 
-        {activeTab === "clients" && (
-          <section className="panel-card">
-            <div className="panel-header">
-              <h2>Clients</h2>
-              <div className="panel-header-actions">
-                {canCreateClients ? (
-                  <button className="primary-btn" type="button" onClick={openClientModal}>
-                    Nouveau client
-                  </button>
-                ) : null}
-              </div>
-            </div>
-            <div className="clients-summary">
-              <div className="clients-indicator neutral">
-                <span>Clients affiches</span>
-                <strong>{filteredClients.length}</strong>
-              </div>
-              <div className="clients-indicator success">
-                <span>Avec e-mail</span>
-                <strong>{clientsWithEmailCount}</strong>
-              </div>
-              <div className="clients-indicator neutral">
-                <span>Avec telephone</span>
-                <strong>{clientsWithPhoneCount}</strong>
-              </div>
-            </div>
-            <div className="section-tools">
-              <input
-                className="table-search-input"
-                placeholder="Rechercher par nom, telephone, adresse ou e-mail"
-                value={clientSearch}
-                onChange={(event) => setClientSearch(event.target.value)}
-              />
-              <span className="section-count">{filteredClients.length} resultat(s)</span>
-            </div>
-            {clients.length === 0 ? (
-              <EmptyState
-                title="Aucun client enregistre"
-                description="Ajoutez un client pour retrouver facilement ses informations lors des ventes."
-              />
-            ) : filteredClients.length === 0 ? (
-              <EmptyState title="Aucun client trouve" description="Aucun client ne correspond a votre recherche actuelle." />
-            ) : (
-              <div className="table-wrap clients-table-wrap">
-                <table className="clients-table">
-                  <thead>
-                    <tr>
-                      <th>Nom</th>
-                      <th>Telephone</th>
-                      <th>Adresse</th>
-                      <th>E-mail</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredClients.map((client) => (
-                      <tr key={client.id}>
-                        <td className="clients-name-cell">{client.name}</td>
-                        <td>{client.phone || "-"}</td>
-                        <td>{client.address}</td>
-                        <td className="clients-email-cell">{client.email || "-"}</td>
-                        <td className="actions-cell">
-                          {isSuperAdmin ? (
-                            <>
-                              <button className="warn-btn" type="button" onClick={() => openClientEditModal(client)}>
-                                Modifier
-                              </button>
-                              <button
-                                className="danger-btn"
-                                type="button"
-                                onClick={() =>
-                                  askConfirmation({
-                                    title: "Supprimer ce client",
-                                    message: `Le client ${client.name} sera retire de la liste. Cette action est irreversible.`,
-                                    actionLabel: "Supprimer le client",
-                                    tone: "danger",
-                                    onConfirm: () => handleDeleteClient(client),
-                                  })
-                                }
-                              >
-                                Supprimer
-                              </button>
-                            </>
-                          ) : (
-                            <span className="section-count">Lecture seule</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        )}
-
         {activeTab === "expenses" && (
           <section className="panel-card">
             <div className="panel-header">
@@ -4786,7 +4499,6 @@ export default function App() {
                       <th>Prix de vente</th>
                       <th>Stock</th>
                       <th>Fournisseur</th>
-                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4797,40 +4509,6 @@ export default function App() {
                         <td>{formatCurrency(item.sellingPrice)}</td>
                         <td>{item.quantity}</td>
                       <td>{item.supplier}</td>
-                      <td className="actions-cell">
-                        {canEditInventory || canDeleteInventory ? (
-                          <>
-                              {canEditInventory ? (
-                              <button
-                                className="warn-btn"
-                                onClick={() => handleEdit(item)}
-                                type="button"
-                              >
-                                Modifier
-                              </button>
-                              ) : null}
-                              {canDeleteInventory ? (
-                              <button
-                                className="danger-btn"
-                                onClick={() =>
-                                  askConfirmation({
-                                    title: "Supprimer ce produit",
-                                    message: `Le produit ${item.name} sera retire de la liste. Cette action est irreversible.`,
-                                    actionLabel: "Supprimer le produit",
-                                    tone: "danger",
-                                    onConfirm: () => handleDelete(item.id),
-                                  })
-                                }
-                                type="button"
-                              >
-                                Supprimer
-                              </button>
-                              ) : null}
-                            </>
-                          ) : (
-                            <span className="section-count">Lecture seule</span>
-                          )}
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -5281,6 +4959,8 @@ export default function App() {
                 <button className="ghost-btn muted" type="button" onClick={() => void loadData()}>
                   Actualiser
                 </button>
+                {repository.isDesktop ? (
+                  <>
                 <button className="ghost-btn" type="button" onClick={() => void handleCreateBackup()}>
                   Sauvegarder
                 </button>
@@ -5300,6 +4980,8 @@ export default function App() {
                 >
                   Restaurer
                 </button>
+                  </>
+                ) : null}
                 {canManageUsers ? (
                   <button className="primary-btn" type="button" onClick={openUserModal}>
                     Ajouter un utilisateur
@@ -5369,14 +5051,6 @@ export default function App() {
                             Acces
                           </button>
                           <button
-                            className="icon-btn"
-                            type="button"
-                            title="Reinitialiser acces"
-                            onClick={() => void handleRefreshUserAccess(user.id)}
-                          >
-                            🔑
-                          </button>
-                          <button
                             className="icon-btn danger"
                             type="button"
                             title="Supprimer"
@@ -5440,9 +5114,11 @@ export default function App() {
                   </select>
                 </label>
                 <div className="history-maintenance-actions">
+                  {repository.isDesktop ? (
                   <button type="button" className="secondary-btn" onClick={handleCreateBackup}>
                     Sauvegarder avant nettoyage
                   </button>
+                  ) : null}
                   <button
                     type="button"
                     className="danger-btn"
@@ -5676,50 +5352,6 @@ export default function App() {
             </Modal>
           );
         })()
-      ) : null}
-
-      {activeModal === "client" ? (
-        <Modal title={clientModalMode === "edit" ? "Modifier le client" : "Nouveau client"} onClose={closeModal}>
-          <form className="modal-form modal-form-stack" onSubmit={handleClientSubmit}>
-            <label>
-              Nom
-              <input
-                value={clientDraft.name}
-                onChange={(event) => setClientDraft((current) => ({ ...current, name: event.target.value }))}
-                required
-              />
-            </label>
-            <label>
-              Telephone
-              <input
-                value={clientDraft.phone}
-                onChange={(event) => setClientDraft((current) => ({ ...current, phone: event.target.value }))}
-              />
-            </label>
-            <label>
-              Adresse
-              <input
-                value={clientDraft.address}
-                onChange={(event) => setClientDraft((current) => ({ ...current, address: event.target.value }))}
-              />
-            </label>
-            <label>
-              Email
-              <input
-                value={clientDraft.email}
-                onChange={(event) => setClientDraft((current) => ({ ...current, email: event.target.value }))}
-              />
-            </label>
-            <div className="modal-actions">
-              <button className="ghost-btn muted" type="button" onClick={closeModal}>
-                Annuler
-              </button>
-              <button className="primary-btn" type="submit">
-                {clientModalMode === "edit" ? "Mettre a jour" : "Enregistrer le client"}
-              </button>
-            </div>
-          </form>
-        </Modal>
       ) : null}
 
       {activeModal === "service" ? (
@@ -6050,9 +5682,11 @@ export default function App() {
             </section>
 
             <div className="modal-actions expense-report-actions">
+              {repository.isDesktop ? (
               <button className="ghost-btn" type="button" onClick={() => void handleExportExpenseReportPdf()}>
                 Exporter PDF
               </button>
+              ) : null}
               <button className="ghost-btn" type="button" onClick={handlePrintExpenseReport}>
                 Imprimer
               </button>
@@ -6206,7 +5840,13 @@ export default function App() {
               </label>
               <label>
                 Date
-                <input type="date" value={saleDateDraft} onChange={(event) => setSaleDateDraft(event.target.value)} />
+                <input
+                  type="date"
+                  value={saleDateDraft}
+                  max={toLocalDay()}
+                  onChange={(event) => setSaleDateDraft(event.target.value)}
+                  required
+                />
               </label>
             </div>
 
@@ -6319,16 +5959,6 @@ export default function App() {
                 + Ajouter un service
               </button>
             </div>
-
-            <label>
-              Notes (optionnel)
-              <textarea
-                rows={3}
-                placeholder="Remarques..."
-                value={saleNoteDraft}
-                onChange={(event) => setSaleNoteDraft(event.target.value)}
-              />
-            </label>
 
             <div className="sales-inline-summary">
               <span>{saleUnitsTotal} unites</span>
@@ -6487,15 +6117,19 @@ export default function App() {
               <button className="ghost-btn" type="button" onClick={() => void handlePrintInvoice()}>
                 Imprimer facture A4
               </button>
+              {repository.isDesktop ? (
               <button className="primary-btn" type="button" onClick={() => void handleExportInvoicePdf()}>
                 Exporter PDF A4
               </button>
+              ) : null}
               <button className="ghost-btn success" type="button" onClick={() => void handlePrintReceipt()}>
                 Imprimer ticket 80 mm
               </button>
+              {repository.isDesktop ? (
               <button className="ghost-btn" type="button" onClick={() => void handleExportReceiptPdf()}>
                 Exporter ticket PDF
               </button>
+              ) : null}
             </div>
             {invoiceMessage ? <p className="invoice-message">{invoiceMessage}</p> : null}
             <div className="table-wrap modal-table-wrap">
@@ -6647,79 +6281,8 @@ export default function App() {
               >
                 Fermer
               </button>
-              <button className="primary-btn" type="button" disabled={syncBusy} onClick={() => void handleSyncNowWithSelection()}>
+              <button className="primary-btn" type="button" disabled={syncBusy} onClick={() => void handleSyncNow()}>
                 {syncBusy ? "Synchronisation..." : "Synchroniser maintenant"}
-              </button>
-            </div>
-          </div>
-        </Modal>
-      ) : null}
-
-      {syncConflictState ? (
-        <Modal title="Conflit de synchronisation" onClose={() => !syncBusy && setSyncConflictState(null)}>
-          <div className="confirm-stack">
-            <p className="confirm-text">
-              Des modifications existent a la fois sur ce poste et dans Supabase. Choisissez maintenant la version qui doit
-              devenir la reference.
-            </p>
-            <p className="confirm-text">
-              Changements locaux en attente : <strong>{syncConflictState.preview.localPendingChanges}</strong>
-            </p>
-            <div className="sync-conflict-grid">
-              <div className="sync-conflict-card">
-                <h3>Ce poste</h3>
-                <p className="sync-conflict-date">
-                  Derniere activite :{" "}
-                  {syncConflictState.preview.localLastChangeAt ? formatDateTime(syncConflictState.preview.localLastChangeAt) : "Non precisee"}
-                </p>
-                {syncConflictState.preview.localBuckets.length > 0 ? (
-                  <div className="sync-conflict-list">
-                    {syncConflictState.preview.localBuckets.map((bucket) => (
-                      <div className="sync-conflict-row" key={`local-${bucket.key}`}>
-                        <span>{bucket.label}</span>
-                        <strong>{bucket.count}</strong>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="sync-conflict-empty">Aucun detail local supplementaire.</p>
-                )}
-              </div>
-              <div className="sync-conflict-card">
-                <h3>Supabase</h3>
-                <p className="sync-conflict-date">
-                  Derniere activite :{" "}
-                  {syncConflictState.preview.cloudLastChangeAt ? formatDateTime(syncConflictState.preview.cloudLastChangeAt) : "Non precisee"}
-                </p>
-                {syncConflictState.preview.cloudBuckets.length > 0 ? (
-                  <div className="sync-conflict-list">
-                    {syncConflictState.preview.cloudBuckets.map((bucket) => (
-                      <div className="sync-conflict-row" key={`cloud-${bucket.key}`}>
-                        <span>{bucket.label}</span>
-                        <strong>{bucket.count}</strong>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="sync-conflict-empty">Aucun detail cloud supplementaire.</p>
-                )}
-              </div>
-            </div>
-            <p className="confirm-text">Garder le local envoie ce poste vers Supabase. Prendre le cloud remplace les donnees locales.</p>
-            <div className="modal-actions">
-              <button
-                className="ghost-btn muted"
-                type="button"
-                disabled={syncBusy}
-                onClick={() => setSyncConflictState(null)}
-              >
-                Annuler
-              </button>
-              <button className="warn-btn" type="button" disabled={syncBusy} onClick={() => void handleTakeCloudDuringConflict()}>
-                {syncBusy ? "Traitement..." : "Prendre le cloud"}
-              </button>
-              <button className="primary-btn" type="button" disabled={syncBusy} onClick={() => void handleKeepLocalDuringConflict()}>
-                {syncBusy ? "Traitement..." : "Garder le local"}
               </button>
             </div>
           </div>

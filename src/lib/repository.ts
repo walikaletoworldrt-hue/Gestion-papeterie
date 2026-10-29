@@ -7,7 +7,7 @@ import {
   normalizeProductDetails,
   validateInitialStockCorrection,
 } from "./initial-stock";
-import { normalizeSaleClientName } from "./sale-client";
+import { normalizeSaleClientName, resolveSaleDate } from "./sale-client";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -3344,6 +3344,9 @@ export const repository = {
       return window.desktopApi.createSale(draft);
     }
 
+    // Checked first so a wrong date never uses up an invoice number.
+    const soldAt = resolveSaleDate(draft.soldOn);
+
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
       const cycleId = await getCurrentSupabaseInventoryCycleId();
@@ -3439,6 +3442,7 @@ export const repository = {
         .insert({
           reference,
           client_id: saleClientId,
+          sold_at: soldAt,
           total_amount: totalAmount,
           payment_method: draft.paymentMethod,
           cycle_id: cycleId,
@@ -3479,6 +3483,7 @@ export const repository = {
             quantity: -item.quantity,
             source_table: "sales",
             source_id: insertedSale.id,
+            movement_date: soldAt,
             cycle_id: cycleId,
           }))
         );
@@ -3541,7 +3546,7 @@ export const repository = {
 
       history.unshift({
         id: Date.now() + line.productId,
-        date: new Date().toLocaleDateString("fr-FR"),
+        date: new Date(soldAt).toLocaleDateString("fr-FR"),
         product: product.name,
         quantity: line.quantity,
         supplier: client?.name || "Client comptoir",
@@ -3582,7 +3587,7 @@ export const repository = {
       id: saleId,
       reference,
       clientName: client?.name || "Client comptoir",
-      date: new Date().toLocaleDateString("fr-FR"),
+      date: new Date(soldAt).toLocaleDateString("fr-FR"),
       amount,
       paymentMethod: draft.paymentMethod,
       status: "Payee",
@@ -3593,7 +3598,7 @@ export const repository = {
       id: saleId,
       reference,
       clientName: client?.name || "Client comptoir",
-      date: new Date().toLocaleDateString("fr-FR"),
+      date: new Date(soldAt).toLocaleDateString("fr-FR"),
       amount,
       paymentMethod: draft.paymentMethod,
       status: "Payee",

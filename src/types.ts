@@ -2,7 +2,6 @@ export type TabId =
   | "dashboard"
   | "products"
   | "services"
-  | "clients"
   | "expenses"
   | "initial-stock"
   | "replenishments"
@@ -202,6 +201,8 @@ export type SaleDraft = {
   clientId: number | null;
   /** Name typed at the sale. When filled, it wins over clientId: the client is found by name or created. */
   clientName?: string;
+  /** Day of the sale (YYYY-MM-DD). Empty means now. */
+  soldOn?: string;
   paymentMethod: string;
   items: SaleItemDraft[];
   serviceItems: SaleServiceItemDraft[];
