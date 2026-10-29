@@ -4,13 +4,26 @@
 Walikale Papeterie
 
 ## Objet du document
-Ce document decrit l'etat fonctionnel reel de l'application au 14 octobre 2026.
+Ce document decrit l'etat fonctionnel reel de l'application au 30 octobre 2026 (version 1.2.0).
 
 Il sert a :
 - valider les fonctionnalites effectivement disponibles
 - distinguer ce qui fonctionne en mode desktop et en mode web
 - cadrer les droits par profil utilisateur
 - fournir une base fiable avant mise en production
+
+## 0. Nouveautes de la version 1.2.0 (30 octobre 2026)
+
+- Correction du stock initial par le Super admin, avec motif obligatoire et trace dans l'historique (section 10.1).
+- Le bouton `Modifier` d'un produit ne change plus la quantite (section 6).
+- Nom du client saisi librement a la vente ; onglet `Clients` retire (sections 8 et 12).
+- Date de vente enregistree : une vente oubliee peut etre saisie a sa vraie date (section 12.1).
+- Suppression du `Transport global du lot` : le transport se saisit dans `Depenses` (sections 11.1 et 14.1).
+- Nouveaux RCCM et Id. Nat sur toutes les factures, les tickets, le rapport et l'en-tete de l'application (section 13.1).
+- Logo agrandi dans l'application et icone de l'application faite a partir du logo (section 22).
+- Bouton `Sauvegarder` accessible aux Administrateurs ; restauration reservee au Super admin (section 18).
+- Nettoyage des boutons inutiles ou en double, et masquage sur le web des boutons reserves au PC (section 22.1).
+- Correction d'un rechargement continu des donnees apres la connexion, qui consommait inutilement le PC et Supabase.
 
 ## 1. Presentation generale
 
@@ -19,7 +32,7 @@ Walikale Papeterie est une application de gestion commerciale, de stock et de su
 L'application permet de gerer dans un seul espace :
 - les produits
 - les services
-- les clients
+- les clients (nom saisi a la vente)
 - les depenses
 - le stock initial
 - les reapprovisionnements
@@ -84,8 +97,8 @@ Le Super admin dispose des droits complets sur l'application, notamment :
 - gerer la synchronisation desktop/cloud
 - visualiser les montants sensibles
 - reinitialiser l'inventaire et la numerotation
-- modifier les clients
-- supprimer les clients
+- corriger le stock initial d'un produit
+- restaurer une sauvegarde complete
 - modifier les produits
 - supprimer les produits
 - modifier les ventes si le flux le permet
@@ -103,10 +116,14 @@ Il peut notamment :
 - consulter le stock
 - ajouter des depenses
 - modifier les services, y compris la description et le prix
+- choisir ou saisir le numero de lot d'un approvisionnement
+- sauvegarder les donnees du PC dans un fichier
 
 Il ne peut pas :
 - gerer les utilisateurs comme un Super admin
 - reinitialiser l'inventaire
+- corriger le stock initial
+- restaurer une sauvegarde
 - supprimer librement les donnees sensibles
 - voir certains montants globaux sensibles dans l'approvisionnement et le stock
 
@@ -173,8 +190,8 @@ Objectif du tableau de bord :
 ## 6. Gestion des produits
 
 Fonctionnalites disponibles :
-- ajout de produit
-- modification de produit
+- ajout de produit, avec sa quantite initiale
+- modification des informations du produit (code, nom, categorie, prix, unite, seuil, fournisseur)
 - suppression de produit selon le role
 - recherche
 - tri
@@ -182,6 +199,11 @@ Fonctionnalites disponibles :
 - gestion du fournisseur
 - gestion des prix
 - recalcul du stock selon les mouvements
+
+Regle sur les quantites :
+- `Modifier` ne change jamais la quantite d'un produit
+- la quantite change uniquement par le stock initial (a la creation ou par correction), les approvisionnements et les ventes
+- un nom ou un code deja utilise par un autre produit est refuse
 
 Informations gerees :
 - code produit
@@ -247,25 +269,18 @@ Particularite importante :
 - l'Administrateur peut modifier un service
 - il peut notamment modifier la description et le prix
 
-## 8. Gestion des clients
+## 8. Clients
 
-Fonctionnalites disponibles :
-- ajout de client
-- consultation de la liste
-- recherche
-- utilisation dans les ventes
-- prise en charge du client comptoir
+Depuis la version 1.2.0, il n'y a plus d'onglet `Clients` : le nom du client est saisi directement dans la vente.
 
-Fonctionnalites d'administration :
-- modification client reservee au Super admin
-- suppression client reservee au Super admin
+Fonctionnement :
+- le champ `Nom du client` de la vente est un texte libre
+- les noms deja connus sont proposes pendant la saisie
+- le nom est rattache au client existant de meme nom (sans tenir compte des majuscules ni des espaces en trop), sinon un nouveau client est cree automatiquement
+- un champ vide correspond a `Client comptoir`
+- le nom est limite a 120 caracteres
 
-Informations gerees :
-- nom
-- telephone
-- adresse
-- e-mail
-- date de creation
+Les clients deja enregistres (telephone, adresse, e-mail) restent conserves dans la base et synchronises.
 
 ## 9. Gestion des depenses
 
@@ -308,9 +323,22 @@ Le rapport de depenses peut etre filtre par periode afin d'eviter de melanger le
 ## 10. Stock initial et cycle d'inventaire
 
 Fonctionnalites disponibles :
-- enregistrement du stock initial
+- enregistrement du stock initial a la creation du produit
 - prise en compte dans le calcul du stock actuel
 - integration dans le cycle d'inventaire
+- tableau affichant, par produit, la quantite initiale et le stock actuel
+
+### 10.1 Correction du stock initial
+
+Le Super admin peut corriger le stock initial d'un produit (bouton `Corriger`).
+
+Regles :
+- nouvelle quantite (positive ou zero) et motif obligatoires
+- le stock actuel est recalcule automatiquement, et un apercu l'affiche avant validation
+- une correction identique a la valeur actuelle est refusee
+- une correction qui rendrait le stock actuel negatif est refusee (ventes deja enregistrees)
+- l'ancienne valeur, la nouvelle valeur et le motif sont conserves dans l'historique d'activite
+- la correction est synchronisee vers les autres postes et le web
 
 Fonctionnalite de reinitialisation :
 - la reinitialisation d'inventaire vide les quantites et repart sur une nouvelle serie
@@ -337,32 +365,21 @@ Droits sensibles :
 
 Regle ergonomique actuelle :
 - l'approvisionnement doit passer par le bouton principal `Nouvel approvisionnement`
-- le bouton inline `Approvisionner` dans la table produit a ete retire pour eviter les doublons de flux
+- le tableau de l'onglet `Reapprovisionnement` est en lecture seule ; la modification et la suppression d'un produit se font dans l'onglet `Produits`
 
-### 11.1 Approvisionnement par lot
+### 11.1 Numero de lot
 
-Le flux d'approvisionnement prend maintenant en charge :
-- un numero `LOT commande` obligatoire
-- un `Transport global du lot` obligatoire et strictement superieur a zero
-- une generation automatique de numero au format `LOT-AAAAMMJJ-001`
-- une personnalisation possible du numero par le Super admin
+Chaque approvisionnement porte un numero `LOT commande` obligatoire :
+- genere automatiquement au format `LOT-AAAAMMJJ-001`
+- modifiable si necessaire, par le Super admin comme par l'Administrateur
+- un meme numero peut etre reutilise pour plusieurs produits d'une meme commande
 
-Objectif :
-- rattacher plusieurs produits a une meme commande
-- repartir les frais de transport au niveau du lot plutot que du produit unitaire
+Les informations de lot sont stockees dans SQLite, dans Supabase, dans l'historique d'approvisionnement et dans les imports/exports CSV.
 
-Les informations de lot sont stockees dans :
-- SQLite local
-- Supabase
-- l'historique d'approvisionnement
-- les imports/exports CSV
-
-Regles de gestion :
-- le Super admin cree un nouveau lot, renseigne son cout de transport et peut reutiliser ce lot pour plusieurs produits d'une meme commande
-- un meme numero de lot doit toujours conserver le meme cout de transport
-- l'Administrateur selectionne uniquement un lot deja cree par le Super admin
-- le cout de transport reste masque a l'Administrateur mais est repris automatiquement pour l'approvisionnement
-- aucun nouvel approvisionnement ne peut etre valide sans numero de lot ni cout de transport configure
+Depuis la version 1.2.0, il n'y a plus de `Transport global du lot` :
+- le transport d'une commande se saisit comme une depense dans l'onglet `Depenses`
+- il est ainsi deduit une seule fois du resultat net du tableau de bord
+- les montants de transport saisis avant la version 1.2.0 restent en base mais ne sont plus utilises
 
 ### 11.2 Import et export
 
@@ -376,12 +393,14 @@ Implementation actuelle :
 - modele d'import
 - export de l'historique
 - import desktop des approvisionnements
+- le modele n'a plus de colonne transport ; un ancien fichier qui en contient une reste accepte et cette colonne est ignoree
 
 ## 12. Ventes et facturation
 
 Fonctionnalites disponibles :
 - creation de vente
-- selection d'un client ou vente comptoir
+- nom du client saisi librement, ou vente comptoir (voir section 8)
+- choix de la date de vente
 - ajout de lignes produit
 - ajout de lignes service
 - saisie des quantites
@@ -401,7 +420,17 @@ Informations gerees :
 - prix unitaires
 - montant total
 
-### 12.1 Serie de facture
+### 12.1 Date de vente
+
+- la date du jour est proposee par defaut, selon l'heure locale du poste
+- une date passee peut etre choisie (vente oubliee) : la vente et ses mouvements de stock sont enregistres a cette date
+- une date future est refusee
+- la date choisie n'a pas d'effet sur la numerotation des factures
+- point d'attention : tout profil autorise a vendre peut dater une vente dans le passe ; la creation reste tracee dans l'historique
+
+La vente n'a pas de champ de note.
+
+### 12.2 Serie de facture
 
 Le systeme gere :
 - la serie de facturation
@@ -419,10 +448,10 @@ La reinitialisation de la numerotation doit rester reservee au Super admin.
 
 Fonctionnalites disponibles :
 - impression facture A4
-- export PDF facture
+- export PDF facture (PC)
 - impression ticket 80 mm
-- export PDF ticket
-- impression navigateur en mode web
+- export PDF ticket (PC)
+- impression navigateur en mode web (sur le web, les boutons d'export PDF sont masques : l'impression permet d'enregistrer en PDF)
 
 Ameliorations recentes :
 - la facture a ete retravaillee pour etre plus propre et moins encombrante
@@ -433,12 +462,24 @@ Ameliorations recentes :
 Contenu documente :
 - logo
 - nom de l'entreprise
+- RCCM et Id. Nat
 - reference
 - date
 - client
 - mode de paiement
 - lignes de vente
 - total
+
+### 13.1 Informations legales
+
+Numeros officiels de l'entreprise :
+- RCCM : `CD/NKG/RCCM/26-A-04372`
+- Id. Nat : `01-G4701-N00001E`
+
+Ils figurent en en-tete de la facture A4, du ticket 80 mm (PC et web), de la facture web, du rapport des ventes et depenses, et dans l'en-tete de l'application.
+Ils sont definis a un seul endroit du code (`src/lib/company.ts`).
+
+A confirmer : la facture A4 affiche aussi `N° Impot : 01-G4701-N66`, qui semble etre un reste de l'ancien Id. Nat.
 
 ## 14. Stock actuel
 
@@ -462,13 +503,14 @@ Le module `Stock actuel` affiche un apercu financier du stock restant.
 Les calculs prennent en compte :
 - prix de vente
 - prix d'achat
-- transport du lot d'approvisionnement
 - cout hebdomadaire du personnel
+
+Calcul : benefice net estime = prix de vente - prix d'achat - part hebdomadaire du personnel.
+Le transport n'entre plus dans ce calcul : il est saisi dans `Depenses` et deduit du resultat net du tableau de bord.
 
 Fonctionnalites disponibles :
 - cout hebdomadaire du personnel personnalisable
 - valeur par defaut de 50000 FC
-- estimation du transport sur stock
 - benefice net potentiel
 
 Certaines valeurs sensibles restent masquees pour les profils non autorises.
@@ -478,9 +520,9 @@ Certaines valeurs sensibles restent masquees pour les profils non autorises.
 Fonctionnalites disponibles :
 - ajout d'utilisateur depuis l'application
 - gestion du role
-- activation ou desactivation
+- activation ou desactivation (bouton `Acces` pour reactiver un compte desactive)
 - suppression selon le role autorise
-- changement de mot de passe
+- changement ou reinitialisation de mot de passe (bouton `Cle`)
 - synchronisation locale/cloud du compte
 - restauration de session
 
@@ -558,6 +600,7 @@ Guide de mise en service : `MISE_EN_SERVICE_SYNCHRONISATION.md`.
 - `En ligne` indique la disponibilite cloud
 - `En attente` affiche le nombre de changements du poste pas encore envoyes ; un clic en montre le detail
 - `Synchroniser` lance la synchronisation
+- ces boutons n'existent que sur PC : sur le web, les donnees sont enregistrees directement dans Supabase
 
 ### 17.2 Modifications simultanees
 
@@ -568,15 +611,35 @@ Il n'y a plus de message de conflit. Regles appliquees automatiquement :
 
 ## 18. Sauvegarde et restauration
 
-Fonctionnalites desktop disponibles :
-- creation manuelle de sauvegarde
-- sauvegardes automatiques
-- restauration depuis fichier
-- conservation d'un nombre limite de sauvegardes automatiques
+Ces fonctions n'existent que sur PC.
 
-Objectif :
-- proteger les donnees avant mise a jour
-- permettre de desinstaller puis reinstaller sans perdre ventes, produits, clients et autres en cas de restauration correcte
+### 18.1 Contenu d'une sauvegarde
+
+Une sauvegarde est un fichier `.json` contenant toutes les donnees du PC : produits, services, tarifs cybercafe, stocks initiaux, approvisionnements, mouvements de stock, ventes et leurs lignes, recettes cybercafe et imports Mikhmon, depenses, clients, cycles d'inventaire, numerotation des factures, comptes utilisateurs (mots de passe codes, jamais en clair) et historique d'activite.
+
+### 18.2 Sauvegarde automatique
+
+- une sauvegarde est faite a chaque ouverture de l'application
+- dossier : `Documents\Walikale Papeterie\Backups\Auto`
+- les 15 dernieres sont conservees
+
+### 18.3 Sauvegarde manuelle
+
+- bouton `Sauvegarder` dans la barre du haut, a cote de `Synchroniser`
+- accessible au Super admin et aux Administrateurs
+- l'utilisateur choisit l'emplacement du fichier (par defaut `Documents\Walikale Papeterie\Backups\Manual`) ; une cle USB est recommandee
+
+### 18.4 Restauration
+
+- bouton `Restaurer` dans l'onglet `Utilisateurs`, reserve au Super admin
+- remplace toutes les donnees du PC par celles du fichier choisi : ce qui a ete saisi depuis la sauvegarde est perdu sur ce poste
+- a reserver aux cas de panne ou de changement d'ordinateur
+
+### 18.5 Controle des droits
+
+Le PC verifie lui-meme le role avant d'agir, independamment de l'emplacement des boutons :
+- sauvegarde manuelle : Super admin ou Administrateur
+- restauration : Super admin uniquement
 
 ## 19. Rapports et interpretation
 
@@ -619,8 +682,7 @@ Avant toute mise a jour de l'application desktop, une sauvegarde doit etre reali
 Recommandations d'exploitation :
 - conserver une copie des sauvegardes en dehors du poste de travail
 - synchroniser regulierement chaque poste lorsqu'Internet est disponible
-- traiter les rubriques en attente une par une en cas de conflit
-- installer la meme version de l'application sur les postes appeles a synchroniser
+- installer la meme version de l'application sur tous les postes et publier la version web en meme temps (par exemple, un Administrateur sur un PC reste en 1.1.0 ne peut pas approvisionner dans un lot cree sans transport en 1.2.0)
 - executer les migrations SQL Supabase fournies avant une premiere mise en production
 
 ## 22. Ergonomie et experience utilisateur
@@ -634,6 +696,23 @@ Fonctionnalites visibles :
 - adaptation selon le role
 - version web responsive amelioree
 - ajustements sur la version portable pour limiter les zones encombrantes
+- logo agrandi dans l'en-tete et sur l'ecran de connexion (version recadree sans marges blanches)
+- RCCM et Id. Nat affiches sous le nom de l'application
+- icone de l'application (.exe) faite a partir de l'embleme du logo
+
+### 22.1 Boutons retires ou masques en version 1.2.0
+
+Retires car en double ou sans effet :
+- le bouton cle en double dans `Utilisateurs` (le bouton `Acces` reste)
+- `Modifier` et `Supprimer` dans le tableau `Reapprovisionnement` (ils restent dans `Produits`)
+- le champ `Code client` et le champ `Notes` de la vente (les notes n'etaient jamais enregistrees)
+- la fenetre de conflit de synchronisation, devenue inatteignable depuis la version 1.1.0
+- l'onglet `Clients`
+
+Masques sur le web car reserves au PC :
+- `Synchroniser` et `En attente`
+- `Sauvegarder`, `Restaurer`, `Sauvegarder avant nettoyage`
+- les boutons `Exporter PDF` (facture, ticket, rapport des depenses)
 
 ## 23. Structures de donnees principales
 
@@ -661,7 +740,7 @@ Vue utilisee :
 
 Colonnes metier importantes ajoutees ou confirmees :
 - `replenishments.lot_number`
-- `replenishments.transport_total`
+- `replenishments.transport_total` (conservee, plus utilisee depuis la version 1.2.0)
 - `users.auth_user_id`
 
 ## 24. Limites et points encore a venir
@@ -671,7 +750,8 @@ Les points suivants restent hors perimetre ou a renforcer :
 - mecanisme PWA installable depuis le navigateur pour usage hors ligne complet
 - prise en charge des comptes internes qui n'utilisent pas une adresse e-mail reelle pour la recuperation autonome du mot de passe
 - suppression d'un utilisateur faite sur le web non repercutee sur les PC
-- deux clients crees avec le meme nom sur deux postes ne sont pas fusionnes
+- deux clients crees avec le meme nom sur deux postes ne sont pas fusionnes (avec la saisie libre du nom, cela peut arriver plus souvent ; sans effet sur les factures)
+- pas de champ de note sur une vente (a ajouter si le besoin apparait, par exemple pour les numeros de transaction Mobile Money)
 - permissions encore plus fines par action metier
 - module fournisseur autonome
 - gestion avancee des avoirs, remises et fiscalite
