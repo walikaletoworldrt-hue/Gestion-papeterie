@@ -14,6 +14,7 @@ import type {
   ExpenseItem,
   InvoiceSeriesInfo,
   Product,
+  InitialStockItem,
   ProductDraft,
   SaleDetail,
   SaleItemDraft,
@@ -136,7 +137,7 @@ const emptyExpenseDraft: ExpenseDraft = {
 };
 
 const userRoles: UserRole[] = ["Administrateur", "Super admin", "Employe"];
-type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale";
+type ModalId = "product" | "service" | "client" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale" | "initialStockCorrection";
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -1032,6 +1033,12 @@ export default function App() {
   });
   const [syncBusy, setSyncBusy] = useState(false);
   const [supplyHistory, setSupplyHistory] = useState<SupplyHistoryItem[]>([]);
+  const [initialStocks, setInitialStocks] = useState<InitialStockItem[]>([]);
+  const [initialStockCorrection, setInitialStockCorrection] = useState<{ productId: number; quantity: string; reason: string }>({
+    productId: 0,
+    quantity: "",
+    reason: "",
+  });
   const [activityHistory, setActivityHistory] = useState<ActivityHistoryItem[]>([]);
   const [metrics, setMetrics] = useState<DashboardMetrics>({
     totalStock: 0,
@@ -1043,6 +1050,7 @@ export default function App() {
     netSalesAmount: 0,
   });
   const [draft, setDraft] = useState<ProductDraft>(emptyDraft);
+  const [editingProductId, setEditingProductId] = useState<number | null>(null);
   const [serviceDraft, setServiceDraft] = useState<ServiceDraft>(emptyServiceDraft);
   const [serviceModalMode, setServiceModalMode] = useState<"create" | "edit">("create");
   const [clientDraft, setClientDraft] = useState<ClientDraft>(emptyClientDraft);
@@ -1235,6 +1243,7 @@ export default function App() {
       repository.getInvoiceSeriesInfo(),
       repository.listCybercafeSales(),
       repository.listMikhmonSales(),
+      repository.listInitialStocks(),
     ]);
 
     const errors = settled
@@ -1261,6 +1270,7 @@ export default function App() {
     const nextInvoiceSeriesInfo = settled[11].status === "fulfilled" ? settled[11].value : null;
     const nextCybercafeSales = settled[12].status === "fulfilled" ? settled[12].value : [];
     const nextMikhmonSales = settled[13].status === "fulfilled" ? settled[13].value : [];
+    const nextInitialStocks = settled[14].status === "fulfilled" ? settled[14].value : [];
 
     setProducts(nextProducts);
     setServices(nextServices);
@@ -1269,6 +1279,7 @@ export default function App() {
     setUsers(nextUsers);
     setSales(nextSales);
     setSupplyHistory(nextHistory);
+    setInitialStocks(nextInitialStocks);
     setActivityHistory(nextActivityHistory);
     setMetrics(nextMetrics);
     setCurrentStock(nextCurrentStock);
@@ -1601,6 +1612,7 @@ export default function App() {
     }
 
     setProductModalMode("create");
+    setEditingProductId(null);
     setDraft(emptyDraft);
     setActiveModal("product");
   }
@@ -2082,21 +2094,78 @@ export default function App() {
       return;
     }
 
-    await repository.saveProduct({
-      ...draft,
-      code: productModalMode === "create" ? suggestedProductCode : draft.code,
-      name: draft.name.trim(),
-      supplier: draft.supplier.trim(),
-      quantity: Number(draft.quantity),
-      purchasePrice: Number(draft.purchasePrice),
-      sellingPrice: Number(draft.sellingPrice),
-      alertThreshold: Number(draft.alertThreshold ?? 0),
-    });
+    try {
+      if (productModalMode === "edit") {
+        // Edits the product information only: quantities change through initial stock and replenishments.
+        if (editingProductId === null) {
+          return;
+        }
+        await repository.updateProductDetails(editingProductId, {
+          code: draft.code ?? "",
+          name: draft.name.trim(),
+          category: draft.category ?? "Papeterie",
+          purchasePrice: Number(draft.purchasePrice),
+          sellingPrice: Number(draft.sellingPrice),
+          unit: draft.unit ?? "piece",
+          alertThreshold: Number(draft.alertThreshold ?? 0),
+          supplier: draft.supplier.trim(),
+        });
+      } else {
+        await repository.saveProduct({
+          ...draft,
+          code: suggestedProductCode,
+          name: draft.name.trim(),
+          supplier: draft.supplier.trim(),
+          quantity: Number(draft.quantity),
+          purchasePrice: Number(draft.purchasePrice),
+          sellingPrice: Number(draft.sellingPrice),
+          alertThreshold: Number(draft.alertThreshold ?? 0),
+        });
+      }
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible d'enregistrer le produit.");
+      return;
+    }
 
     setDraft(emptyDraft);
+    setEditingProductId(null);
     await loadData();
     closeModal();
     showToast("success", productModalMode === "edit" ? "Produit mis a jour avec succes." : "Produit enregistre avec succes.");
+  }
+
+  function openInitialStockCorrection(productId: number) {
+    if (!isSuperAdmin) {
+      showAccessDenied("Seul le super administrateur peut corriger le stock initial.");
+      return;
+    }
+
+    const current = initialStockByProduct.get(productId) ?? 0;
+    setInitialStockCorrection({ productId, quantity: String(current), reason: "" });
+    setActiveModal("initialStockCorrection");
+  }
+
+  async function handleInitialStockCorrectionSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!isSuperAdmin) {
+      showAccessDenied("Seul le super administrateur peut corriger le stock initial.");
+      return;
+    }
+
+    try {
+      await repository.correctInitialStock({
+        productId: initialStockCorrection.productId,
+        quantity: Number(initialStockCorrection.quantity),
+        reason: initialStockCorrection.reason,
+      });
+    } catch (error) {
+      showToast("error", error instanceof Error ? error.message : "Impossible de corriger le stock initial.");
+      return;
+    }
+
+    await loadData();
+    closeModal();
+    showToast("success", "Stock initial corrige. La correction est visible dans l'historique d'activite.");
   }
 
   async function handleDelete(id: number) {
@@ -2117,6 +2186,7 @@ export default function App() {
     }
 
     setProductModalMode("edit");
+    setEditingProductId(product.id);
     setDraft({
       code: product.code,
       name: product.name,
@@ -3042,11 +3112,11 @@ export default function App() {
       return map;
     }, new Map<string, { quantity: number; transportTotal: number }>());
 
+  // Read from the initial stock table: the supply history only holds the last 100 movements.
+  const initialStockByProduct = new Map(initialStocks.map((item) => [item.productId, item.quantity]));
   const stockRows = currentStock.map((item) => {
     const product = products.find((entry) => entry.id === item.productId);
-    const initialStock = supplyHistory
-      .filter((entry) => entry.product === item.productName && entry.movementType === "stock_initial")
-      .reduce((sum, entry) => sum + entry.quantity, 0);
+    const initialStock = initialStockByProduct.get(item.productId) ?? 0;
     const replenishments = supplyHistory
       .filter((entry) => entry.product === item.productName && entry.movementType === "reapprovisionnement")
       .reduce((sum, entry) => sum + entry.quantity, 0);
@@ -4651,7 +4721,8 @@ export default function App() {
               </div>
             </div>
             <p className="hero-copy">
-              Le stock initial est enregistre automatiquement a la creation d'un nouveau produit.
+              Le stock initial est enregistre a la creation d'un produit. Le super administrateur peut le corriger : le stock
+              actuel est recalcule et la correction (ancienne valeur, nouvelle valeur, motif) reste dans l'historique d'activite.
             </p>
             {invoiceSeriesInfo ? (
               <div className="sales-summary compact-summary">
@@ -4703,17 +4774,27 @@ export default function App() {
                   <tr>
                     <th>Produit</th>
                     <th>Quantite initiale</th>
+                    <th>Stock actuel</th>
                     {isSuperAdmin ? <th>Prix d'achat</th> : null}
                     <th>Unite</th>
+                    {isSuperAdmin ? <th>Actions</th> : null}
                   </tr>
                 </thead>
                 <tbody>
                   {products.map((item) => (
                     <tr key={item.id}>
                       <td>{item.name}</td>
+                      <td>{initialStockByProduct.get(item.id) ?? 0}</td>
                       <td>{item.quantity}</td>
                       {isSuperAdmin ? <td>{formatCurrency(item.purchasePrice)}</td> : null}
                       <td>{item.unit}</td>
+                      {isSuperAdmin ? (
+                        <td className="actions-cell">
+                          <button className="warn-btn" type="button" onClick={() => openInitialStockCorrection(item.id)}>
+                            Corriger
+                          </button>
+                        </td>
+                      ) : null}
                     </tr>
                   ))}
                 </tbody>
@@ -5569,16 +5650,23 @@ export default function App() {
                 required
               />
             </label>
-            <label>
-              Quantite
-              <input
-                type="number"
-                min="0"
-                value={draft.quantity}
-                onChange={(event) => setDraft((current) => ({ ...current, quantity: Number(event.target.value) }))}
-                required
-              />
-            </label>
+            {productModalMode === "create" ? (
+              <label>
+                Quantite initiale
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.quantity}
+                  onChange={(event) => setDraft((current) => ({ ...current, quantity: Number(event.target.value) }))}
+                  required
+                />
+              </label>
+            ) : (
+              <p className="hero-copy">
+                La quantite ne se modifie pas ici : utilisez Reapprovisionnements pour ajouter du stock, ou Stock initial
+                pour corriger la quantite de depart.
+              </p>
+            )}
             <label>
               Unite
               <input
@@ -5613,6 +5701,58 @@ export default function App() {
             </div>
           </form>
         </Modal>
+      ) : null}
+
+      {activeModal === "initialStockCorrection" ? (
+        (() => {
+          const product = products.find((item) => item.id === initialStockCorrection.productId);
+          const previous = initialStockByProduct.get(initialStockCorrection.productId) ?? 0;
+          const nextQuantity = Number(initialStockCorrection.quantity);
+          const nextStock = product && Number.isFinite(nextQuantity) ? product.quantity - previous + nextQuantity : null;
+          return (
+            <Modal title={`Corriger le stock initial${product ? ` : ${product.name}` : ""}`} onClose={closeModal}>
+              <form className="modal-form modal-form-stack" onSubmit={handleInitialStockCorrectionSubmit}>
+                <p className="hero-copy">
+                  Stock initial enregistre : <strong>{previous}</strong> {product?.unit ?? ""} - stock actuel :{" "}
+                  <strong>{product?.quantity ?? 0}</strong>
+                </p>
+                <label>
+                  Nouvelle quantite initiale
+                  <input
+                    type="number"
+                    min="0"
+                    value={initialStockCorrection.quantity}
+                    onChange={(event) => setInitialStockCorrection((current) => ({ ...current, quantity: event.target.value }))}
+                    required
+                  />
+                </label>
+                <label>
+                  Motif de la correction
+                  <textarea
+                    rows={2}
+                    value={initialStockCorrection.reason}
+                    onChange={(event) => setInitialStockCorrection((current) => ({ ...current, reason: event.target.value }))}
+                    placeholder="Ex : erreur de saisie, recomptage apres inventaire"
+                    required
+                  />
+                </label>
+                {nextStock !== null && nextQuantity !== previous ? (
+                  <p className={nextStock < 0 ? "error-text" : "hero-copy"}>
+                    Apres correction, le stock actuel passera de {product?.quantity ?? 0} a {nextStock}.
+                  </p>
+                ) : null}
+                <div className="modal-actions">
+                  <button className="ghost-btn muted" type="button" onClick={closeModal}>
+                    Annuler
+                  </button>
+                  <button className="primary-btn" type="submit">
+                    Enregistrer la correction
+                  </button>
+                </div>
+              </form>
+            </Modal>
+          );
+        })()
       ) : null}
 
       {activeModal === "client" ? (

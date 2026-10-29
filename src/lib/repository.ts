@@ -1,6 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
 import { hasSupabaseConfig, supabase } from "./supabase";
 import { runRowSync } from "./row-sync-engine";
+import {
+  checkCorrectedStock,
+  describeInitialStockCorrection,
+  normalizeProductDetails,
+  validateInitialStockCorrection,
+} from "./initial-stock";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -19,7 +25,10 @@ import type {
   InvoiceSeriesInfo,
   LoginDraft,
   PasswordChangeDraft,
+  InitialStockCorrectionDraft,
+  InitialStockItem,
   Product,
+  ProductDetailsDraft,
   ProductDraft,
   ReplenishmentImportSummary,
   Service,
@@ -2513,6 +2522,224 @@ export const repository = {
     });
     persistWebActivityHistory(activityHistory);
     return products;
+  },
+
+  async updateProductDetails(id: number, draft: ProductDetailsDraft): Promise<Product[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.updateProductDetails(id, draft);
+    }
+
+    await ensureSuperAdminAccess("Seul le super administrateur peut modifier un produit.");
+    const details = normalizeProductDetails(draft);
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const nameResult = await client.from("products").select("id").ilike("name", details.name).neq("id", id).limit(1);
+      if ((ensureData(nameResult.data, nameResult.error) as unknown[]).length > 0) {
+        throw new Error(`Un autre produit s'appelle deja "${details.name}".`);
+      }
+      const codeResult = await client.from("products").select("id").eq("code", details.code).neq("id", id).limit(1);
+      if ((ensureData(codeResult.data, codeResult.error) as unknown[]).length > 0) {
+        throw new Error(`Le code ${details.code} est deja utilise par un autre produit.`);
+      }
+
+      const updateResult = await client
+        .from("products")
+        .update({
+          code: details.code,
+          name: details.name,
+          category: details.category,
+          purchase_price: details.purchasePrice,
+          selling_price: details.sellingPrice,
+          unit: details.unit,
+          alert_threshold: details.alertThreshold,
+          supplier: details.supplier,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", id)
+        .select("id");
+      if ((ensureData(updateResult.data, updateResult.error) as unknown[]).length === 0) {
+        throw new Error("Ce produit n'existe plus.");
+      }
+      await insertSupabaseAuditLog(client, {
+        action: "update",
+        target_table: "products",
+        target_id: id,
+        details: `Modification produit ${details.name}`,
+      });
+      return this.listProducts();
+    }
+
+    const products = loadJson("walikale-web-products", webSeedProducts);
+    const product = products.find((item) => item.id === id);
+    if (!product) {
+      throw new Error("Ce produit n'existe plus.");
+    }
+    if (products.some((item) => item.id !== id && item.name.toLowerCase() === details.name.toLowerCase())) {
+      throw new Error(`Un autre produit s'appelle deja "${details.name}".`);
+    }
+    if (products.some((item) => item.id !== id && item.code === details.code)) {
+      throw new Error(`Le code ${details.code} est deja utilise par un autre produit.`);
+    }
+    const history = loadJson("walikale-web-history", webSeedHistory).map((entry) =>
+      entry.product === product.name ? { ...entry, product: details.name } : entry
+    );
+    Object.assign(product, details, { updatedAt: new Date().toISOString() });
+    persistWeb(products, history);
+    return products;
+  },
+
+  async listInitialStocks(): Promise<InitialStockItem[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.listInitialStocks();
+    }
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const cycleId = await getCurrentSupabaseInventoryCycleId();
+      const result = await client.from("initial_stocks").select("product_id, quantity").eq("cycle_id", cycleId);
+      const rows = ensureData(result.data, result.error) as Array<{ product_id: number; quantity: number }>;
+      const totals = new Map<number, number>();
+      rows.forEach((row) => totals.set(row.product_id, (totals.get(row.product_id) ?? 0) + Number(row.quantity)));
+      return [...totals].map(([productId, quantity]) => ({ productId, quantity }));
+    }
+
+    const products = loadJson("walikale-web-products", webSeedProducts);
+    const history = loadJson("walikale-web-history", webSeedHistory);
+    return products.map((product) => ({
+      productId: product.id,
+      quantity: history
+        .filter((entry) => entry.product === product.name && entry.movementType === "stock_initial")
+        .reduce((sum, entry) => sum + entry.quantity, 0),
+    }));
+  },
+
+  /** Sets a product's initial stock for the current cycle; the old and new values are kept in the activity history. */
+  async correctInitialStock(draft: InitialStockCorrectionDraft): Promise<InitialStockItem[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.correctInitialStock(draft);
+    }
+
+    await ensureSuperAdminAccess("Seul le super administrateur peut corriger le stock initial.");
+    const quantity = Number(draft.quantity);
+    const reason = draft.reason?.trim() ?? "";
+    validateInitialStockCorrection(quantity, reason);
+
+    if (isSupabaseEnabled()) {
+      const client = getSupabaseClient();
+      const productResult = await client
+        .from("products")
+        .select("id, name, unit, purchase_price")
+        .eq("id", draft.productId)
+        .maybeSingle();
+      const product = ensureOptionalData(productResult.data, productResult.error) as
+        | { id: number; name: string; unit: string; purchase_price: number }
+        | null;
+      if (!product) {
+        throw new Error("Ce produit n'existe plus.");
+      }
+
+      const cycleId = await getCurrentSupabaseInventoryCycleId();
+      const rowsResult = await client
+        .from("initial_stocks")
+        .select("id, quantity")
+        .eq("product_id", product.id)
+        .eq("cycle_id", cycleId)
+        .order("id", { ascending: true });
+      const rows = ensureData(rowsResult.data, rowsResult.error) as Array<{ id: number; quantity: number }>;
+      const previous = rows.reduce((sum, row) => sum + Number(row.quantity), 0);
+      const stockResult = await client
+        .from("current_stock_view")
+        .select("current_stock")
+        .eq("product_id", product.id)
+        .maybeSingle();
+      const stock = ensureOptionalData(stockResult.data, stockResult.error) as { current_stock: number } | null;
+      checkCorrectedStock(product.name, previous, quantity, Number(stock?.current_stock ?? 0));
+
+      if (rows.length === 0) {
+        const insertResult = await client
+          .from("initial_stocks")
+          .insert({ product_id: product.id, quantity, purchase_price: product.purchase_price, cycle_id: cycleId, note: "Stock initial" })
+          .select("id")
+          .single();
+        const inserted = ensureData(insertResult.data, insertResult.error) as { id: number };
+        rows.push({ id: inserted.id, quantity: 0 });
+      }
+
+      // Normally one row per product. Two PCs that created the same product each recorded one:
+      // the first keeps the corrected quantity, the others go to 0.
+      for (const [index, row] of rows.entries()) {
+        const rowQuantity = index === 0 ? quantity : 0;
+        const stockRowResult = await client.from("initial_stocks").update({ quantity: rowQuantity }).eq("id", row.id);
+        ensureData(stockRowResult.data ?? [], stockRowResult.error);
+        const movementResult = await client
+          .from("stock_movements")
+          .update({ quantity: rowQuantity })
+          .eq("source_table", "initial_stocks")
+          .eq("source_id", row.id)
+          .eq("movement_type", "stock_initial")
+          .select("id");
+        const updatedMovements = ensureData(movementResult.data, movementResult.error) as unknown[];
+        if (updatedMovements.length === 0 && rowQuantity !== 0) {
+          const insertMovement = await client.from("stock_movements").insert({
+            product_id: product.id,
+            movement_type: "stock_initial",
+            quantity: rowQuantity,
+            source_table: "initial_stocks",
+            source_id: row.id,
+            cycle_id: cycleId,
+          });
+          ensureData(insertMovement.data ?? [], insertMovement.error);
+        }
+      }
+
+      await insertSupabaseAuditLog(client, {
+        action: "update",
+        target_table: "initial_stocks",
+        target_id: rows[0].id,
+        details: describeInitialStockCorrection(product.name, product.unit, previous, quantity, reason),
+      });
+      return this.listInitialStocks();
+    }
+
+    const products = loadJson("walikale-web-products", webSeedProducts);
+    const product = products.find((item) => item.id === draft.productId);
+    if (!product) {
+      throw new Error("Ce produit n'existe plus.");
+    }
+    const history = loadJson("walikale-web-history", webSeedHistory);
+    const initialEntries = history.filter((entry) => entry.product === product.name && entry.movementType === "stock_initial");
+    const previous = initialEntries.reduce((sum, entry) => sum + entry.quantity, 0);
+    checkCorrectedStock(product.name, previous, quantity, product.quantity);
+    initialEntries.forEach((entry, index) => {
+      entry.quantity = index === 0 ? quantity : 0;
+    });
+    if (initialEntries.length === 0) {
+      history.unshift({
+        id: Date.now(),
+        date: new Date().toLocaleDateString("fr-FR"),
+        product: product.name,
+        quantity,
+        supplier: product.supplier,
+        purchasePrice: product.purchasePrice,
+        sellingPrice: product.sellingPrice,
+        amount: product.purchasePrice * quantity,
+        movementType: "stock_initial",
+      });
+    }
+    product.quantity += quantity - previous;
+    persistWeb(products, history);
+    const activityHistory = loadJson("walikale-web-activity-history", webSeedActivityHistory);
+    activityHistory.unshift({
+      id: Date.now() + 1,
+      date: new Date().toLocaleString("fr-FR"),
+      action: "Mise a jour",
+      target: `Produit #${product.id}`,
+      details: describeInitialStockCorrection(product.name, product.unit, previous, quantity, reason),
+      user: "Utilisateur web",
+    });
+    persistWebActivityHistory(activityHistory);
+    return this.listInitialStocks();
   },
 
   async listServices(): Promise<Service[]> {

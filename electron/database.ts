@@ -19,6 +19,12 @@ import type {
   RowSyncPulledChanges,
   RowSyncPushedRow,
 } from "../src/lib/row-sync-schema";
+import {
+  checkCorrectedStock,
+  describeInitialStockCorrection,
+  normalizeProductDetails,
+  validateInitialStockCorrection,
+} from "../src/lib/initial-stock";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -35,10 +41,13 @@ import type {
   DashboardMetrics,
   ExpenseDraft,
   ExpenseItem,
+  InitialStockCorrectionDraft,
+  InitialStockItem,
   InvoiceSeriesInfo,
   LoginDraft,
   PasswordChangeDraft,
   Product,
+  ProductDetailsDraft,
   ProductDraft,
   Service,
   ServiceDraft,
@@ -1156,6 +1165,129 @@ export class LocalDatabase {
     this.db.prepare("DELETE FROM products WHERE id = ?").run(id);
     this.logAction(this.getActorUserId(), "delete", "products", id, "Suppression produit");
     return this.listProducts();
+  }
+
+  /** Changes the product information only. Quantities change through initial stock, replenishments and sales. */
+  updateProductDetails(id: number, draft: ProductDetailsDraft): Product[] {
+    this.requireSuperAdminAccess("Seul le super administrateur peut modifier un produit.");
+    const details = normalizeProductDetails(draft);
+    const existing = this.db.prepare("SELECT id, name FROM products WHERE id = ?").get(id) as { id: number; name: string } | undefined;
+    if (!existing) {
+      throw new Error("Ce produit n'existe plus.");
+    }
+
+    const nameTaken = this.db
+      .prepare("SELECT id FROM products WHERE LOWER(name) = LOWER(?) AND id <> ?")
+      .get(details.name, id);
+    if (nameTaken) {
+      throw new Error(`Un autre produit s'appelle deja "${details.name}".`);
+    }
+    const codeTaken = this.db.prepare("SELECT id FROM products WHERE code = ? AND id <> ?").get(details.code, id);
+    if (codeTaken) {
+      throw new Error(`Le code ${details.code} est deja utilise par un autre produit.`);
+    }
+
+    this.db
+      .prepare(`
+        UPDATE products
+        SET code = ?, name = ?, category = ?, purchase_price = ?, selling_price = ?, unit = ?,
+            alert_threshold = ?, supplier = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        details.code,
+        details.name,
+        details.category,
+        details.purchasePrice,
+        details.sellingPrice,
+        details.unit,
+        details.alertThreshold,
+        details.supplier,
+        new Date().toISOString(),
+        id
+      );
+    this.logAction(this.getActorUserId(), "update", "products", id, `Modification produit ${details.name}`);
+    return this.listProducts();
+  }
+
+  listInitialStocks(): InitialStockItem[] {
+    const rows = this.db
+      .prepare(`
+        SELECT product_id, COALESCE(SUM(quantity), 0) AS quantity
+        FROM initial_stocks
+        WHERE cycle_id = ?
+        GROUP BY product_id
+      `)
+      .all(this.getCurrentInventoryCycleId()) as Array<{ product_id: number; quantity: number }>;
+    return rows.map((row) => ({ productId: row.product_id, quantity: Number(row.quantity) }));
+  }
+
+  /**
+   * Sets the initial stock of a product for the current cycle. The initial stock row and its stock movement are
+   * updated in place (so the current stock follows and the change syncs like any other), and the old value,
+   * new value and reason are kept in the activity history.
+   */
+  correctInitialStock(draft: InitialStockCorrectionDraft): InitialStockItem[] {
+    this.requireSuperAdminAccess("Seul le super administrateur peut corriger le stock initial.");
+    const quantity = Number(draft.quantity);
+    const reason = draft.reason?.trim() ?? "";
+    validateInitialStockCorrection(quantity, reason);
+
+    const product = this.db
+      .prepare("SELECT id, name, unit, purchase_price FROM products WHERE id = ?")
+      .get(draft.productId) as { id: number; name: string; unit: string; purchase_price: number } | undefined;
+    if (!product) {
+      throw new Error("Ce produit n'existe plus.");
+    }
+
+    const userId = this.getActorUserId();
+    const cycleId = this.getCurrentInventoryCycleId();
+    const rows = this.db
+      .prepare("SELECT id, quantity FROM initial_stocks WHERE product_id = ? AND cycle_id = ? ORDER BY id ASC")
+      .all(product.id, cycleId) as Array<{ id: number; quantity: number }>;
+    const previous = rows.reduce((sum, row) => sum + Number(row.quantity), 0);
+    const stock = this.db
+      .prepare("SELECT current_stock FROM current_stock_view WHERE product_id = ?")
+      .get(product.id) as { current_stock: number } | undefined;
+    checkCorrectedStock(product.name, previous, quantity, Number(stock?.current_stock ?? 0));
+
+    const apply = this.db.transaction(() => {
+      if (rows.length === 0) {
+        this.recordInitialStock(product.id, quantity, product.purchase_price, userId);
+        return;
+      }
+
+      // Normally one row per product. Two PCs that created the same product each recorded one:
+      // the first keeps the corrected quantity, the others go to 0.
+      rows.forEach((row, index) => {
+        const rowQuantity = index === 0 ? quantity : 0;
+        this.db.prepare("UPDATE initial_stocks SET quantity = ? WHERE id = ?").run(rowQuantity, row.id);
+        const movement = this.db
+          .prepare(
+            "UPDATE stock_movements SET quantity = ? WHERE source_table = 'initial_stocks' AND source_id = ? AND movement_type = 'stock_initial'"
+          )
+          .run(rowQuantity, row.id);
+        if (movement.changes === 0 && rowQuantity !== 0) {
+          this.db
+            .prepare(`
+              INSERT INTO stock_movements (product_id, movement_type, quantity, source_table, source_id, movement_date, cycle_id, user_id)
+              VALUES (?, 'stock_initial', ?, 'initial_stocks', ?, ?, ?, ?)
+            `)
+            .run(product.id, rowQuantity, row.id, new Date().toISOString(), cycleId, userId);
+        }
+      });
+    });
+    apply();
+
+    const targetId = rows[0]?.id ?? product.id;
+    this.logAction(
+      userId,
+      "update",
+      rows[0] ? "initial_stocks" : "products",
+      targetId,
+      describeInitialStockCorrection(product.name, product.unit, previous, quantity, reason)
+    );
+    return this.listInitialStocks();
   }
 
   listSales(): SaleRecord[] {

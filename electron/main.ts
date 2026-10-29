@@ -14,6 +14,8 @@ import type {
   ExpenseDraft,
   LoginDraft,
   PasswordChangeDraft,
+  InitialStockCorrectionDraft,
+  ProductDetailsDraft,
   ProductDraft,
   SaleDraft,
   ServiceDraft,
@@ -42,6 +44,11 @@ function registerIpc() {
   ipcMain.handle("inventory:list", () => database.listProducts());
   ipcMain.handle("inventory:save", (_event, draft: ProductDraft) => database.saveProduct(draft));
   ipcMain.handle("inventory:delete", (_event, id: number) => database.deleteProduct(id));
+  ipcMain.handle("inventory:update-details", (_event, id: number, draft: ProductDetailsDraft) =>
+    database.updateProductDetails(id, draft)
+  );
+  ipcMain.handle("initial-stock:list", () => database.listInitialStocks());
+  ipcMain.handle("initial-stock:correct", (_event, draft: InitialStockCorrectionDraft) => database.correctInitialStock(draft));
   ipcMain.handle("services:list", () => database.listServices());
   ipcMain.handle("services:save", (_event, draft: ServiceDraft) => database.saveService(draft));
   ipcMain.handle("cybercafe:tariffs:list", () => database.listCybercafeTariffs());

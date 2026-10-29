@@ -40,6 +40,30 @@ export type ProductDraft = {
   replenishmentTransportTotal?: number;
 };
 
+/** Product information edited from "Modifier": never the quantity, which only changes through stock movements. */
+export type ProductDetailsDraft = {
+  code: string;
+  name: string;
+  category: string;
+  purchasePrice: number;
+  sellingPrice: number;
+  unit: string;
+  alertThreshold: number;
+  supplier: string;
+};
+
+/** Initial stock of a product for the current inventory cycle. */
+export type InitialStockItem = {
+  productId: number;
+  quantity: number;
+};
+
+export type InitialStockCorrectionDraft = {
+  productId: number;
+  quantity: number;
+  reason: string;
+};
+
 export type Service = {
   id: number;
   name: string;
@@ -362,6 +386,9 @@ export type DesktopApi = {
   listProducts: () => Promise<Product[]>;
   saveProduct: (draft: ProductDraft) => Promise<Product[]>;
   deleteProduct: (id: number) => Promise<Product[]>;
+  updateProductDetails: (id: number, draft: ProductDetailsDraft) => Promise<Product[]>;
+  listInitialStocks: () => Promise<InitialStockItem[]>;
+  correctInitialStock: (draft: InitialStockCorrectionDraft) => Promise<InitialStockItem[]>;
   listServices: () => Promise<Service[]>;
   saveService: (draft: ServiceDraft) => Promise<Service[]>;
   listCybercafeTariffs: () => Promise<CybercafeTariff[]>;

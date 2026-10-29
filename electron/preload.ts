@@ -19,6 +19,9 @@ import type {
   LoginDraft,
   PasswordChangeDraft,
   Product,
+  InitialStockCorrectionDraft,
+  InitialStockItem,
+  ProductDetailsDraft,
   ProductDraft,
   ReplenishmentImportSummary,
   SaleDetail,
@@ -39,6 +42,11 @@ contextBridge.exposeInMainWorld("desktopApi", {
   listProducts: (): Promise<Product[]> => ipcRenderer.invoke("inventory:list"),
   saveProduct: (draft: ProductDraft): Promise<Product[]> => ipcRenderer.invoke("inventory:save", draft),
   deleteProduct: (id: number): Promise<Product[]> => ipcRenderer.invoke("inventory:delete", id),
+  updateProductDetails: (id: number, draft: ProductDetailsDraft): Promise<Product[]> =>
+    ipcRenderer.invoke("inventory:update-details", id, draft),
+  listInitialStocks: (): Promise<InitialStockItem[]> => ipcRenderer.invoke("initial-stock:list"),
+  correctInitialStock: (draft: InitialStockCorrectionDraft): Promise<InitialStockItem[]> =>
+    ipcRenderer.invoke("initial-stock:correct", draft),
   listServices: (): Promise<Service[]> => ipcRenderer.invoke("services:list"),
   saveService: (draft: ServiceDraft): Promise<Service[]> => ipcRenderer.invoke("services:save", draft),
   listCybercafeTariffs: (): Promise<CybercafeTariff[]> => ipcRenderer.invoke("cybercafe:tariffs:list"),
