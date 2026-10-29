@@ -8,6 +8,7 @@ import {
   validateInitialStockCorrection,
 } from "./initial-stock";
 import { normalizeSaleClientName, resolveSaleDate } from "./sale-client";
+import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./company";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -924,6 +925,8 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
             ${logoSrc ? `<img class="receipt-logo" src="${logoSrc}" alt="Walikale to World" />` : ""}
             <h1>Walikale Papeterie</h1>
             <p>Gestion des stocks</p>
+            <p>RCCM : ${COMPANY_RCCM}</p>
+            <p>Id. Nat : ${COMPANY_ID_NAT}</p>
           </div>
           <div class="receipt-block">
             <div><span>Ticket</span><strong>${escapeHtml(sale.reference)}</strong></div>
@@ -947,6 +950,7 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
                 <p class="invoice-kicker">Facture client</p>
                 <h1>Walikale Papeterie</h1>
                 <p>Gestion des stocks et ventes</p>
+                <p>${COMPANY_LEGAL_LINE}</p>
               </div>
             </div>
             <div class="invoice-title">
@@ -977,7 +981,7 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
             <strong>${formatCurrency(sale.amount)}</strong>
           </div>
           <div class="invoice-footer">
-            <p>RCCM : CD/GOM/RCCM/24-A-01041 | Id. Nat : 01-G4701-N66253Q</p>
+            <p>${COMPANY_LEGAL_LINE}</p>
             <p>E-mail : walikaletoworld.rt@gmail.com</p>
           </div>
         </div>

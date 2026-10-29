@@ -2,6 +2,7 @@ import { ChangeEvent, FormEvent, ReactNode, useEffect, useRef, useState } from "
 import brandLogo from "../img/logo-walikale1.png";
 import { repository } from "./lib/repository";
 import { toLocalDay } from "./lib/sale-client";
+import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./lib/company";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -524,7 +525,7 @@ function buildExpenseReportPrintHtml(options: {
                 <p class="shop-meta">
                   Q. Camp TP, avenue Kuya, route vers Mubi, en face du Bureau PAM<br />
                   Tel : +243 812681339 | E-mail : walikaletoworld.rt@gmail.com<br />
-                  RCCM : CD/GOM/RCCM/24-A-01041 | Id. Nat : 01-G4701-N66253Q
+                  ${escapeHtml(COMPANY_LEGAL_LINE)}
                 </p>
               </div>
             </div>
@@ -3594,6 +3595,9 @@ export default function App() {
             <div className="brand-copy">
               <p className="brand-title">Walikale to World</p>
               <p className="brand-subtitle">Gestion des stocks</p>
+              <p className="brand-legal">
+                RCCM : {COMPANY_RCCM} | Id. Nat : {COMPANY_ID_NAT}
+              </p>
             </div>
           </div>
 

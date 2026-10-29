@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SaleDetail } from "../src/types";
+import { COMPANY_ID_NAT, COMPANY_RCCM } from "../src/lib/company";
 
 type InvoiceFormat = "a4" | "receipt80mm";
 
@@ -67,8 +68,8 @@ function buildA4Markup(sale: SaleDetail, logoDataUri: string) {
           <div>
             <h1>Walikale Papeterie</h1>
             <div class="company-meta">
-              <p><strong>N° RCCM :</strong> CD/GOM/RCCM/24-A-01041</p>
-              <p><strong>Id.NAT :</strong> 01-G4701-N66253Q</p>
+              <p><strong>N° RCCM :</strong> ${COMPANY_RCCM}</p>
+              <p><strong>Id. Nat :</strong> ${COMPANY_ID_NAT}</p>
               <p><strong>N° Impôt :</strong> 01-G4701-N66</p>
               <p><strong>Contact :</strong> +243 812681339</p>
             </div>
@@ -147,6 +148,8 @@ function buildReceiptMarkup(sale: SaleDetail, logoDataUri: string) {
         <p>Q.CampTP, Avenue Kuya, route vers MUBI</p>
         <p>En face du Bureau PAM</p>
         <p>+243 812681339</p>
+        <p>RCCM : ${COMPANY_RCCM}</p>
+        <p>Id. Nat : ${COMPANY_ID_NAT}</p>
       </div>
 
       <div class="receipt-separator"></div>
