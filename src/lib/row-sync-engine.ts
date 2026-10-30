@@ -161,6 +161,7 @@ async function pullChanges(
     tombstones,
     clockOffsetMs: clock.offsetMs,
     nextCursor: computeNextCursor(cursor, versions, clock.serverNowMs - CURSOR_SAFETY_MS),
+    cloudUsernames: refs.usernames(),
   };
 }
 
@@ -242,6 +243,9 @@ async function createCloudRefResolver(client: SupabaseClient) {
     idToRef(table: string, id: unknown): string | null {
       if (id === null || id === undefined) return null;
       return idToRef.get(table)?.get(Number(id)) ?? null;
+    },
+    usernames() {
+      return [...(refToId.get("users")?.keys() ?? [])];
     },
     refToId(table: string, ref: unknown): number | null {
       if (typeof ref !== "string" || ref === "") return null;
@@ -337,7 +341,16 @@ async function pushChanges(
     report.pushed += succeeded.length;
   }
 
-  const tombstoneIds = await pushDeletions(client, deviceCode, changes.tombstones, report);
+  const userTombstones = changes.tombstones.filter((tombstone) => tombstone.table_name === "users");
+  const tombstoneIds = [
+    ...(await pushUserDeletions(client, deviceCode, userTombstones, refs, toServerTime, report)),
+    ...(await pushDeletions(
+      client,
+      deviceCode,
+      changes.tombstones.filter((tombstone) => tombstone.table_name !== "users"),
+      report
+    )),
+  ];
   await api.rowSyncMarkPushed(pushed, tombstoneIds);
 }
 
@@ -406,6 +419,37 @@ async function upsertRows(
   }
 
   return succeeded;
+}
+
+/**
+ * Users deleted on this PC (Super admin only). Found in the cloud by username, because a user created on a PC
+ * gets another uid in the cloud. Not deleted if the cloud user was changed after the deletion here.
+ */
+async function pushUserDeletions(
+  client: SupabaseClient,
+  deviceCode: string,
+  tombstones: RowSyncTombstone[],
+  refs: Awaited<ReturnType<typeof createCloudRefResolver>>,
+  toServerTime: (value: string) => string,
+  report: RowSyncReport
+) {
+  const done: number[] = [];
+  for (const tombstone of tombstones) {
+    const cloudId = tombstone.ref ? refs.refToId("users", tombstone.ref) : null;
+    const query =
+      cloudId !== null
+        ? client.from("users").delete().eq("id", cloudId).lt("modified_at", toServerTime(tombstone.deleted_at))
+        : // Deletions recorded before this version have no username: try the uid (same in both when the user came from the cloud).
+          client.from("users").delete().eq("uid", tombstone.uid);
+    const result = await query.setHeader("x-origin-device", deviceCode);
+    if (result.error) {
+      report.failures.push(`Suppression utilisateur ${tombstone.ref ?? ""} : ${result.error.message}`);
+      continue;
+    }
+    if (tombstone.id !== undefined) done.push(tombstone.id);
+    report.deletionsSent += 1;
+  }
+  return done;
 }
 
 async function pushDeletions(client: SupabaseClient, deviceCode: string, tombstones: RowSyncTombstone[], report: RowSyncReport) {

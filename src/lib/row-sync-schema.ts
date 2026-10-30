@@ -133,6 +133,8 @@ export type RowSyncTombstone = {
   uid: string;
   deleted_at: string;
   sync_version?: number;
+  /** Users only: username of the deleted user (uids of users can differ between a PC and the cloud). */
+  ref?: string | null;
 };
 
 export type RowSyncLocalChanges = {
@@ -149,6 +151,8 @@ export type RowSyncPulledChanges = {
   /** Server time minus local time, in ms: compares local modification times with cloud ones. */
   clockOffsetMs: number;
   nextCursor: number;
+  /** Every username in the cloud: users synced before and missing here were deleted in the cloud. */
+  cloudUsernames?: string[];
 };
 
 export type RowSyncApplyResult = {

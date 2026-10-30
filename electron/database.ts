@@ -1430,7 +1430,7 @@ export class LocalDatabase {
 
   rowSyncApply(changes: RowSyncPulledChanges): RowSyncApplyResult {
     this.requireAuthenticatedUser();
-    return applyRemoteChanges(this.db, changes, { deviceCode: this.getDeviceCode() });
+    return applyRemoteChanges(this.db, changes, { deviceCode: this.getDeviceCode(), sessionUserId: this.sessionUserId });
   }
 
   rowSyncMarkPushed(pushed: Record<string, RowSyncPushedRow[]>, tombstoneIds: number[]) {

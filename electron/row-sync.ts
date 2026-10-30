@@ -68,6 +68,11 @@ export function installRowSyncSupport(db: Database.Database) {
   );
   if (!stateColumns.has("device_id")) db.exec("ALTER TABLE row_sync_state ADD COLUMN device_id TEXT");
 
+  const tombstoneColumns = new Set(
+    (db.prepare("PRAGMA table_info(row_sync_tombstones)").all() as Array<{ name: string }>).map((column) => column.name)
+  );
+  if (!tombstoneColumns.has("ref")) db.exec("ALTER TABLE row_sync_tombstones ADD COLUMN ref TEXT");
+
   db.prepare(`INSERT OR IGNORE INTO row_sync_state (id, applying_remote, updated_at) VALUES (1, 0, ${NOW_SQL})`).run();
   // A crash while applying remote changes must not leave tracking disabled.
   db.prepare("UPDATE row_sync_state SET applying_remote = 0 WHERE id = 1").run();
@@ -121,9 +126,9 @@ function installTable(db: Database.Database, table: string) {
     AFTER DELETE ON ${table}
     WHEN ${TRACKING_ENABLED_SQL} AND OLD.uid IS NOT NULL
     BEGIN
-      INSERT INTO row_sync_tombstones (table_name, uid, deleted_at, pushed)
-      VALUES ('${table}', OLD.uid, ${NOW_SQL}, 0)
-      ON CONFLICT (table_name, uid) DO UPDATE SET deleted_at = excluded.deleted_at, pushed = 0;
+      INSERT INTO row_sync_tombstones (table_name, uid, deleted_at, pushed, ref)
+      VALUES ('${table}', OLD.uid, ${NOW_SQL}, 0, ${table === "users" ? "OLD.username" : "NULL"})
+      ON CONFLICT (table_name, uid) DO UPDATE SET deleted_at = excluded.deleted_at, pushed = 0, ref = excluded.ref;
     END;
   `);
 }
@@ -226,8 +231,8 @@ export function collectLocalChanges(
   });
 
   const tombstones = db
-    .prepare("SELECT id, table_name, uid, deleted_at FROM row_sync_tombstones WHERE pushed = 0 AND table_name <> 'users' ORDER BY id ASC")
-    .all() as RowSyncLocalChanges["tombstones"];
+    .prepare("SELECT id, table_name, uid, deleted_at, ref FROM row_sync_tombstones WHERE pushed = 0 AND (table_name <> 'users' OR ?) ORDER BY id ASC")
+    .all(options.includeUsers ? 1 : 0) as RowSyncLocalChanges["tombstones"];
 
   return { deviceCode: state.deviceCode, deviceId: state.deviceId, deviceLabel: options.deviceLabel, rows, tombstones };
 }
@@ -243,8 +248,8 @@ export function countLocalChanges(db: Database.Database, options: { includeUsers
   });
 
   const deletions = db
-    .prepare("SELECT table_name, COUNT(*) AS count FROM row_sync_tombstones WHERE pushed = 0 AND table_name <> 'users' GROUP BY table_name")
-    .all() as Array<{ table_name: string; count: number }>;
+    .prepare("SELECT table_name, COUNT(*) AS count FROM row_sync_tombstones WHERE pushed = 0 AND (table_name <> 'users' OR ?) GROUP BY table_name")
+    .all(options.includeUsers ? 1 : 0) as Array<{ table_name: string; count: number }>;
   deletions.forEach((row) => {
     const existing = buckets.find((bucket) => bucket.key === row.table_name);
     if (existing) existing.count += row.count;
@@ -298,7 +303,7 @@ function toTime(value: unknown) {
 export function applyRemoteChanges(
   db: Database.Database,
   changes: RowSyncPulledChanges,
-  options: { deviceCode: string | null }
+  options: { deviceCode: string | null; sessionUserId?: number | null }
 ): RowSyncApplyResult {
   const result: RowSyncApplyResult = { applied: 0, keptLocal: 0, merged: 0, skipped: 0, deleted: 0 };
   const refs = createRefResolver(db);
@@ -406,6 +411,8 @@ export function applyRemoteChanges(
           });
       });
 
+      result.deleted += removeUsersDeletedInCloud(db, changes.cloudUsernames ?? [], options.sessionUserId ?? null);
+
       db.prepare("UPDATE row_sync_state SET last_pulled_version = MAX(last_pulled_version, ?), updated_at = ? WHERE id = 1").run(
         changes.nextCursor,
         now
@@ -414,6 +421,37 @@ export function applyRemoteChanges(
   });
 
   return result;
+}
+
+/**
+ * Users deleted in the cloud (on the web or by another PC). A user already synced (dirty = 0) whose username
+ * is no longer in the cloud list was deleted there. Users created here and not sent yet (dirty = 1) are kept,
+ * and so are the logged-in user and the last active super admin.
+ */
+export function removeUsersDeletedInCloud(db: Database.Database, cloudUsernames: string[], sessionUserId: number | null) {
+  if (cloudUsernames.length === 0) return 0;
+  const inCloud = new Set(cloudUsernames.map((username) => username.toLowerCase()));
+  const candidates = (
+    db.prepare("SELECT id, username, role, active FROM users WHERE dirty = 0").all() as Array<{
+      id: number;
+      username: string;
+      role: string;
+      active: number;
+    }>
+  ).filter((user) => !inCloud.has(String(user.username).toLowerCase()) && user.id !== sessionUserId);
+
+  let deleted = 0;
+  for (const user of candidates) {
+    if (user.role === "Super admin" && user.active) {
+      const others = db
+        .prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'Super admin' AND active = 1 AND id <> ?")
+        .get(user.id) as { count: number };
+      if (others.count === 0) continue;
+    }
+    db.prepare("DELETE FROM users WHERE id = ?").run(user.id);
+    deleted += 1;
+  }
+  return deleted;
 }
 
 function findLocalRow(db: Database.Database, schema: RowSyncTableSchema, remote: RowSyncRow): LocalRow | undefined {
