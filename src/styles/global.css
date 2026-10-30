@@ -1181,6 +1181,17 @@ h2 {
   color: var(--muted);
 }
 
+.pill.warning {
+  background: rgba(230, 140, 0, 0.14);
+  color: #9a5b00;
+}
+
+.history-offline-pill {
+  margin-left: 0.5rem;
+  padding: 0.18rem 0.55rem;
+  font-size: 0.76rem;
+}
+
 .sales-grid,
 .supply-form {
   display: grid;

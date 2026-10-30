@@ -237,6 +237,7 @@ function registerIpc() {
   ipcMain.handle("users:delete", (_event, userId: number) => database.deleteUser(userId));
   ipcMain.handle("stock:current", () => database.getCurrentStock());
   ipcMain.handle("sync:status", () => database.getSyncStatus());
+  ipcMain.handle("sync:set-internet-reachable", (_event, reachable: boolean) => database.setInternetReachable(Boolean(reachable)));
   ipcMain.handle("sync:pending-overview", () => database.getPendingSyncOverview());
   ipcMain.handle("sync:snapshot", () => database.exportSyncSnapshot({ includeSyncSecrets: true }));
   ipcMain.handle("row-sync:state", () => database.rowSyncGetState());

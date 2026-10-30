@@ -100,6 +100,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   setDeviceCode: (code: string): Promise<InvoiceSeriesInfo> => ipcRenderer.invoke("sales:set-device-code", code),
   resetInventoryCycle: (): Promise<void> => ipcRenderer.invoke("inventory:reset-cycle"),
   getSyncStatus: (): Promise<SyncStatus> => ipcRenderer.invoke("sync:status"),
+  setInternetReachable: (reachable: boolean): Promise<void> => ipcRenderer.invoke("sync:set-internet-reachable", reachable),
   getPendingSyncOverview: () => ipcRenderer.invoke("sync:pending-overview"),
   exportSyncSnapshot: (): Promise<SyncSnapshot> => ipcRenderer.invoke("sync:snapshot"),
   importSyncSnapshot: (snapshot: SyncSnapshot): Promise<void> => ipcRenderer.invoke("sync:import", snapshot),

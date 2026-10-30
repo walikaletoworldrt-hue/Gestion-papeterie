@@ -165,6 +165,8 @@ export type ActivityHistoryItem = {
   target: string;
   details: string;
   user: string;
+  /** Done on a PC without Internet, sent later by the sync. */
+  offline?: boolean;
 };
 
 export type ExpenseItem = {
@@ -438,6 +440,7 @@ export type DesktopApi = {
   setDeviceCode: (code: string) => Promise<InvoiceSeriesInfo>;
   resetInventoryCycle: () => Promise<void>;
   getSyncStatus: () => Promise<SyncStatus>;
+  setInternetReachable: (reachable: boolean) => Promise<void>;
   getPendingSyncOverview: () => Promise<SyncPendingOverview>;
   getSyncConflictPreview: () => Promise<SyncConflictPreview>;
   exportSyncSnapshot: () => Promise<SyncSnapshot>;

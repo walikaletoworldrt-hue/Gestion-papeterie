@@ -9,6 +9,7 @@ import {
 } from "./initial-stock";
 import { normalizeSaleClientName, resolveSaleDate } from "./sale-client";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./company";
+import { displayAuditPlatform, isOfflineAuditPlatform } from "./audit-source";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -854,7 +855,8 @@ async function insertSupabaseAuditLog(
 function formatAuditActorLabel(row: SupabaseAuditLogRow) {
   const actorName = relationFirst(row.user)?.full_name ?? row.actor_name ?? "Utilisateur non precise";
   const actorUsername = row.actor_username ? ` [${row.actor_username}]` : "";
-  const sourcePlatform = row.source_platform ? ` - ${row.source_platform}` : "";
+  const platform = displayAuditPlatform(row.source_platform);
+  const sourcePlatform = platform ? ` - ${platform}` : "";
   const sourceDevice = row.source_device ? ` - ${row.source_device}` : "";
   return `${actorName}${actorUsername}${sourcePlatform}${sourceDevice}`;
 }
@@ -3706,6 +3708,7 @@ export const repository = {
         target: row.target_id ? `${row.target_table} #${row.target_id}` : row.target_table,
         details: row.details ?? "",
         user: formatAuditActorLabel(row),
+        offline: isOfflineAuditPlatform(row.source_platform),
       }));
     }
 

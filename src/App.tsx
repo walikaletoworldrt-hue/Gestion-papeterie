@@ -4,6 +4,7 @@ import brandLogo from "../img/logo-walikale1.png";
 import brandLogoCropped from "../img/logo-walikale-recadre.png";
 import { repository } from "./lib/repository";
 import { toLocalDay } from "./lib/sale-client";
+import { isNetworkErrorMessage } from "./lib/audit-source";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./lib/company";
 import type {
   ActivityHistoryItem,
@@ -1019,6 +1020,12 @@ export default function App() {
     pendingChanges: 0,
   });
   const [syncBusy, setSyncBusy] = useState(false);
+  // One sync at a time (manual or automatic); a ref because state updates arrive too late to block a second call.
+  const syncInFlightRef = useRef(false);
+  const autoSyncRef = useRef<(trigger: "startup" | "online" | "interval") => Promise<void>>(async () => undefined);
+  const autoSyncRetryAtRef = useRef(0);
+  const lastAutoSyncErrorRef = useRef("");
+  const internetDownRef = useRef(false);
   const [supplyHistory, setSupplyHistory] = useState<SupplyHistoryItem[]>([]);
   const [initialStocks, setInitialStocks] = useState<InitialStockItem[]>([]);
   const [initialStockCorrection, setInitialStockCorrection] = useState<{ productId: number; quantity: string; reason: string }>({
@@ -1331,6 +1338,32 @@ export default function App() {
       window.removeEventListener("offline", handleConnectivityChange);
     };
   }, []);
+
+  // Automatic sending of the changes made without Internet (desktop only, once logged in).
+  useEffect(() => {
+    if (!window.desktopApi || !repository.hasSupabaseConfig || !currentUser) {
+      return;
+    }
+
+    function handleOnline() {
+      void autoSyncRef.current("online");
+    }
+    function handleOffline() {
+      reportInternetReachable(false);
+    }
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    const startupTimer = window.setTimeout(() => void autoSyncRef.current("startup"), 5_000);
+    const interval = window.setInterval(() => void autoSyncRef.current("interval"), 30_000);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+      window.clearTimeout(startupTimer);
+      window.clearInterval(interval);
+    };
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (!activeModal) {
@@ -3164,23 +3197,101 @@ export default function App() {
     showToast("success", "Le stock a ete reinitialise pour un nouveau cycle d'inventaire.");
   }
 
+  function reportInternetReachable(reachable: boolean) {
+    internetDownRef.current = !reachable;
+    void window.desktopApi?.setInternetReachable?.(reachable).catch(() => undefined);
+  }
+
   async function handleSyncNow() {
+    if (syncInFlightRef.current) {
+      return;
+    }
+
     try {
+      syncInFlightRef.current = true;
       setSyncBusy(true);
       const nextStatus = await repository.syncDesktopToCloud();
+      reportInternetReachable(true);
+      lastAutoSyncErrorRef.current = "";
       setSyncStatus(nextStatus);
       setSyncSelectionState(null);
       // Changes made on the other devices are now on this PC: refresh the screens.
       await loadData();
       showToast("success", "Synchronisation terminee : les changements des autres postes sont recuperes et ceux de ce poste envoyes.");
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Synchronisation impossible.";
+      if (isNetworkErrorMessage(message)) {
+        reportInternetReachable(false);
+      }
       // A partial sync may still have brought data: refresh anyway.
       await loadData().catch(() => undefined);
-      showToast("error", error instanceof Error ? error.message : "Synchronisation impossible.");
+      showToast("error", message);
     } finally {
+      syncInFlightRef.current = false;
       setSyncBusy(false);
     }
   }
+
+  /**
+   * Sends this PC's waiting changes without a click: when the Internet comes back, at login,
+   * and every 30 seconds while something is waiting. Silent when there is no Internet.
+   */
+  async function runAutoSync(trigger: "startup" | "online" | "interval") {
+    if (!window.desktopApi || !repository.hasSupabaseConfig || !currentUser || syncInFlightRef.current) {
+      return;
+    }
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      reportInternetReachable(false);
+      return;
+    }
+    // After a failure, wait before trying again (the Internet coming back retries at once).
+    if (trigger === "interval" && Date.now() < autoSyncRetryAtRef.current) {
+      return;
+    }
+
+    let pending = 0;
+    try {
+      pending = (await repository.getSyncStatus()).pendingChanges;
+    } catch {
+      return;
+    }
+    // Nothing waiting: only check whether the Internet is back, so new operations are no longer marked offline.
+    if (pending === 0 && trigger === "interval" && !internetDownRef.current) {
+      return;
+    }
+
+    try {
+      syncInFlightRef.current = true;
+      setSyncBusy(true);
+      const nextStatus = await repository.syncDesktopToCloud();
+      reportInternetReachable(true);
+      autoSyncRetryAtRef.current = 0;
+      lastAutoSyncErrorRef.current = "";
+      setSyncStatus(nextStatus);
+      await loadData();
+      if (pending > 0) {
+        showToast("success", `Envoi automatique termine : ${pending} changement(s) de ce poste envoye(s).`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Synchronisation impossible.";
+      if (isNetworkErrorMessage(message)) {
+        reportInternetReachable(false);
+        autoSyncRetryAtRef.current = Date.now() + 60_000;
+      } else {
+        autoSyncRetryAtRef.current = Date.now() + 5 * 60_000;
+        // Show a data or account problem once, not every few minutes.
+        if (lastAutoSyncErrorRef.current !== message) {
+          lastAutoSyncErrorRef.current = message;
+          showToast("error", `Envoi automatique impossible : ${message}`);
+        }
+        await loadData().catch(() => undefined);
+      }
+    } finally {
+      syncInFlightRef.current = false;
+      setSyncBusy(false);
+    }
+  }
+  autoSyncRef.current = runAutoSync;
 
   function handlePrintExpenseReport() {
     const documentHtml = getExpenseReportDocumentHtml();
@@ -3337,7 +3448,7 @@ export default function App() {
 
     const query = normalizeText(historySearch);
     if (!query) return true;
-    return [item.action, item.target, item.details, item.user, item.date].some((value) =>
+    return [item.action, item.target, item.details, item.user, item.date, item.offline ? "hors ligne" : ""].some((value) =>
       normalizeText(String(value)).includes(query)
     );
   });
@@ -5192,7 +5303,14 @@ export default function App() {
                 <tbody>
                   {formattedHistory.map((entry) => (
                     <tr key={entry.id}>
-                      <td>{entry.date}</td>
+                      <td>
+                        {entry.date}
+                        {entry.offline ? (
+                          <span className="pill warning history-offline-pill" title="Fait sans Internet, envoye plus tard">
+                            Hors ligne
+                          </span>
+                        ) : null}
+                      </td>
                       <td>{entry.user}</td>
                       <td>{entry.formattedAction}</td>
                       <td>{entry.formattedDetails}</td>

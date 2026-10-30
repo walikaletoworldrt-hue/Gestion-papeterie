@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import Database from "better-sqlite3";
-import { safeStorage } from "electron";
+import { net, safeStorage } from "electron";
 import {
   applyRemoteChanges,
   collectLocalChanges,
@@ -26,6 +26,7 @@ import {
   validateInitialStockCorrection,
 } from "../src/lib/initial-stock";
 import { normalizeSaleClientName, resolveSaleDate } from "../src/lib/sale-client";
+import { displayAuditPlatform, isOfflineAuditPlatform, OFFLINE_DESKTOP_PLATFORM } from "../src/lib/audit-source";
 import type {
   ActivityHistoryItem,
   AppUser,
@@ -277,6 +278,8 @@ export class LocalDatabase {
   private sessionUserId: number | null = null;
   // Password typed at login, kept in memory only, so sync works even if encryption is unavailable.
   private sessionSyncSecret: { userId: number; password: string } | null = null;
+  // False after a sync failed for lack of Internet; true again after a sync succeeds.
+  private internetReachable = true;
 
   constructor(storageDir: string) {
     fs.mkdirSync(storageDir, { recursive: true });
@@ -1927,7 +1930,17 @@ export class LocalDatabase {
       target: this.formatTargetLabel(row.target_table, row.target_id),
       details: row.details ?? "",
       user: this.formatAuditActorLabel(row),
+      offline: isOfflineAuditPlatform(row.source_platform),
     }));
+  }
+
+  /** Set by the screen after each sync attempt: Wi-Fi can be up while the Internet is down. */
+  setInternetReachable(reachable: boolean) {
+    this.internetReachable = reachable;
+  }
+
+  private isOffline() {
+    return !this.internetReachable || !net.isOnline();
   }
 
   importReplenishmentRows(
@@ -2755,7 +2768,7 @@ export class LocalDatabase {
         actor?.full_name ?? null,
         actor?.username ?? null,
         this.getSourceDeviceLabel(),
-        "desktop",
+        this.isOffline() ? OFFLINE_DESKTOP_PLATFORM : "desktop",
         createdAt,
         isSessionAuditLog(targetTable, details) ? createdAt : null
       );
@@ -2788,7 +2801,8 @@ export class LocalDatabase {
   private formatAuditActorLabel(row: AuditLogRow) {
     const actorName = row.user_name ?? row.actor_name ?? "Utilisateur non precise";
     const actorUsername = row.actor_username ? ` [${row.actor_username}]` : "";
-    const sourcePlatform = row.source_platform ? ` - ${row.source_platform}` : "";
+    const platform = displayAuditPlatform(row.source_platform);
+    const sourcePlatform = platform ? ` - ${platform}` : "";
     const sourceDevice = row.source_device ? ` - ${row.source_device}` : "";
     return `${actorName}${actorUsername}${sourcePlatform}${sourceDevice}`;
   }
