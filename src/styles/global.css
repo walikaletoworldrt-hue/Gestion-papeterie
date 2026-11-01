@@ -3625,3 +3625,42 @@ button.dashboard-alert-chip {
   color: #33475b;
   font-size: 0.88rem;
 }
+
+/* --- Vente en gros (rame, boite, paquet) --- */
+.sales-line-main:has(.sales-unit-select) {
+  grid-template-columns: minmax(0, 1fr) 11rem 6rem 2.75rem;
+}
+
+.pack-fieldset {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.8rem 1rem;
+  border: 1px solid #d9e4f2;
+  border-radius: 1rem;
+}
+
+.pack-fieldset legend {
+  padding: 0 0.4rem;
+  font-weight: 700;
+  color: #102544;
+}
+
+.pack-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.6rem;
+}
+
+.pack-summary {
+  margin: 0;
+  color: #1d7a45;
+  font-weight: 600;
+}
+
+.pack-price-note {
+  display: block;
+  color: #58708f;
+  font-size: 0.78rem;
+  font-weight: 600;
+}

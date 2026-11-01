@@ -35,6 +35,7 @@ import {
   validateRepaymentAmount,
   type CreditTerms,
 } from "../src/lib/credit";
+import { mergeSaleLines, normalizePackSettings, resolveSaleLine, unitsRequestedByProduct } from "../src/lib/packaging";
 import { displayAuditPlatform, isOfflineAuditPlatform, OFFLINE_DESKTOP_PLATFORM } from "../src/lib/audit-source";
 import type {
   ActivityHistoryItem,
@@ -92,6 +93,9 @@ type ProductRow = {
   alert_threshold: number;
   supplier: string;
   updated_at: string;
+  pack_label: string | null;
+  pack_size: number | null;
+  pack_price: number | null;
 };
 
 type ServiceRow = {
@@ -250,6 +254,9 @@ type SaleItemRow = {
   quantity: number;
   unit_price: number;
   line_total: number;
+  pack_label: string | null;
+  pack_count: number | null;
+  pack_size: number | null;
 };
 
 type InvoiceSequenceRow = {
@@ -560,6 +567,7 @@ export class LocalDatabase {
     this.ensureReplenishmentLotColumns();
     this.ensureAuditLogColumns();
     this.ensureCreditColumns();
+    this.ensurePackColumns();
     this.ensureInventoryCycleSeed();
     this.ensureInvoiceSequenceSettings();
     this.ensureSyncSettings();
@@ -687,6 +695,18 @@ export class LocalDatabase {
     if (!names.has("transport_total")) {
       this.db.exec("ALTER TABLE replenishments ADD COLUMN transport_total REAL NOT NULL DEFAULT 0");
     }
+  }
+
+  /** Selling by the pack: pack settings on the product, pack sold on the sale line. */
+  private ensurePackColumns() {
+    const addMissing = (table: string, columns: Array<[string, string]>) => {
+      const names = new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
+      columns.forEach(([name, type]) => {
+        if (!names.has(name)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      });
+    };
+    addMissing("products", [["pack_label", "TEXT"], ["pack_size", "INTEGER"], ["pack_price", "REAL"]]);
+    addMissing("sale_items", [["pack_label", "TEXT"], ["pack_count", "INTEGER"], ["pack_size", "INTEGER"]]);
   }
 
   /** Credit sales: down payment and due day on the sale, repayments in their own table. */
@@ -838,7 +858,10 @@ export class LocalDatabase {
           p.unit,
           p.alert_threshold,
           p.supplier,
-          p.updated_at
+          p.updated_at,
+          p.pack_label,
+          p.pack_size,
+          p.pack_price
         FROM products p
         LEFT JOIN current_stock_view csv ON csv.product_id = p.id
         ORDER BY p.updated_at DESC
@@ -857,6 +880,9 @@ export class LocalDatabase {
       alertThreshold: row.alert_threshold,
       supplier: row.supplier,
       updatedAt: row.updated_at,
+      packLabel: row.pack_label ?? null,
+      packSize: row.pack_size ?? null,
+      packPrice: row.pack_price ?? null,
     }));
   }
 
@@ -1063,6 +1089,7 @@ export class LocalDatabase {
       supplier: draft.supplier.trim(),
       replenishmentLotNumber: draft.replenishmentLotNumber?.trim() || "",
     };
+    const pack = normalizePackSettings(draft);
 
     const existing = this.db
       .prepare("SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier FROM products WHERE LOWER(name) = LOWER(?)")
@@ -1138,8 +1165,8 @@ export class LocalDatabase {
       const result = this.db
         .prepare(`
           INSERT INTO products
-          (code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at, pack_label, pack_size, pack_price)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           normalizedDraft.code,
@@ -1151,7 +1178,10 @@ export class LocalDatabase {
           normalizedDraft.alertThreshold,
           normalizedDraft.supplier,
           now,
-          now
+          now,
+          pack.packLabel,
+          pack.packSize,
+          pack.packPrice
         );
 
       const productId = Number(result.lastInsertRowid);
@@ -1217,6 +1247,7 @@ export class LocalDatabase {
   updateProductDetails(id: number, draft: ProductDetailsDraft): Product[] {
     this.requireSuperAdminAccess("Seul le super administrateur peut modifier un produit.");
     const details = normalizeProductDetails(draft);
+    const pack = normalizePackSettings(draft);
     const existing = this.db.prepare("SELECT id, name FROM products WHERE id = ?").get(id) as { id: number; name: string } | undefined;
     if (!existing) {
       throw new Error("Ce produit n'existe plus.");
@@ -1237,7 +1268,7 @@ export class LocalDatabase {
       .prepare(`
         UPDATE products
         SET code = ?, name = ?, category = ?, purchase_price = ?, selling_price = ?, unit = ?,
-            alert_threshold = ?, supplier = ?, updated_at = ?
+            alert_threshold = ?, supplier = ?, updated_at = ?, pack_label = ?, pack_size = ?, pack_price = ?
         WHERE id = ?
       `)
       .run(
@@ -1250,6 +1281,9 @@ export class LocalDatabase {
         details.alertThreshold,
         details.supplier,
         new Date().toISOString(),
+        pack.packLabel,
+        pack.packSize,
+        pack.packPrice,
         id
       );
     this.logAction(this.getActorUserId(), "update", "products", id, `Modification produit ${details.name}`);
@@ -1622,7 +1656,7 @@ export class LocalDatabase {
         auth_sync_password:
           canExportSecrets && !row.auth_user_id ? this.decryptSyncSecret(row.auth_sync_password as string | null) : null,
       })),
-      products: this.db.prepare("SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at FROM products ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      products: this.db.prepare("SELECT id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at, pack_label, pack_size, pack_price FROM products ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       clients: this.db.prepare("SELECT id, name, phone, address, email, created_at FROM clients ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       expenses: this.db.prepare("SELECT id, detail, nature, amount, expense_date, user_id, approved_by, purpose FROM expenses ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       services: this.db.prepare("SELECT id, name, category, unit_price, description, active, created_at, updated_at FROM services ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1631,7 +1665,7 @@ export class LocalDatabase {
       replenishments: this.db.prepare("SELECT id, product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, NULL as user_id, note FROM replenishments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       sales: this.db.prepare("SELECT id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, NULL as user_id, amount_paid, due_date FROM sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       debtPayments: this.db.prepare("SELECT id, sale_id, amount, paid_at, payment_method, note, NULL as user_id FROM debt_payments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
-      saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total, pack_label, pack_count, pack_size FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleServiceItems: this.db.prepare("SELECT id, sale_id, service_id, quantity, unit_price, line_total FROM sale_service_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       cybercafeSales: this.db.prepare("SELECT id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id FROM cybercafe_sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       mikhmonSales: this.db.prepare("SELECT id, sold_at, username, profile, comment, amount, source_key, source_file, imported_at, user_id FROM mikhmon_sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1690,8 +1724,8 @@ export class LocalDatabase {
         VALUES (@id, @auth_user_id, @full_name, @username, @email, @password_hash, @auth_sync_password, @role, @active, @created_at, @last_login_at)
       `);
       const insertProducts = this.db.prepare(`
-        INSERT INTO products (id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at)
-        VALUES (@id, @code, @name, @category, @purchase_price, @selling_price, @unit, @alert_threshold, @supplier, @created_at, @updated_at)
+        INSERT INTO products (id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, created_at, updated_at, pack_label, pack_size, pack_price)
+        VALUES (@id, @code, @name, @category, @purchase_price, @selling_price, @unit, @alert_threshold, @supplier, @created_at, @updated_at, @pack_label, @pack_size, @pack_price)
       `);
       const insertClients = this.db.prepare(`
         INSERT INTO clients (id, name, phone, address, email, created_at)
@@ -1726,8 +1760,8 @@ export class LocalDatabase {
         VALUES (@id, @sale_id, @amount, @paid_at, @payment_method, @note, @user_id)
       `);
       const insertSaleItems = this.db.prepare(`
-        INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price, line_total)
-        VALUES (@id, @sale_id, @product_id, @quantity, @unit_price, @line_total)
+        INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price, line_total, pack_label, pack_count, pack_size)
+        VALUES (@id, @sale_id, @product_id, @quantity, @unit_price, @line_total, @pack_label, @pack_count, @pack_size)
       `);
       const insertSaleServiceItems = this.db.prepare(`
         INSERT INTO sale_service_items (id, sale_id, service_id, quantity, unit_price, line_total)
@@ -1865,7 +1899,7 @@ export class LocalDatabase {
     const soldAt = resolveSaleDate(draft.soldOn);
     const userId = this.getActorUserId();
     const cycleId = this.getCurrentInventoryCycleId();
-    const normalizedItems = this.mergeSaleItems(draft.items);
+    const normalizedItems = mergeSaleLines(draft.items);
     const normalizedServiceItems = this.mergeSaleServiceItems(draft.serviceItems);
     let totalAmount = 0;
 
@@ -1874,38 +1908,64 @@ export class LocalDatabase {
         p.id,
         p.name,
         p.selling_price,
+        p.pack_label,
+        p.pack_size,
+        p.pack_price,
         COALESCE(csv.current_stock, 0) AS quantity
       FROM products p
       LEFT JOIN current_stock_view csv ON csv.product_id = p.id
       WHERE p.id = ?
     `);
-
-    const resolvedItems = normalizedItems.map((item) => {
-      const product = productQuery.get(item.productId) as
-        | { id: number; name: string; selling_price: number; quantity: number }
-        | undefined;
-
+    type SaleProduct = {
+      id: number;
+      name: string;
+      selling_price: number;
+      pack_label: string | null;
+      pack_size: number | null;
+      pack_price: number | null;
+      quantity: number;
+    };
+    const productsById = new Map<number, SaleProduct>();
+    normalizedItems.forEach((item) => {
+      const product = productQuery.get(item.productId) as SaleProduct | undefined;
       if (!product) {
         throw new Error("Un produit de la facture est introuvable.");
       }
+      productsById.set(product.id, product);
+    });
 
-      if (item.quantity <= 0) {
-        throw new Error(`La quantite doit etre superieure a zero pour ${product.name}.`);
+    // Stock is counted in units: a ream of 100 sheets takes 100 sheets.
+    const unitsRequested = unitsRequestedByProduct(normalizedItems, (productId) => productsById.get(productId)?.pack_size);
+    unitsRequested.forEach((units, productId) => {
+      const product = productsById.get(productId) as SaleProduct;
+      if (product.quantity < units) {
+        throw new Error(`Stock insuffisant pour ${product.name} : demande ${units}, disponible ${product.quantity}.`);
       }
+    });
 
-      if (product.quantity < item.quantity) {
-        throw new Error(`Stock insuffisant pour ${product.name}.`);
-      }
-
-      const lineTotal = product.selling_price * item.quantity;
-      totalAmount += lineTotal;
+    const resolvedItems = normalizedItems.map((item) => {
+      const product = productsById.get(item.productId) as SaleProduct;
+      const line = resolveSaleLine(
+        {
+          name: product.name,
+          sellingPrice: product.selling_price,
+          packLabel: product.pack_label,
+          packSize: product.pack_size,
+          packPrice: product.pack_price,
+        },
+        item
+      );
+      totalAmount += line.lineTotal;
 
       return {
         productId: product.id,
         productName: product.name,
-        quantity: item.quantity,
-        unitPrice: product.selling_price,
-        lineTotal,
+        quantity: line.units,
+        unitPrice: line.unitPrice,
+        lineTotal: line.lineTotal,
+        packLabel: line.packLabel,
+        packCount: line.packCount,
+        packSize: line.packSize,
       };
     });
 
@@ -1946,8 +2006,8 @@ export class LocalDatabase {
     });
 
     const insertSaleItem = this.db.prepare(`
-      INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, line_total)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, line_total, pack_label, pack_count, pack_size)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertSaleServiceItem = this.db.prepare(`
       INSERT INTO sale_service_items (sale_id, service_id, quantity, unit_price, line_total)
@@ -1989,7 +2049,7 @@ export class LocalDatabase {
       const saleId = Number(saleResult.lastInsertRowid);
 
       resolvedItems.forEach((item) => {
-        insertSaleItem.run(saleId, item.productId, item.quantity, item.unitPrice, item.lineTotal);
+        insertSaleItem.run(saleId, item.productId, item.quantity, item.unitPrice, item.lineTotal, item.packLabel, item.packCount, item.packSize);
         insertMovement.run(item.productId, -item.quantity, saleId, soldAt, cycleId, userId);
       });
 
@@ -2051,7 +2111,13 @@ export class LocalDatabase {
           END AS supplier,
           p.purchase_price,
           p.selling_price,
-          ABS(r.quantity) * CASE WHEN r.movement_type = 'vente' THEN p.selling_price ELSE p.purchase_price END AS amount,
+          ABS(r.quantity) * CASE
+            WHEN r.movement_type = 'vente' THEN COALESCE(
+              (SELECT SUM(si.line_total) / NULLIF(SUM(si.quantity), 0) FROM sale_items si WHERE si.sale_id = r.source_id AND si.product_id = r.product_id),
+              p.selling_price
+            )
+            ELSE p.purchase_price
+          END AS amount,
           rp.lot_number,
           rp.transport_total,
           r.movement_type
@@ -2823,7 +2889,10 @@ export class LocalDatabase {
           p.category AS category,
           si.quantity,
           si.unit_price,
-          si.line_total
+          si.line_total,
+          si.pack_label,
+          si.pack_count,
+          si.pack_size
         FROM sale_items si
         INNER JOIN products p ON p.id = si.product_id
         WHERE si.sale_id = ?
@@ -2836,7 +2905,10 @@ export class LocalDatabase {
           sv.category AS category,
           ssi.quantity,
           ssi.unit_price,
-          ssi.line_total
+          ssi.line_total,
+          NULL AS pack_label,
+          NULL AS pack_count,
+          NULL AS pack_size
         FROM sale_service_items ssi
         INNER JOIN services sv ON sv.id = ssi.service_id
         WHERE ssi.sale_id = ?
@@ -2853,6 +2925,9 @@ export class LocalDatabase {
       quantity: item.quantity,
       unitPrice: item.unit_price,
       lineTotal: item.line_total,
+      packLabel: item.pack_label ?? null,
+      packCount: item.pack_count ?? null,
+      packSize: item.pack_size ?? null,
     }));
 
     return {

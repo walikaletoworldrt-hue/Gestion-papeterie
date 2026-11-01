@@ -24,6 +24,10 @@ export type Product = {
   alertThreshold: number;
   supplier: string;
   updatedAt: string;
+  /** Selling by the pack (ream, box...): name, units per pack, price of one pack. Null = by the unit only. */
+  packLabel: string | null;
+  packSize: number | null;
+  packPrice: number | null;
 };
 
 export type ProductDraft = {
@@ -37,6 +41,9 @@ export type ProductDraft = {
   alertThreshold?: number;
   supplier: string;
   replenishmentLotNumber?: string;
+  packLabel?: string | null;
+  packSize?: number | null;
+  packPrice?: number | null;
 };
 
 /** Product information edited from "Modifier": never the quantity, which only changes through stock movements. */
@@ -49,6 +56,9 @@ export type ProductDetailsDraft = {
   unit: string;
   alertThreshold: number;
   supplier: string;
+  packLabel?: string | null;
+  packSize?: number | null;
+  packPrice?: number | null;
 };
 
 /** Initial stock of a product for the current inventory cycle. */
@@ -217,7 +227,9 @@ export type SaleDraft = {
 
 export type SaleItemDraft = {
   productId: number;
+  /** Counted in the chosen sale unit: sheets, or reams when saleUnit is "pack". */
   quantity: number;
+  saleUnit?: "unit" | "pack";
 };
 
 export type SaleServiceItemDraft = {
@@ -253,9 +265,14 @@ export type SaleDetailItem = {
   serviceId?: number;
   productName: string;
   category?: string;
+  /** Units taken out of stock (sheets, pens...). */
   quantity: number;
   unitPrice: number;
   lineTotal: number;
+  /** Sold by the pack: "Rame", number of packs and units per pack. */
+  packLabel?: string | null;
+  packCount?: number | null;
+  packSize?: number | null;
 };
 
 export type SaleDetail = {

@@ -19,6 +19,7 @@ import {
   creditDocumentLines,
   paymentMethodLabel,
 } from "./credit";
+import { mergeSaleLines, normalizePackSettings, resolveSaleLine, saleLineDisplay, unitsRequestedByProduct } from "./packaging";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./company";
 import { displayAuditPlatform, isOfflineAuditPlatform } from "./audit-source";
 import type {
@@ -86,6 +87,9 @@ const webSeedProducts: Product[] = [
     alertThreshold: 10,
     supplier: "Papeterie Kivu",
     updatedAt: now,
+    packLabel: null,
+    packSize: null,
+    packPrice: null,
   },
   {
     id: 2,
@@ -99,6 +103,9 @@ const webSeedProducts: Product[] = [
     alertThreshold: 8,
     supplier: "Bureau Express",
     updatedAt: now,
+    packLabel: null,
+    packSize: null,
+    packPrice: null,
   },
 ];
 
@@ -353,6 +360,9 @@ type SupabaseProductRow = {
   alert_threshold: number;
   supplier: string;
   updated_at: string;
+  pack_label?: string | null;
+  pack_size?: number | null;
+  pack_price?: number | null;
 };
 
 type SupabaseServiceRow = {
@@ -503,6 +513,9 @@ type SupabaseSaleItemRow = {
   quantity: number;
   unit_price: number;
   line_total: number;
+  pack_label?: string | null;
+  pack_count?: number | null;
+  pack_size?: number | null;
   product?: { name: string | null } | Array<{ name: string | null }> | null;
 };
 
@@ -995,7 +1008,7 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
     .join("");
   const rows = sale.items
     .map((item) => {
-      const label = item.lineType === "service" ? `${item.productName} (Service)` : item.productName;
+      const label = item.lineType === "service" ? `${item.productName} (Service)` : saleLineDisplay(item).name;
       const category = item.category ? `<div class="line-category">${escapeHtml(item.category)}</div>` : "";
       return `
         <tr>
@@ -1003,8 +1016,8 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
             <div class="line-name">${escapeHtml(label)}</div>
             ${category}
           </td>
-          <td>${item.quantity}</td>
-          <td>${formatCurrency(item.unitPrice)}</td>
+          <td>${escapeHtml(saleLineDisplay(item).quantity)}</td>
+          <td>${formatCurrency(saleLineDisplay(item).unitPrice)}</td>
           <td>${formatCurrency(item.lineTotal)}</td>
         </tr>
       `;
@@ -1013,12 +1026,12 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
 
   const compactRows = sale.items
     .map((item) => {
-      const label = item.lineType === "service" ? `${item.productName} (Service)` : item.productName;
+      const label = item.lineType === "service" ? `${item.productName} (Service)` : saleLineDisplay(item).name;
       return `
         <div class="receipt-line">
           <div class="line-name">${escapeHtml(label)}</div>
           <div class="receipt-meta-line">
-            <span>${item.quantity} x ${formatCurrency(item.unitPrice)}</span>
+            <span>${escapeHtml(saleLineDisplay(item).quantity)} x ${formatCurrency(saleLineDisplay(item).unitPrice)}</span>
             <strong>${formatCurrency(item.lineTotal)}</strong>
           </div>
         </div>
@@ -1378,6 +1391,9 @@ function mapSupabaseProduct(row: SupabaseProductRow, currentStock = 0): Product 
     alertThreshold: row.alert_threshold,
     supplier: row.supplier,
     updatedAt: row.updated_at,
+    packLabel: row.pack_label ?? null,
+    packSize: row.pack_size === null || row.pack_size === undefined ? null : Number(row.pack_size),
+    packPrice: row.pack_price === null || row.pack_price === undefined ? null : Number(row.pack_price),
   };
 }
 
@@ -2375,7 +2391,7 @@ export const repository = {
       const client = getSupabaseClient();
       const productsResult = await client
         .from("products")
-        .select("id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, updated_at")
+        .select("id, code, name, category, purchase_price, selling_price, unit, alert_threshold, supplier, updated_at, pack_label, pack_size, pack_price")
         .order("updated_at", { ascending: false });
       const stockResult = await client
         .from("current_stock_view")
@@ -2505,9 +2521,10 @@ export const repository = {
           details: `Mise a jour produit ${trimmedName}`,
         });
       } else {
+        const pack = normalizePackSettings(draft);
         const insertResult = await client
           .from("products")
-          .insert(normalizedProduct)
+          .insert({ ...normalizedProduct, pack_label: pack.packLabel, pack_size: pack.packSize, pack_price: pack.packPrice })
           .select("id")
           .single();
         const insertedProduct = ensureData(insertResult.data, insertResult.error) as { id: number };
@@ -2590,6 +2607,7 @@ export const repository = {
         alertThreshold: draft.alertThreshold ?? 0,
         supplier: draft.supplier,
         updatedAt: new Date().toISOString(),
+        ...normalizePackSettings(draft),
       });
     }
 
@@ -2663,6 +2681,7 @@ export const repository = {
 
     await ensureSuperAdminAccess("Seul le super administrateur peut modifier un produit.");
     const details = normalizeProductDetails(draft);
+    const pack = normalizePackSettings(draft);
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
@@ -2687,6 +2706,9 @@ export const repository = {
           alert_threshold: details.alertThreshold,
           supplier: details.supplier,
           updated_at: new Date().toISOString(),
+          pack_label: pack.packLabel,
+          pack_size: pack.packSize,
+          pack_price: pack.packPrice,
         })
         .eq("id", id)
         .select("id");
@@ -3249,7 +3271,7 @@ export const repository = {
 
       const itemsResult = await client
         .from("sale_items")
-        .select("sale_id, product_id, quantity, unit_price, line_total, product:products(name)")
+        .select("sale_id, product_id, quantity, unit_price, line_total, pack_label, pack_count, pack_size, product:products(name)")
         .eq("sale_id", saleId)
         .order("id", { ascending: true });
       const serviceItemsResult = await client
@@ -3278,6 +3300,9 @@ export const repository = {
             quantity: item.quantity,
             unitPrice: Number(item.unit_price),
             lineTotal: Number(item.line_total),
+            packLabel: item.pack_label ?? null,
+            packCount: item.pack_count ?? null,
+            packSize: item.pack_size ?? null,
           })),
           ...serviceItems.map((item) => ({
             lineType: "service" as const,
@@ -3487,13 +3512,13 @@ export const repository = {
         throw new Error("Ajoutez au moins un produit ou un service a la facture.");
       }
 
-      const mergedItems = mergeSaleItems(draft.items);
+      const mergedItems = mergeSaleLines(draft.items);
       const mergedServiceItems = mergeSaleServiceItems(draft.serviceItems);
-      const productIds = mergedItems.map((item) => item.productId);
+      const productIds = [...new Set(mergedItems.map((item) => item.productId))];
       const serviceIds = mergedServiceItems.map((item) => item.serviceId);
       const [productsResult, stockResult, servicesResult] = await Promise.all([
         productIds.length > 0
-          ? client.from("products").select("id, name, selling_price, unit").in("id", productIds)
+          ? client.from("products").select("id, name, selling_price, unit, pack_label, pack_size, pack_price").in("id", productIds)
           : Promise.resolve({ data: [], error: null }),
         productIds.length > 0
           ? client.from("current_stock_view").select("product_id, current_stock").in("product_id", productIds)
@@ -3503,7 +3528,15 @@ export const repository = {
           : Promise.resolve({ data: [], error: null }),
       ]);
 
-      const productRows = ensureData(productsResult.data, productsResult.error) as Array<{ id: number; name: string; selling_price: number; unit: string }>;
+      const productRows = ensureData(productsResult.data, productsResult.error) as Array<{
+        id: number;
+        name: string;
+        selling_price: number;
+        unit: string;
+        pack_label: string | null;
+        pack_size: number | null;
+        pack_price: number | null;
+      }>;
       const stockRows = ensureData(stockResult.data, stockResult.error) as Array<{ product_id: number; current_stock: number }>;
       const serviceRows = ensureData(servicesResult.data, servicesResult.error) as Array<{ id: number; name: string; category: string; unit_price: number; active: boolean }>;
       const productMap = new Map(productRows.map((row) => [row.id, row]));
@@ -3511,27 +3544,40 @@ export const repository = {
       const serviceMap = new Map(serviceRows.map((row) => [row.id, row]));
 
       let totalAmount = 0;
-      const saleItemsPayload = mergedItems.map((item) => {
-        const product = productMap.get(item.productId);
-        const availableStock = stockMap.get(item.productId) ?? 0;
-
-        if (!product) {
+      mergedItems.forEach((item) => {
+        if (!productMap.get(item.productId)) {
           throw new Error("Un produit de la facture est introuvable.");
         }
-
-        if (availableStock < item.quantity) {
-          throw new Error(`Stock insuffisant pour ${product.name}.`);
+      });
+      // Stock is counted in units: a ream of 100 sheets takes 100 sheets.
+      unitsRequestedByProduct(mergedItems, (productId) => productMap.get(productId)?.pack_size).forEach((units, productId) => {
+        const availableStock = stockMap.get(productId) ?? 0;
+        if (availableStock < units) {
+          throw new Error(`Stock insuffisant pour ${productMap.get(productId)?.name} : demande ${units}, disponible ${availableStock}.`);
         }
-
-        const unitPrice = Number(product.selling_price);
-        const lineTotal = unitPrice * item.quantity;
-        totalAmount += lineTotal;
+      });
+      const saleItemsPayload = mergedItems.map((item) => {
+        const product = productMap.get(item.productId) as NonNullable<ReturnType<typeof productMap.get>>;
+        const line = resolveSaleLine(
+          {
+            name: product.name,
+            sellingPrice: Number(product.selling_price),
+            packLabel: product.pack_label,
+            packSize: product.pack_size === null ? null : Number(product.pack_size),
+            packPrice: product.pack_price === null ? null : Number(product.pack_price),
+          },
+          item
+        );
+        totalAmount += line.lineTotal;
 
         return {
           product_id: item.productId,
-          quantity: item.quantity,
-          unit_price: unitPrice,
-          line_total: lineTotal,
+          quantity: line.units,
+          unit_price: line.unitPrice,
+          line_total: line.lineTotal,
+          pack_label: line.packLabel,
+          pack_count: line.packCount,
+          pack_size: line.packSize,
         };
       });
       const saleServiceItemsPayload = mergedServiceItems.map((item) => {
@@ -3611,6 +3657,7 @@ export const repository = {
           quantity: item.quantity,
           unit_price: item.unit_price,
           line_total: item.line_total,
+          ...(item.pack_label ? { pack_label: item.pack_label, pack_count: item.pack_count, pack_size: item.pack_size } : {}),
         }))
       );
       ensureData(saleItemsResult.data ?? [], saleItemsResult.error);
@@ -3677,10 +3724,16 @@ export const repository = {
       draft.clientName !== undefined
         ? findOrCreateWebSaleClient(clients, normalizeSaleClientName(draft.clientName))
         : clients.find((item) => item.id === draft.clientId);
-    const mergedItems = mergeSaleItems(draft.items);
+    const mergedItems = mergeSaleLines(draft.items);
     const mergedServiceItems = mergeSaleServiceItems(draft.serviceItems);
     let amount = 0;
     const detailItems: SaleDetail["items"] = [];
+    unitsRequestedByProduct(mergedItems, (productId) => products.find((item) => item.id === productId)?.packSize).forEach((units, productId) => {
+      const product = products.find((item) => item.id === productId);
+      if (product && product.quantity < units) {
+        throw new Error(`Stock insuffisant pour ${product.name}.`);
+      }
+    });
 
     mergedItems.forEach((line) => {
       const product = products.find((item) => item.id === line.productId);
@@ -3688,21 +3741,21 @@ export const repository = {
         throw new Error("Un produit de la facture est introuvable.");
       }
 
-      if (product.quantity < line.quantity) {
-        throw new Error(`Stock insuffisant pour ${product.name}.`);
-      }
-
-      product.quantity -= line.quantity;
-      const lineTotal = product.sellingPrice * line.quantity;
+      const resolved = resolveSaleLine(product, line);
+      product.quantity -= resolved.units;
+      const lineTotal = resolved.lineTotal;
       amount += lineTotal;
       detailItems.push({
         lineType: "product",
         productId: product.id,
         productName: product.name,
         category: product.category,
-        quantity: line.quantity,
-        unitPrice: product.sellingPrice,
+        quantity: resolved.units,
+        unitPrice: resolved.unitPrice,
         lineTotal,
+        packLabel: resolved.packLabel,
+        packCount: resolved.packCount,
+        packSize: resolved.packSize,
       });
 
       history.unshift({
@@ -3881,6 +3934,18 @@ export const repository = {
       }>;
       const replenishmentRows = ensureData(replenishmentsResult.data, replenishmentsResult.error) as SupabaseReplenishmentRow[];
       const salesMap = new Map(salesRows.map((row) => [row.id, row]));
+      // Average price really charged per unit on each sale (a ream is cheaper than 100 sheets).
+      const soldSaleIds = [...new Set(rows.filter((row) => row.movement_type === "vente" && row.source_id).map((row) => Number(row.source_id)))];
+      const soldLinesResult =
+        soldSaleIds.length > 0
+          ? await client.from("sale_items").select("sale_id, product_id, quantity, line_total").in("sale_id", soldSaleIds)
+          : { data: [], error: null };
+      const soldPrice = new Map<string, { units: number; total: number }>();
+      (ensureData(soldLinesResult.data, soldLinesResult.error) as Array<{ sale_id: number; product_id: number; quantity: number; line_total: number }>).forEach((line) => {
+        const key = `${line.sale_id}:${line.product_id}`;
+        const current = soldPrice.get(key) ?? { units: 0, total: 0 };
+        soldPrice.set(key, { units: current.units + Number(line.quantity), total: current.total + Number(line.line_total) });
+      });
       const replenishmentMap = new Map(replenishmentRows.map((row) => [row.id, row]));
 
       return rows.map((row) => {
@@ -3890,7 +3955,12 @@ export const repository = {
         const isSale = row.movement_type === "vente";
         const product = relationFirst(row.product);
         const saleClient = relationFirst(sale?.client);
-        const price = isSale ? Number(product?.selling_price ?? 0) : Number(product?.purchase_price ?? 0);
+        const charged = isSale ? soldPrice.get(`${row.source_id}:${row.product_id}`) : undefined;
+        const price = isSale
+          ? charged && charged.units > 0
+            ? charged.total / charged.units
+            : Number(product?.selling_price ?? 0)
+          : Number(product?.purchase_price ?? 0);
 
         return {
           id: row.id,

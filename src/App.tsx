@@ -5,6 +5,7 @@ import brandLogoCropped from "../img/logo-walikale-recadre.png";
 import { repository } from "./lib/repository";
 import { toLocalDay } from "./lib/sale-client";
 import { isNetworkErrorMessage } from "./lib/audit-source";
+import { describePack, hasPack, saleLineDisplay, unitsRequestedByProduct } from "./lib/packaging";
 import { CREDIT_PAYMENT_METHOD, canSellOnCredit, formatDayFr, isDebtOverdue, paymentMethodLabel, roundMoney } from "./lib/credit";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./lib/company";
 import type {
@@ -978,6 +979,7 @@ function createSaleLine(productId = 0): SaleItemDraft {
   return {
     productId,
     quantity: 1,
+    saleUnit: "unit",
   };
 }
 
@@ -2297,6 +2299,9 @@ export default function App() {
           unit: draft.unit ?? "piece",
           alertThreshold: Number(draft.alertThreshold ?? 0),
           supplier: draft.supplier.trim(),
+          packLabel: draft.packLabel ?? null,
+          packSize: draft.packSize ?? null,
+          packPrice: draft.packPrice ?? null,
         });
       } else {
         await repository.saveProduct({
@@ -2385,6 +2390,9 @@ export default function App() {
       unit: product.unit,
       alertThreshold: product.alertThreshold,
       supplier: product.supplier,
+      packLabel: product.packLabel,
+      packSize: product.packSize,
+      packPrice: product.packPrice,
     });
     setActiveModal("product");
   }
@@ -2510,6 +2518,7 @@ export default function App() {
         items: saleDraft.items.map((item) => ({
           productId: Number(item.productId),
           quantity: Number(item.quantity),
+          saleUnit: item.saleUnit === "pack" ? "pack" : "unit",
         })),
         serviceItems: saleDraft.serviceItems.map((item) => ({
           serviceId: Number(item.serviceId),
@@ -2849,7 +2858,8 @@ export default function App() {
       return sum;
     }
 
-    return sum + product.sellingPrice * line.quantity;
+    const price = line.saleUnit === "pack" && hasPack(product) ? Number(product.packPrice) : product.sellingPrice;
+    return sum + price * Number(line.quantity || 0);
   }, 0) + saleDraft.serviceItems.reduce((sum, line) => {
     const service = services.find((item) => item.id === line.serviceId);
     return sum + (service?.unitPrice ?? 0) * line.quantity;
@@ -2857,10 +2867,11 @@ export default function App() {
   const saleUnitsTotal =
     saleDraft.items.reduce((sum, line) => sum + Number(line.quantity || 0), 0) +
     saleDraft.serviceItems.reduce((sum, line) => sum + Number(line.quantity || 0), 0);
-  const requestedProductQuantities = saleDraft.items.reduce((map, line) => {
-    map.set(line.productId, (map.get(line.productId) ?? 0) + Number(line.quantity || 0));
-    return map;
-  }, new Map<number, number>());
+  // In units (sheets...): a ream of 100 counts for 100.
+  const requestedProductQuantities = unitsRequestedByProduct(saleDraft.items, (productId) => {
+    const product = products.find((item) => item.id === productId);
+    return hasPack(product) ? product?.packSize : 1;
+  });
   const saleHasInsufficientStock = saleDraft.items.some((line) => {
     const product = products.find((item) => item.id === line.productId);
     if (!product) {
@@ -4482,7 +4493,14 @@ export default function App() {
                           <span className="products-category-badge">{item.category}</span>
                         </td>
                         {isSuperAdmin ? <td>{formatCurrency(item.purchasePrice)}</td> : null}
-                        <td className="products-price-cell">{formatCurrency(item.sellingPrice)}</td>
+                        <td className="products-price-cell">
+                          {formatCurrency(item.sellingPrice)}
+                          {hasPack(item) ? (
+                            <small className="pack-price-note">
+                              {describePack(item.packLabel, item.packSize)} : {formatCurrency(Number(item.packPrice))}
+                            </small>
+                          ) : null}
+                        </td>
                         <td>
                           <span className={`products-threshold-badge ${item.quantity <= item.alertThreshold ? "warning" : "success"}`}>
                             {item.alertThreshold}
@@ -5809,6 +5827,56 @@ export default function App() {
                 onChange={(event) => setDraft((current) => ({ ...current, unit: event.target.value }))}
               />
             </label>
+            <fieldset className="pack-fieldset">
+              <legend>Vente en gros (facultatif)</legend>
+              <p className="hero-copy">
+                Pour vendre aussi par rame, boite ou paquet a un autre prix. Le stock reste compte a l'unite
+                ({draft.unit || "piece"}) : vendre 1 lot retire toutes ses unites du stock.
+              </p>
+              <div className="pack-fields">
+                <label>
+                  Nom du lot
+                  <input
+                    value={draft.packLabel ?? ""}
+                    onChange={(event) => setDraft((current) => ({ ...current, packLabel: event.target.value }))}
+                    placeholder="Rame, Boite, Paquet..."
+                    maxLength={40}
+                  />
+                </label>
+                <label>
+                  Unites par lot
+                  <input
+                    type="number"
+                    min="2"
+                    step="1"
+                    value={draft.packSize ?? ""}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, packSize: event.target.value === "" ? null : Number(event.target.value) }))
+                    }
+                    placeholder="100"
+                  />
+                </label>
+                <label>
+                  Prix du lot (FC)
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={draft.packPrice ?? ""}
+                    onChange={(event) =>
+                      setDraft((current) => ({ ...current, packPrice: event.target.value === "" ? null : Number(event.target.value) }))
+                    }
+                    placeholder="19500"
+                  />
+                </label>
+              </div>
+              {hasPack(draft) ? (
+                <p className="pack-summary">
+                  {describePack(draft.packLabel, draft.packSize)} : {formatCurrency(Number(draft.packPrice))} (a l'unite :{" "}
+                  {formatCurrency(Number(draft.sellingPrice))} x {draft.packSize} = {formatCurrency(Number(draft.sellingPrice) * Number(draft.packSize))})
+                </p>
+              ) : null}
+            </fieldset>
             <label>
               Seuil alerte
               <input
@@ -6514,7 +6582,7 @@ export default function App() {
                     <div className="sales-line-main">
                       <select
                         value={line.productId}
-                        onChange={(event) => updateSaleLine(index, { productId: Number(event.target.value) })}
+                        onChange={(event) => updateSaleLine(index, { productId: Number(event.target.value), saleUnit: "unit" })}
                       >
                         {products.map((item) => (
                           <option key={item.id} value={item.id}>
@@ -6522,6 +6590,17 @@ export default function App() {
                           </option>
                         ))}
                       </select>
+                      {selectedProduct && hasPack(selectedProduct) ? (
+                        <select
+                          className="sales-unit-select"
+                          value={line.saleUnit === "pack" ? "pack" : "unit"}
+                          onChange={(event) => updateSaleLine(index, { saleUnit: event.target.value === "pack" ? "pack" : "unit" })}
+                          title="Vendre a l'unite ou par lot"
+                        >
+                          <option value="unit">A l'unite ({selectedProduct.unit})</option>
+                          <option value="pack">{describePack(selectedProduct.packLabel, selectedProduct.packSize)}</option>
+                        </select>
+                      ) : null}
                       <input
                         className="sales-qty-input"
                         type="number"
@@ -6535,11 +6614,15 @@ export default function App() {
                       </button>
                     </div>
                     <div className="sales-line-meta">
-                      <span>{formatCurrency(selectedProduct?.sellingPrice ?? 0)}</span>
+                      <span>
+                        {line.saleUnit === "pack" && selectedProduct && hasPack(selectedProduct)
+                          ? `${formatCurrency(Number(selectedProduct.packPrice))} le lot (${selectedProduct.packSize} ${selectedProduct.unit})`
+                          : formatCurrency(selectedProduct?.sellingPrice ?? 0)}
+                      </span>
                       <span>Stock: {selectedProduct?.quantity ?? 0} {selectedProduct?.unit ?? ""}</span>
                       {hasInsufficientStock ? (
                         <span className="sales-line-warning">
-                          Stock insuffisant: demande {requestedQuantity}, disponible {selectedProduct?.quantity ?? 0}
+                          Stock insuffisant: demande {requestedQuantity} {selectedProduct?.unit ?? ""}, disponible {selectedProduct?.quantity ?? 0}
                         </span>
                       ) : null}
                     </div>
@@ -6878,9 +6961,9 @@ export default function App() {
                 <tbody>
                   {selectedSaleDetail.items.map((item, index) => (
                     <tr key={`${selectedSaleDetail.id}-${item.productId}-${index}`}>
-                      <td>{item.productName}</td>
-                      <td>{item.quantity}</td>
-                      <td>{formatCurrency(item.unitPrice)}</td>
+                      <td>{saleLineDisplay(item).name}</td>
+                      <td>{saleLineDisplay(item).quantity}</td>
+                      <td>{formatCurrency(saleLineDisplay(item).unitPrice)}</td>
                       <td>{formatCurrency(item.lineTotal)}</td>
                     </tr>
                   ))}

@@ -178,7 +178,7 @@ async function fetchSince<T>(client: SupabaseClient, table: string, columns: str
       .limit(PAGE_SIZE);
     if (result.error) {
       const hint = /does not exist|schema cache|could not find/i.test(result.error.message)
-        ? " Supabase n'est pas a jour : executez database/supabase-credit-migration.sql dans Supabase > SQL Editor."
+        ? " Supabase n'est pas a jour : executez les migrations du dossier database (supabase-credit-migration.sql puis supabase-vente-en-gros-migration.sql) dans Supabase > SQL Editor."
         : "";
       throw new Error(`Lecture de ${table} impossible : ${result.error.message}${hint}`);
     }

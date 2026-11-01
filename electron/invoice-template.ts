@@ -3,6 +3,7 @@ import path from "node:path";
 import type { SaleDetail } from "../src/types";
 import { COMPANY_ID_NAT, COMPANY_RCCM } from "../src/lib/company";
 import { creditDocumentLines, paymentMethodLabel } from "../src/lib/credit";
+import { saleLineDisplay } from "../src/lib/packaging";
 
 type InvoiceFormat = "a4" | "receipt80mm";
 
@@ -52,9 +53,9 @@ function buildA4Markup(sale: SaleDetail, logoDataUri: string) {
     .map(
       (item) => `
         <tr>
-          <td>${escapeHtml(item.productName)}</td>
-          <td>${item.quantity}</td>
-          <td>${formatCurrency(item.unitPrice)}</td>
+          <td>${escapeHtml(saleLineDisplay(item).name)}</td>
+          <td>${escapeHtml(saleLineDisplay(item).quantity)}</td>
+          <td>${formatCurrency(saleLineDisplay(item).unitPrice)}</td>
           <td>${formatCurrency(item.lineTotal)}</td>
         </tr>
       `
@@ -140,9 +141,9 @@ function buildReceiptMarkup(sale: SaleDetail, logoDataUri: string) {
     .map(
       (item) => `
         <div class="receipt-line">
-          <div class="receipt-line-name">${escapeHtml(item.productName)}</div>
+          <div class="receipt-line-name">${escapeHtml(saleLineDisplay(item).name)}</div>
           <div class="receipt-line-meta">
-            <span>${item.quantity} x ${formatCurrency(item.unitPrice)}</span>
+            <span>${escapeHtml(saleLineDisplay(item).quantity)} x ${formatCurrency(saleLineDisplay(item).unitPrice)}</span>
             <strong>${formatCurrency(item.lineTotal)}</strong>
           </div>
         </div>

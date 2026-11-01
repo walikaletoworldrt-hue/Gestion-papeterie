@@ -35,7 +35,7 @@ export const ROW_SYNC_SCHEMA: RowSyncTableSchema[] = [
   { table: "clients", columns: ["name", "phone", "address", "email", "created_at"], references: {} },
   {
     table: "products",
-    columns: ["code", "name", "category", "purchase_price", "selling_price", "unit", "alert_threshold", "supplier", "created_at", "updated_at"],
+    columns: ["code", "name", "category", "purchase_price", "selling_price", "unit", "alert_threshold", "supplier", "created_at", "updated_at", "pack_label", "pack_size", "pack_price"],
     references: {},
     naturalKeys: ["name"],
     renameOnConflict: "code",
@@ -77,7 +77,7 @@ export const ROW_SYNC_SCHEMA: RowSyncTableSchema[] = [
   },
   {
     table: "sale_items",
-    columns: ["quantity", "unit_price", "line_total"],
+    columns: ["quantity", "unit_price", "line_total", "pack_label", "pack_count", "pack_size"],
     references: { sale_id: "sales", product_id: "products" },
   },
   {
