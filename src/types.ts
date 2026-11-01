@@ -9,7 +9,8 @@ export type TabId =
   | "cybercafe"
   | "current-stock"
   | "utilisateurs"
-  | "history";
+  | "history"
+  | "debts";
 
 export type Product = {
   id: number;
@@ -208,6 +209,10 @@ export type SaleDraft = {
   paymentMethod: string;
   items: SaleItemDraft[];
   serviceItems: SaleServiceItemDraft[];
+  /** Credit sale only (paymentMethod "Credit"): phone of the client, down payment, last day to pay (YYYY-MM-DD). */
+  clientPhone?: string;
+  creditAmountPaid?: number;
+  dueDate?: string;
 };
 
 export type SaleItemDraft = {
@@ -229,6 +234,17 @@ export type SaleRecord = {
   paymentMethod: string;
   status: "Payee" | "En attente";
   itemsCount: number;
+  /** Sale on credit: the client pays later, all or part. */
+  isCredit: boolean;
+  /** Paid so far: down payment at the sale plus later repayments (the full amount for a cash sale). */
+  amountPaid: number;
+  /** Still owed (0 when paid in full). */
+  balanceDue: number;
+  /** Last day to pay (YYYY-MM-DD), credit sales only. */
+  dueDate: string | null;
+  clientPhone: string;
+  /** Day of the sale (YYYY-MM-DD, this computer's calendar). */
+  soldOn: string;
 };
 
 export type SaleDetailItem = {
@@ -251,6 +267,42 @@ export type SaleDetail = {
   paymentMethod: string;
   status: "Payee" | "En attente";
   items: SaleDetailItem[];
+  /** Sale on credit: the client pays later, all or part. */
+  isCredit: boolean;
+  /** Paid so far: down payment at the sale plus later repayments (the full amount for a cash sale). */
+  amountPaid: number;
+  /** Still owed (0 when paid in full). */
+  balanceDue: number;
+  /** Last day to pay (YYYY-MM-DD), credit sales only. */
+  dueDate: string | null;
+  clientPhone: string;
+  /** Day of the sale (YYYY-MM-DD, this computer's calendar). */
+  soldOn: string;
+  /** Repayments received after the sale, oldest first. */
+  payments: DebtPayment[];
+};
+
+export type DebtPayment = {
+  id: number;
+  saleId: number;
+  saleReference: string;
+  clientName: string;
+  amount: number;
+  /** ISO timestamp of the repayment. */
+  paidAt: string;
+  /** Day of the repayment (YYYY-MM-DD, this computer's calendar). */
+  paidOn: string;
+  date: string;
+  paymentMethod: string;
+  note: string;
+  userName: string;
+};
+
+export type DebtPaymentDraft = {
+  saleId: number;
+  amount: number;
+  paymentMethod: string;
+  note: string;
 };
 
 export type Client = {
@@ -383,6 +435,8 @@ export type SyncSnapshot = {
   auditLogs: Array<Record<string, unknown>>;
   invoiceSequences: Array<Record<string, unknown>>;
   inventoryCycles: Array<Record<string, unknown>>;
+  /** Missing in backups made before credit sales existed. */
+  debtPayments?: Array<Record<string, unknown>>;
 };
 
 export type DesktopApi = {
@@ -404,6 +458,8 @@ export type DesktopApi = {
   listSales: () => Promise<SaleRecord[]>;
   createSale: (draft: SaleDraft) => Promise<SaleRecord[]>;
   getSaleDetail: (saleId: number) => Promise<SaleDetail | null>;
+  listDebtPayments: () => Promise<DebtPayment[]>;
+  createDebtPayment: (draft: DebtPaymentDraft) => Promise<DebtPayment[]>;
   printSaleInvoice: (saleId: number) => Promise<boolean>;
   exportSalePdf: (saleId: number) => Promise<string | null>;
   printSaleReceipt: (saleId: number) => Promise<boolean>;

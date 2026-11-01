@@ -3497,3 +3497,131 @@ tbody td:first-child {
     min-width: 0;
   }
 }
+
+/* --- Ventes a credit et dettes clients --- */
+.sales-indicator.danger {
+  border-left: 3px solid #b42318;
+}
+
+.sales-indicator.danger strong {
+  color: #b42318;
+}
+
+.dashboard-alert-chip.danger {
+  color: #b42318;
+}
+
+button.dashboard-alert-chip {
+  cursor: pointer;
+}
+
+.nav-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  margin-left: 0.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: #f08a24;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.nav-tab-badge.danger {
+  background: #b42318;
+}
+
+.debt-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.debt-badge.open {
+  background: rgba(240, 138, 36, 0.14);
+  color: #9a5b00;
+}
+
+.debt-badge.overdue {
+  background: rgba(180, 35, 24, 0.12);
+  color: #b42318;
+}
+
+.debt-badge.paid {
+  background: rgba(34, 163, 90, 0.12);
+  color: #1d7a45;
+}
+
+.debt-none {
+  color: #94a3b8;
+}
+
+.debt-alert {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.8rem;
+  border: 1px solid #f4b4ae;
+  background: #fff4f2;
+  color: #b42318;
+  font-weight: 700;
+}
+
+.debt-row-overdue td {
+  background: #fff7f6;
+}
+
+.debt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.debt-payments-header {
+  margin-top: 1.5rem;
+}
+
+.sales-credit-box {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid #f6c48f;
+  background: #fff9f2;
+}
+
+.sales-credit-summary {
+  margin: 0;
+  color: #9a5b00;
+}
+
+.sale-credit-detail {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0.8rem 0;
+  padding: 0.8rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid #f6c48f;
+  background: #fff9f2;
+}
+
+.sale-credit-detail-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1.2rem;
+}
+
+.sale-credit-payments {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: #33475b;
+  font-size: 0.88rem;
+}

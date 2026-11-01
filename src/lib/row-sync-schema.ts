@@ -71,7 +71,7 @@ export const ROW_SYNC_SCHEMA: RowSyncTableSchema[] = [
   },
   {
     table: "sales",
-    columns: ["reference", "sold_at", "total_amount", "payment_method"],
+    columns: ["reference", "sold_at", "total_amount", "payment_method", "amount_paid", "due_date"],
     references: { client_id: "clients", cycle_id: "inventory_cycles", user_id: "users" },
     naturalKeys: ["reference"],
   },
@@ -84,6 +84,11 @@ export const ROW_SYNC_SCHEMA: RowSyncTableSchema[] = [
     table: "sale_service_items",
     columns: ["quantity", "unit_price", "line_total"],
     references: { sale_id: "sales", service_id: "services" },
+  },
+  {
+    table: "debt_payments",
+    columns: ["amount", "paid_at", "payment_method", "note"],
+    references: { sale_id: "sales", user_id: "users" },
   },
   {
     table: "cybercafe_sales",

@@ -7,10 +7,23 @@ import {
   normalizeProductDetails,
   validateInitialStockCorrection,
 } from "./initial-stock";
-import { normalizeSaleClientName, resolveSaleDate } from "./sale-client";
+import { normalizeSaleClientName, resolveSaleDate, toLocalDay } from "./sale-client";
+import {
+  canSellOnCredit,
+  computeBalanceDue,
+  isCreditPaymentMethod,
+  roundMoney,
+  validateCreditTerms,
+  validateRepaymentAmount,
+  type CreditTerms,
+  creditDocumentLines,
+  paymentMethodLabel,
+} from "./credit";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./company";
 import { displayAuditPlatform, isOfflineAuditPlatform } from "./audit-source";
 import type {
+  DebtPayment,
+  DebtPaymentDraft,
   ActivityHistoryItem,
   AppUser,
   Client,
@@ -158,8 +171,23 @@ const webSeedActivityHistory: ActivityHistoryItem[] = [
   },
 ];
 
+/** Sales saved before credit existed (demo data in the browser): paid in full. */
+type LegacySaleRecord = Omit<SaleRecord, "isCredit" | "amountPaid" | "balanceDue" | "dueDate" | "clientPhone" | "soldOn"> & Partial<SaleRecord>;
+
+function withCashSaleDefaults<T extends LegacySaleRecord>(sale: T) {
+  return {
+    isCredit: false,
+    amountPaid: sale.amount,
+    balanceDue: 0,
+    dueDate: null,
+    clientPhone: "",
+    soldOn: "",
+    ...sale,
+  };
+}
+
 const webSeedSales: SaleRecord[] = [
-  {
+  withCashSaleDefaults({
     id: 1,
     reference: "Fact-SA26-0001",
     clientName: "Institut Amani",
@@ -168,11 +196,13 @@ const webSeedSales: SaleRecord[] = [
     paymentMethod: "Especes",
     status: "Payee",
     itemsCount: 1,
-  },
+  }),
 ];
 
 const webSeedSaleDetails: SaleDetail[] = [
   {
+    ...withCashSaleDefaults({ id: 1, reference: "Fact-SA26-0001", clientName: "Institut Amani", date: "18/05/2026", amount: 24, paymentMethod: "Especes", status: "Payee", itemsCount: 1 }),
+    payments: [],
     id: 1,
     reference: "Fact-SA26-0001",
     clientName: "Institut Amani",
@@ -395,8 +425,77 @@ type SupabaseSaleRow = {
   total_amount: number;
   payment_method: string;
   client_id: number | null;
-  client?: { name: string | null } | Array<{ name: string | null }> | null;
+  client?: { name: string | null; phone?: string | null } | Array<{ name: string | null; phone?: string | null }> | null;
+  amount_paid?: number | null;
+  due_date?: string | null;
 };
+
+type SupabaseDebtPaymentRow = {
+  id: number;
+  sale_id: number;
+  amount: number;
+  paid_at: string;
+  payment_method: string;
+  note: string | null;
+  user?: { full_name: string | null } | Array<{ full_name: string | null }> | null;
+  sale?: { reference: string; client?: { name: string | null } | Array<{ name: string | null }> | null } | Array<{ reference: string; client?: { name: string | null } | Array<{ name: string | null }> | null }> | null;
+};
+
+const SUPABASE_SALE_COLUMNS = "id, reference, sold_at, total_amount, payment_method, client_id, amount_paid, due_date, client:clients(name, phone)";
+
+/** Credit part of a cloud sale: paid so far, still owed, status. */
+function mapSupabaseSaleCredit(row: SupabaseSaleRow, repaid: number) {
+  const isCredit = isCreditPaymentMethod(row.payment_method);
+  const total = Number(row.total_amount);
+  const balanceDue = isCredit ? computeBalanceDue(total, Number(row.amount_paid ?? 0), repaid) : 0;
+  return {
+    isCredit,
+    amountPaid: roundMoney(total - balanceDue),
+    balanceDue,
+    dueDate: isCredit ? row.due_date ?? null : null,
+    clientPhone: relationFirst(row.client)?.phone ?? "",
+    soldOn: toLocalDay(new Date(row.sold_at)),
+    status: (balanceDue > 0 ? "En attente" : "Payee") as "Payee" | "En attente",
+  };
+}
+
+function mapSupabaseDebtPayment(row: SupabaseDebtPaymentRow): DebtPayment {
+  const sale = relationFirst(row.sale);
+  return {
+    id: row.id,
+    saleId: row.sale_id,
+    saleReference: sale?.reference ?? "",
+    clientName: relationFirst(sale?.client)?.name ?? "Client comptoir",
+    amount: Number(row.amount),
+    paidAt: row.paid_at,
+    paidOn: toLocalDay(new Date(row.paid_at)),
+    date: formatFrenchDateTime(row.paid_at),
+    paymentMethod: row.payment_method,
+    note: row.note ?? "",
+    userName: relationFirst(row.user)?.full_name ?? "",
+  };
+}
+
+const SUPABASE_DEBT_PAYMENT_COLUMNS =
+  "id, sale_id, amount, paid_at, payment_method, note, user:users(full_name), sale:sales(reference, client:clients(name))";
+
+async function listSupabaseDebtPayments(saleId?: number): Promise<DebtPayment[]> {
+  const client = getSupabaseClient();
+  let query = client.from("debt_payments").select(SUPABASE_DEBT_PAYMENT_COLUMNS);
+  if (saleId !== undefined) query = query.eq("sale_id", saleId);
+  const result = await query.order("paid_at", { ascending: false });
+  if (result.error && /does not exist|schema cache|could not find/i.test(result.error.message)) {
+    throw new Error("Supabase n'est pas a jour pour les ventes a credit : executez database/supabase-credit-migration.sql.");
+  }
+  return (ensureData(result.data, result.error) as unknown as SupabaseDebtPaymentRow[]).map(mapSupabaseDebtPayment);
+}
+
+/** Sum of repayments per sale. */
+function sumRepaymentsBySale(payments: Array<{ saleId: number; amount: number }>) {
+  const totals = new Map<number, number>();
+  payments.forEach((payment) => totals.set(payment.saleId, (totals.get(payment.saleId) ?? 0) + payment.amount));
+  return totals;
+}
 
 type SupabaseSaleItemRow = {
   sale_id: number;
@@ -886,6 +985,14 @@ function getBrowserBrandLogoSrc() {
 
 function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "receipt") {
   const logoSrc = getBrowserBrandLogoSrc();
+  const creditLinesHtml = creditDocumentLines(sale)
+    .map(
+      (line) =>
+        `<div class="credit-line${line.strong ? " credit-due" : ""}"><span>${escapeHtml(line.label)}</span><strong>${
+          line.amount !== undefined ? formatCurrency(line.amount) : escapeHtml(line.text ?? "")
+        }</strong></div>`
+    )
+    .join("");
   const rows = sale.items
     .map((item) => {
       const label = item.lineType === "service" ? `${item.productName} (Service)` : item.productName;
@@ -934,13 +1041,14 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
             <div><span>Ticket</span><strong>${escapeHtml(sale.reference)}</strong></div>
             <div><span>Date</span><strong>${escapeHtml(sale.date)}</strong></div>
             <div><span>Client</span><strong>${escapeHtml(sale.clientName)}</strong></div>
-            <div><span>Paiement</span><strong>${escapeHtml(sale.paymentMethod)}</strong></div>
+            <div><span>Paiement</span><strong>${escapeHtml(paymentMethodLabel(sale.paymentMethod))}</strong></div>
           </div>
           <div class="receipt-lines">${compactRows}</div>
           <div class="receipt-total">
             <span>Total</span>
             <strong>${formatCurrency(sale.amount)}</strong>
           </div>
+          ${creditLinesHtml}
         </div>
       `
       : `
@@ -963,7 +1071,7 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
           </div>
           <div class="invoice-meta">
             <div><span>Client</span><strong>${escapeHtml(sale.clientName)}</strong></div>
-            <div><span>Paiement</span><strong>${escapeHtml(sale.paymentMethod)}</strong></div>
+            <div><span>Paiement</span><strong>${escapeHtml(paymentMethodLabel(sale.paymentMethod))}</strong></div>
             <div><span>Contact</span><strong>+243 812681339</strong></div>
             <div><span>Adresse</span><strong>Q. Camp TP, avenue Kuya, vers Mubi</strong></div>
           </div>
@@ -982,6 +1090,7 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
             <span>Total a payer</span>
             <strong>${formatCurrency(sale.amount)}</strong>
           </div>
+          ${creditLinesHtml}
           <div class="invoice-footer">
             <p>${COMPANY_LEGAL_LINE}</p>
             <p>E-mail : walikaletoworld.rt@gmail.com</p>
@@ -1104,6 +1213,17 @@ function buildBrowserSaleDocumentHtml(sale: SaleDetail, format: "invoice" | "rec
             color: #7084a0;
             font-size: 12px;
             margin-top: 4px;
+          }
+          .credit-line {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 16px;
+            font-size: 14px;
+          }
+          .credit-line.credit-due {
+            color: #b42318;
+            font-size: 16px;
+            font-weight: 700;
           }
           .invoice-total, .receipt-total {
             display: flex;
@@ -3074,12 +3194,14 @@ export const repository = {
       const client = getSupabaseClient();
       const salesResult = await client
         .from("sales")
-        .select("id, reference, sold_at, total_amount, payment_method, client_id, client:clients(name)")
+        .select(SUPABASE_SALE_COLUMNS)
         .order("id", { ascending: false });
-      const [itemsResult, serviceItemsResult] = await Promise.all([
+      const [itemsResult, serviceItemsResult, payments] = await Promise.all([
         client.from("sale_items").select("sale_id"),
         client.from("sale_service_items").select("sale_id"),
+        listSupabaseDebtPayments(),
       ]);
+      const repaidBySale = sumRepaymentsBySale(payments);
 
       const salesRows = ensureData(salesResult.data, salesResult.error) as SupabaseSaleRow[];
       const itemsRows = ensureData(itemsResult.data, itemsResult.error) as Array<{ sale_id: number }>;
@@ -3099,12 +3221,12 @@ export const repository = {
         date: formatFrenchDate(row.sold_at),
         amount: Number(row.total_amount),
         paymentMethod: row.payment_method,
-        status: "Payee",
         itemsCount: itemsCountMap.get(row.id) ?? 0,
+        ...mapSupabaseSaleCredit(row, repaidBySale.get(row.id) ?? 0),
       }));
     }
 
-    return loadJson("walikale-web-sales", webSeedSales);
+    return loadJson<LegacySaleRecord[]>("walikale-web-sales", webSeedSales).map(withCashSaleDefaults);
   },
 
   async getSaleDetail(saleId: number): Promise<SaleDetail | null> {
@@ -3116,7 +3238,7 @@ export const repository = {
       const client = getSupabaseClient();
       const saleResult = await client
         .from("sales")
-        .select("id, reference, sold_at, total_amount, payment_method, client_id, client:clients(name)")
+        .select(SUPABASE_SALE_COLUMNS)
         .eq("id", saleId)
         .maybeSingle();
       const sale = ensureOptionalData(saleResult.data, saleResult.error) as SupabaseSaleRow | null;
@@ -3137,6 +3259,7 @@ export const repository = {
         .order("id", { ascending: true });
       const items = ensureData(itemsResult.data, itemsResult.error) as SupabaseSaleItemRow[];
       const serviceItems = ensureData(serviceItemsResult.data, serviceItemsResult.error) as SupabaseSaleServiceItemRow[];
+      const payments = isCreditPaymentMethod(sale.payment_method) ? await listSupabaseDebtPayments(sale.id) : [];
 
       return {
         id: sale.id,
@@ -3145,7 +3268,8 @@ export const repository = {
         date: formatFrenchDate(sale.sold_at),
         amount: Number(sale.total_amount),
         paymentMethod: sale.payment_method,
-        status: "Payee",
+        ...mapSupabaseSaleCredit(sale, payments.reduce((sum, payment) => sum + payment.amount, 0)),
+        payments: payments.reverse(),
         items: [
           ...items.map((item) => ({
             lineType: "product" as const,
@@ -3168,8 +3292,9 @@ export const repository = {
       };
     }
 
-    const details = loadJson("walikale-web-sale-details", webSeedSaleDetails);
-    return details.find((item) => item.id === saleId) ?? null;
+    const details = loadJson<SaleDetail[]>("walikale-web-sale-details", webSeedSaleDetails);
+    const detail = details.find((item) => item.id === saleId);
+    return detail ? { ...withCashSaleDefaults({ ...detail, itemsCount: detail.items.length }), payments: detail.payments ?? [] } : null;
   },
 
   async printSaleInvoice(saleId: number): Promise<boolean> {
@@ -3352,6 +3477,7 @@ export const repository = {
 
     // Checked first so a wrong date never uses up an invoice number.
     const soldAt = resolveSaleDate(draft.soldOn);
+    const isCreditSale = isCreditPaymentMethod(draft.paymentMethod);
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
@@ -3431,6 +3557,21 @@ export const repository = {
         };
       });
 
+      // Credit checked before taking an invoice number.
+      const saleClientName = normalizeSaleClientName(draft.clientName);
+      let credit: CreditTerms | null = null;
+      if (isCreditSale) {
+        const profile = await getSupabaseSessionProfile();
+        if (!canSellOnCredit(profile?.role)) {
+          throw new Error("Seuls les administrateurs peuvent vendre a credit.");
+        }
+        credit = validateCreditTerms(
+          { clientName: saleClientName, clientPhone: draft.clientPhone, amountPaid: draft.creditAmountPaid, dueDate: draft.dueDate },
+          totalAmount,
+          toLocalDay()
+        );
+      }
+
       // The server hands out the number in one step, so two browsers never get the same one.
       const referenceResult = await client.rpc("next_web_invoice_reference");
       if (referenceResult.error) {
@@ -3441,8 +3582,13 @@ export const repository = {
       const reference = String(referenceResult.data);
       const saleClientId =
         draft.clientName !== undefined
-          ? await findOrCreateSupabaseSaleClient(client, normalizeSaleClientName(draft.clientName))
+          ? await findOrCreateSupabaseSaleClient(client, saleClientName)
           : draft.clientId;
+      if (credit && saleClientId) {
+        // Keep the client's phone to call them about the debt.
+        const phoneResult = await client.from("clients").update({ phone: credit.phone }).eq("id", saleClientId);
+        ensureData(phoneResult.data ?? [], phoneResult.error);
+      }
       const saleInsertResult = await client
         .from("sales")
         .insert({
@@ -3452,6 +3598,7 @@ export const repository = {
           total_amount: totalAmount,
           payment_method: draft.paymentMethod,
           cycle_id: cycleId,
+          ...(credit ? { amount_paid: credit.amountPaid, due_date: credit.dueDate } : {}),
         })
         .select("id")
         .single();
@@ -3500,7 +3647,11 @@ export const repository = {
         action: "create",
         target_table: "sales",
         target_id: insertedSale.id,
-        details: `Vente ${reference} avec ${saleItemsPayload.length + saleServiceItemsPayload.length} ligne(s)`,
+        details:
+          `Vente ${reference} avec ${saleItemsPayload.length + saleServiceItemsPayload.length} ligne(s)` +
+          (credit
+            ? ` - a credit pour ${saleClientName} : acompte ${credit.amountPaid} FC, reste ${roundMoney(totalAmount - credit.amountPaid)} FC, a payer avant le ${credit.dueDate}`
+            : ""),
       });
 
       return this.listSales();
@@ -3508,6 +3659,10 @@ export const repository = {
 
     if (draft.items.length === 0 && draft.serviceItems.length === 0) {
       throw new Error("Ajoutez au moins un produit ou un service a la facture.");
+    }
+
+    if (isCreditSale) {
+      throw new Error("La vente a credit n'est pas disponible en mode demonstration.");
     }
 
     const products = loadJson("walikale-web-products", webSeedProducts);
@@ -3589,26 +3744,32 @@ export const repository = {
     const saleId = Date.now();
     const reference = invoiceSeries.nextReference;
 
-    sales.unshift({
-      id: saleId,
-      reference,
-      clientName: client?.name || "Client comptoir",
-      date: new Date(soldAt).toLocaleDateString("fr-FR"),
-      amount,
-      paymentMethod: draft.paymentMethod,
-      status: "Payee",
-      itemsCount: mergedItems.length + mergedServiceItems.length,
-    });
+    sales.unshift(
+      withCashSaleDefaults({
+        id: saleId,
+        reference,
+        clientName: client?.name || "Client comptoir",
+        date: new Date(soldAt).toLocaleDateString("fr-FR"),
+        amount,
+        paymentMethod: draft.paymentMethod,
+        status: "Payee",
+        itemsCount: mergedItems.length + mergedServiceItems.length,
+      })
+    );
 
     saleDetails.unshift({
-      id: saleId,
-      reference,
-      clientName: client?.name || "Client comptoir",
-      date: new Date(soldAt).toLocaleDateString("fr-FR"),
-      amount,
-      paymentMethod: draft.paymentMethod,
-      status: "Payee",
+      ...withCashSaleDefaults({
+        id: saleId,
+        reference,
+        clientName: client?.name || "Client comptoir",
+        date: new Date(soldAt).toLocaleDateString("fr-FR"),
+        amount,
+        paymentMethod: draft.paymentMethod,
+        status: "Payee",
+        itemsCount: detailItems.length,
+      }),
       items: detailItems,
+      payments: [],
     });
 
     persistWeb(products, history, sales, saleDetails);
@@ -3624,6 +3785,71 @@ export const repository = {
     });
     persistWebActivityHistory(activityHistory);
     return sales;
+  },
+
+  async listDebtPayments(): Promise<DebtPayment[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.listDebtPayments();
+    }
+
+    if (isSupabaseEnabled()) {
+      return listSupabaseDebtPayments();
+    }
+
+    return [];
+  },
+
+  /** A client pays all or part of a debt. */
+  async createDebtPayment(draft: DebtPaymentDraft): Promise<DebtPayment[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.createDebtPayment(draft);
+    }
+
+    if (!isSupabaseEnabled()) {
+      throw new Error("Les versements ne sont pas disponibles en mode demonstration.");
+    }
+
+    const client = getSupabaseClient();
+    const saleResult = await client.from("sales").select(SUPABASE_SALE_COLUMNS).eq("id", draft.saleId).maybeSingle();
+    const sale = ensureOptionalData(saleResult.data, saleResult.error) as SupabaseSaleRow | null;
+    if (!sale) {
+      throw new Error("Vente introuvable.");
+    }
+    if (!isCreditPaymentMethod(sale.payment_method)) {
+      throw new Error("Cette vente n'a pas ete faite a credit.");
+    }
+
+    const previous = await listSupabaseDebtPayments(sale.id);
+    const balanceDue = computeBalanceDue(
+      Number(sale.total_amount),
+      Number(sale.amount_paid ?? 0),
+      previous.reduce((sum, payment) => sum + payment.amount, 0)
+    );
+    const amount = validateRepaymentAmount(draft.amount, balanceDue);
+    const profile = await getSupabaseSessionProfile();
+    const insertResult = await client
+      .from("debt_payments")
+      .insert({
+        sale_id: sale.id,
+        amount,
+        paid_at: new Date().toISOString(),
+        payment_method: draft.paymentMethod?.trim() || "Especes",
+        note: draft.note?.trim() || null,
+        user_id: profile?.id ?? null,
+      })
+      .select("id")
+      .single();
+    const inserted = ensureData(insertResult.data, insertResult.error) as { id: number };
+    const remaining = roundMoney(balanceDue - amount);
+
+    await insertSupabaseAuditLog(client, {
+      action: "create",
+      target_table: "debt_payments",
+      target_id: inserted.id,
+      details: `Versement de ${amount} FC sur la vente ${sale.reference} (${relationFirst(sale.client)?.name ?? "Client"}) : ${remaining > 0 ? `reste ${remaining} FC` : "dette soldee"}`,
+    });
+
+    return listSupabaseDebtPayments();
   },
 
   async getSupplyHistory(): Promise<SupplyHistoryItem[]> {
@@ -4591,6 +4817,14 @@ export const repository = {
 
     if (isSupabaseEnabled()) {
       const client = getSupabaseClient();
+      // A new cycle deletes the sales: never lose what clients still owe.
+      const openDebts = (await this.listSales()).filter((sale) => sale.balanceDue > 0);
+      if (openDebts.length > 0) {
+        const total = roundMoney(openDebts.reduce((sum, sale) => sum + sale.balanceDue, 0));
+        throw new Error(
+          `Impossible de demarrer un nouveau cycle : ${openDebts.length} dette(s) client ne sont pas soldees (${total} FC). Encaissez-les d'abord dans l'onglet Dettes.`
+        );
+      }
       const currentCycle = await getCurrentSupabaseInventoryCycle();
       // Cycle number from its label ("Cycle 3"), like the PCs: ids differ between devices.
       const nextCycleId = Number(/(\d+)\s*$/.exec(currentCycle.label ?? "")?.[1] ?? currentCycle.id) + 1;

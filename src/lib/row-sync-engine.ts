@@ -177,7 +177,10 @@ async function fetchSince<T>(client: SupabaseClient, table: string, columns: str
       .order("sync_version", { ascending: true })
       .limit(PAGE_SIZE);
     if (result.error) {
-      throw new Error(`Lecture de ${table} impossible : ${result.error.message}`);
+      const hint = /does not exist|schema cache|could not find/i.test(result.error.message)
+        ? " Supabase n'est pas a jour : executez database/supabase-credit-migration.sql dans Supabase > SQL Editor."
+        : "";
+      throw new Error(`Lecture de ${table} impossible : ${result.error.message}${hint}`);
     }
     const page = (result.data ?? []) as unknown as Array<T & { sync_version: number }>;
     all.push(...page);
@@ -359,6 +362,7 @@ const REQUIRED_REFERENCES: Record<string, string[]> = {
   replenishments: ["products"],
   sale_items: ["sales", "products"],
   sale_service_items: ["sales", "services"],
+  debt_payments: ["sales"],
   cybercafe_sales: ["cybercafe_tariffs"],
   stock_movements: ["products"],
 };

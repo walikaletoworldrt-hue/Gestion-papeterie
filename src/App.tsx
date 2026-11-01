@@ -5,8 +5,10 @@ import brandLogoCropped from "../img/logo-walikale-recadre.png";
 import { repository } from "./lib/repository";
 import { toLocalDay } from "./lib/sale-client";
 import { isNetworkErrorMessage } from "./lib/audit-source";
+import { CREDIT_PAYMENT_METHOD, canSellOnCredit, formatDayFr, isDebtOverdue, paymentMethodLabel, roundMoney } from "./lib/credit";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./lib/company";
 import type {
+  DebtPayment,
   ActivityHistoryItem,
   AppUser,
   Client,
@@ -44,6 +46,7 @@ const tabs: { id: TabId; label: string }[] = [
   { id: "initial-stock", label: "Stock initial" },
   { id: "replenishments", label: "Reapprovisionnement" },
   { id: "sales", label: "Ventes" },
+  { id: "debts", label: "Dettes" },
   { id: "cybercafe", label: "Cybercafe" },
   { id: "current-stock", label: "Stock actuel" },
   { id: "utilisateurs", label: "Utilisateurs" },
@@ -132,7 +135,7 @@ const emptyExpenseDraft: ExpenseDraft = {
 };
 
 const userRoles: UserRole[] = ["Administrateur", "Super admin", "Employe"];
-type ModalId = "product" | "service" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale" | "initialStockCorrection";
+type ModalId = "debtPayment" | "product" | "service" | "sale" | "user" | "saleDetail" | "password" | "replenishment" | "supplyHistory" | "expense" | "expenseReport" | "cybercafeSale" | "initialStockCorrection";
 type ToastState = {
   tone: "success" | "error" | "info";
   message: string;
@@ -154,10 +157,33 @@ type PasswordModalState = {
   requireCurrentPassword: boolean;
 };
 
+type ExpenseReportDebtLine = {
+  clientName: string;
+  clientPhone: string;
+  reference: string;
+  date: string;
+  dueDate: string | null;
+  amount: number;
+  balanceDue: number;
+  overdue: boolean;
+};
+
 type ExpenseReportState = {
   periodLabel: string;
   totalSalesAmount: number;
   totalExpensesAmount: number;
+  /** Money really received in the period: cash sales, down payments, debt repayments, cybercafe. */
+  collectedAmount: number;
+  /** Part of the period's sales still owed by clients. */
+  periodUnpaidAmount: number;
+  /** Old debts repaid during the period. */
+  repaymentsAmount: number;
+  /** Every debt still owed today, whatever the period. */
+  outstandingDebtTotal: number;
+  overdueDebtTotal: number;
+  overdueDebtCount: number;
+  debtLines: ExpenseReportDebtLine[];
+  /** Collected money minus expenses. */
   netBalance: number;
   expenseCount: number;
   expenseItems: ExpenseItem[];
@@ -232,6 +258,12 @@ function buildExpenseReportPrintHtml(options: {
   periodLabel: string;
   totalSalesAmount: number;
   totalExpensesAmount: number;
+  collectedAmount: number;
+  periodUnpaidAmount: number;
+  outstandingDebtTotal: number;
+  overdueDebtTotal: number;
+  overdueDebtCount: number;
+  debtLines: ExpenseReportDebtLine[];
   netBalance: number;
   conclusion: string;
   conclusionTone: "neutral" | "danger" | "warning" | "success";
@@ -258,6 +290,25 @@ function buildExpenseReportPrintHtml(options: {
       `
     )
     .join("");
+
+  const debtRows =
+    options.debtLines.length === 0
+      ? `<tr><td colspan="7">Aucune dette client en cours.</td></tr>`
+      : options.debtLines
+          .map(
+            (line) => `
+        <tr>
+          <td>${escapeHtml(line.clientName)}</td>
+          <td>${escapeHtml(line.clientPhone)}</td>
+          <td>${escapeHtml(line.reference)}</td>
+          <td>${escapeHtml(line.date)}</td>
+          <td>${escapeHtml(formatDayFr(line.dueDate))}</td>
+          <td>${formatCurrency(line.balanceDue)}</td>
+          <td>${line.overdue ? "<strong style='color:#b42318'>En retard</strong>" : "En cours"}</td>
+        </tr>
+      `
+          )
+          .join("");
 
   const serviceRows = options.serviceLines
     .map(
@@ -541,16 +592,22 @@ function buildExpenseReportPrintHtml(options: {
 
           <div class="summary">
             <div class="summary-card"><span>Montant total vendu</span><strong>${formatCurrency(options.totalSalesAmount)}</strong></div>
+            <div class="summary-card"><span>Argent encaisse</span><strong>${formatCurrency(options.collectedAmount)}</strong></div>
+            <div class="summary-card"><span>Ventes de la periode non payees</span><strong>${formatCurrency(options.periodUnpaidAmount)}</strong></div>
+            <div class="summary-card"><span>Dettes clients en cours</span><strong>${formatCurrency(options.outstandingDebtTotal)}</strong></div>
             <div class="summary-card"><span>Total des depenses</span><strong>${formatCurrency(options.totalExpensesAmount)}</strong></div>
-            <div class="summary-card"><span>Solde apres depenses</span><strong>${formatCurrency(options.netBalance)}</strong></div>
+            <div class="summary-card"><span>Solde (encaisse - depenses)</span><strong>${formatCurrency(options.netBalance)}</strong></div>
           </div>
+          ${options.overdueDebtCount > 0
+            ? `<section class="callout" style="border-color:#f4b4ae;background:#fff4f2;"><strong style="color:#b42318;">Attention : ${options.overdueDebtCount} dette(s) en retard pour ${formatCurrency(options.overdueDebtTotal)}.</strong></section>`
+            : ""}
 
           <section class="callout">
             <h3>Lecture rapide</h3>
             <p style="margin-top: 8px;">
               ${options.netBalance >= 0
-                ? `Les ventes couvrent actuellement les depenses avec un solde positif de ${formatCurrency(options.netBalance)}.`
-                : `Les depenses depassent actuellement les ventes de ${formatCurrency(Math.abs(options.netBalance))}.`}
+                ? `L'argent encaisse couvre les depenses avec un solde positif de ${formatCurrency(options.netBalance)}.`
+                : `Les depenses depassent l'argent encaisse de ${formatCurrency(Math.abs(options.netBalance))}.`}
             </p>
             <div class="highlights">
               <div class="highlight">
@@ -582,6 +639,17 @@ function buildExpenseReportPrintHtml(options: {
           <section class="conclusion ${escapeHtml(options.conclusionTone)}">
             <span>Conclusion finale</span>
             <strong>${escapeHtml(options.conclusion)}</strong>
+          </section>
+
+          <section class="section">
+            <div class="section-head">
+              <h4>Dettes clients en cours</h4>
+              <p>Ventes a credit pas encore payees entierement, a la date du rapport.</p>
+            </div>
+            <table>
+              <thead><tr><th>Client</th><th>Telephone</th><th>Facture</th><th>Date</th><th>A payer avant</th><th>Reste a payer</th><th>Statut</th></tr></thead>
+              <tbody>${debtRows}</tbody>
+            </table>
           </section>
 
           <section class="section">
@@ -1008,6 +1076,12 @@ export default function App() {
   const [expenses, setExpenses] = useState<ExpenseItem[]>([]);
   const [users, setUsers] = useState<AppUser[]>([]);
   const [sales, setSales] = useState<SaleRecord[]>([]);
+  const [debtPayments, setDebtPayments] = useState<DebtPayment[]>([]);
+  const [saleCreditDraft, setSaleCreditDraft] = useState({ phone: "", amountPaid: "", dueDate: "" });
+  const [debtPaymentDraft, setDebtPaymentDraft] = useState<{ saleId: number; amount: string; paymentMethod: string; note: string } | null>(null);
+  const [debtPaymentError, setDebtPaymentError] = useState("");
+  const [debtFilter, setDebtFilter] = useState<"open" | "overdue" | "paid" | "all">("open");
+  const [debtSearch, setDebtSearch] = useState("");
   const [cybercafeSales, setCybercafeSales] = useState<CybercafeSale[]>([]);
   const [mikhmonSales, setMikhmonSales] = useState<MikhmonSale[]>([]);
   const [currentStock, setCurrentStock] = useState<StockRow[]>([]);
@@ -1146,6 +1220,86 @@ export default function App() {
   const canManageInventoryCycles = isSuperAdmin;
   const canManageExpenses = isSuperAdmin || isAdministrator;
   const canCreateSales = Boolean(currentUser);
+  const canSellCredit = canSellOnCredit(currentUser?.role);
+  const isCreditSaleDraft = saleDraft.paymentMethod === CREDIT_PAYMENT_METHOD;
+  const debtToday = toLocalDay();
+  const repaidBySale = debtPayments.reduce((map, payment) => {
+    map.set(payment.saleId, (map.get(payment.saleId) ?? 0) + payment.amount);
+    return map;
+  }, new Map<number, number>());
+  const creditSales = sales.filter((sale) => sale.isCredit);
+  const openDebts = creditSales.filter((sale) => sale.balanceDue > 0);
+  const overdueDebts = openDebts.filter((sale) => isDebtOverdue(sale.balanceDue, sale.dueDate, debtToday));
+  const totalOpenDebt = roundMoney(openDebts.reduce((sum, sale) => sum + sale.balanceDue, 0));
+  const totalOverdueDebt = roundMoney(overdueDebts.reduce((sum, sale) => sum + sale.balanceDue, 0));
+  const totalRepaid = roundMoney(debtPayments.reduce((sum, payment) => sum + payment.amount, 0));
+  /** Money received at the sale itself (cash sale, or down payment of a credit sale). */
+  const paidAtSale = (sale: SaleRecord) => roundMoney(sale.amountPaid - (repaidBySale.get(sale.id) ?? 0));
+  const filteredDebts = creditSales
+    .filter((sale) => {
+      const overdue = isDebtOverdue(sale.balanceDue, sale.dueDate, debtToday);
+      if (debtFilter === "open" && sale.balanceDue <= 0) return false;
+      if (debtFilter === "overdue" && !overdue) return false;
+      if (debtFilter === "paid" && sale.balanceDue > 0) return false;
+      const query = normalizeText(debtSearch);
+      return !query || [sale.clientName, sale.clientPhone, sale.reference].some((value) => normalizeText(String(value)).includes(query));
+    })
+    .sort((left, right) => {
+      const leftOverdue = isDebtOverdue(left.balanceDue, left.dueDate, debtToday) ? 0 : 1;
+      const rightOverdue = isDebtOverdue(right.balanceDue, right.dueDate, debtToday) ? 0 : 1;
+      return leftOverdue - rightOverdue || String(left.dueDate ?? "").localeCompare(String(right.dueDate ?? "")) || right.id - left.id;
+    });
+  const debtPaymentSale = debtPaymentDraft ? sales.find((sale) => sale.id === debtPaymentDraft.saleId) ?? null : null;
+
+  function renderDebtStatus(sale: { isCredit: boolean; balanceDue: number; dueDate: string | null }) {
+    if (!sale.isCredit) {
+      return <span className="debt-none">-</span>;
+    }
+    if (sale.balanceDue <= 0) {
+      return <span className="debt-badge paid">Soldee</span>;
+    }
+    if (isDebtOverdue(sale.balanceDue, sale.dueDate, debtToday)) {
+      return <span className="debt-badge overdue">En retard - {formatCurrency(sale.balanceDue)}</span>;
+    }
+    return <span className="debt-badge open">Reste {formatCurrency(sale.balanceDue)}</span>;
+  }
+
+  function openDebtPayment(saleId: number) {
+    setDebtPaymentDraft({ saleId, amount: "", paymentMethod: "Especes", note: "" });
+    setDebtPaymentError("");
+    setActiveModal("debtPayment");
+  }
+
+  async function handleDebtPaymentSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!debtPaymentDraft || !debtPaymentSale) {
+      return;
+    }
+    setDebtPaymentError("");
+    const amount = Number(debtPaymentDraft.amount);
+    try {
+      await repository.createDebtPayment({
+        saleId: debtPaymentDraft.saleId,
+        amount,
+        paymentMethod: debtPaymentDraft.paymentMethod,
+        note: debtPaymentDraft.note,
+      });
+      const remaining = roundMoney(debtPaymentSale.balanceDue - amount);
+      await loadData();
+      closeModal();
+      setDebtPaymentDraft(null);
+      showToast(
+        "success",
+        remaining > 0
+          ? `Versement enregistre pour ${debtPaymentSale.clientName}. Reste a payer : ${formatCurrency(remaining)}.`
+          : `Versement enregistre : la dette de ${debtPaymentSale.clientName} est soldee.`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Le versement n'a pas pu etre enregistre.";
+      setDebtPaymentError(message);
+      showToast("error", message);
+    }
+  }
   const visibleTabs = tabs.filter((tab) => {
     if (canManageUsers) {
       return true;
@@ -1233,6 +1387,7 @@ export default function App() {
       repository.listCybercafeSales(),
       repository.listMikhmonSales(),
       repository.listInitialStocks(),
+      repository.listDebtPayments(),
     ]);
 
     const errors = settled
@@ -1260,6 +1415,7 @@ export default function App() {
     const nextCybercafeSales = settled[12].status === "fulfilled" ? settled[12].value : [];
     const nextMikhmonSales = settled[13].status === "fulfilled" ? settled[13].value : [];
     const nextInitialStocks = settled[14].status === "fulfilled" ? settled[14].value : [];
+    const nextDebtPayments = settled[15].status === "fulfilled" ? settled[15].value : [];
 
     setProducts(nextProducts);
     setServices(nextServices);
@@ -1269,6 +1425,7 @@ export default function App() {
     setSales(nextSales);
     setSupplyHistory(nextHistory);
     setInitialStocks(nextInitialStocks);
+    setDebtPayments(nextDebtPayments);
     setActivityHistory(nextActivityHistory);
     setMetrics(nextMetrics);
     setCurrentStock(nextCurrentStock);
@@ -1364,6 +1521,16 @@ export default function App() {
       window.clearInterval(interval);
     };
   }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (saleDraft.paymentMethod !== CREDIT_PAYMENT_METHOD || saleCreditDraft.phone) {
+      return;
+    }
+    const known = clients.find((client) => client.name.trim().toLowerCase() === saleClientName.trim().toLowerCase());
+    if (known?.phone) {
+      setSaleCreditDraft((current) => (current.phone ? current : { ...current, phone: known.phone }));
+    }
+  }, [saleClientName, saleDraft.paymentMethod]);
 
   useEffect(() => {
     if (!activeModal) {
@@ -1916,12 +2083,39 @@ export default function App() {
         });
       });
 
-      const totalSalesAmount =
-        filteredSales.reduce((sum, sale) => sum + sale.amount, 0) +
-        filteredCybercafeSales.reduce((sum, sale) => sum + sale.amount, 0);
+      const cybercafeAmount = filteredCybercafeSales.reduce((sum, sale) => sum + sale.amount, 0);
+      const totalSalesAmount = filteredSales.reduce((sum, sale) => sum + sale.amount, 0) + cybercafeAmount;
       const totalExpensesAmount = filteredExpenses.reduce((sum, item) => sum + item.amount, 0);
-      const netBalance = totalSalesAmount - totalExpensesAmount;
-      const expenseRatio = totalSalesAmount > 0 ? totalExpensesAmount / totalSalesAmount : totalExpensesAmount > 0 ? Infinity : 0;
+      // Credit: only money really received counts in the balance; what clients still owe is shown apart.
+      const isInReportRange = (value: string) => {
+        const day = parseSaleDate(value);
+        if (!day) return false;
+        const normalized = startOfDay(day);
+        return normalized.getTime() >= reportRangeStart.getTime() && normalized.getTime() <= reportRangeEnd.getTime();
+      };
+      const repaymentsAmount = roundMoney(
+        debtPayments.filter((payment) => isInReportRange(payment.paidOn)).reduce((sum, payment) => sum + payment.amount, 0)
+      );
+      const collectedAmount = roundMoney(
+        filteredSales.reduce((sum, sale) => sum + paidAtSale(sale), 0) + repaymentsAmount + cybercafeAmount
+      );
+      const periodUnpaidAmount = roundMoney(filteredSales.reduce((sum, sale) => sum + sale.balanceDue, 0));
+      const debtLines: ExpenseReportDebtLine[] = openDebts
+        .map((sale) => ({
+          clientName: sale.clientName,
+          clientPhone: sale.clientPhone,
+          reference: sale.reference,
+          date: sale.date,
+          dueDate: sale.dueDate,
+          amount: sale.amount,
+          balanceDue: sale.balanceDue,
+          overdue: isDebtOverdue(sale.balanceDue, sale.dueDate, toLocalDay()),
+        }))
+        .sort((left, right) => Number(right.overdue) - Number(left.overdue) || String(left.dueDate ?? "").localeCompare(String(right.dueDate ?? "")));
+      const overdueLines = debtLines.filter((line) => line.overdue);
+      const overdueDebtTotal = roundMoney(overdueLines.reduce((sum, line) => sum + line.balanceDue, 0));
+      const netBalance = collectedAmount - totalExpensesAmount;
+      const expenseRatio = collectedAmount > 0 ? totalExpensesAmount / collectedAmount : totalExpensesAmount > 0 ? Infinity : 0;
       const topProduct = [...productTotals.values()].sort((left, right) => right.amount - left.amount)[0] ?? null;
       const topService = [...serviceTotals.values()].sort((left, right) => right.amount - left.amount)[0] ?? null;
       const insights: string[] = [];
@@ -1932,7 +2126,7 @@ export default function App() {
         insights.push("Des depenses ont ete engagees sans vente enregistree, ce qui place l'activite en deficit total sur la periode.");
       } else if (netBalance < 0) {
         insights.push(
-          `Les depenses depassent les ventes de ${formatCurrency(Math.abs(netBalance))}. Une reduction des charges ou une hausse des ventes est a envisager.`
+          `Les depenses depassent l'argent encaisse de ${formatCurrency(Math.abs(netBalance))}. Une reduction des charges, une hausse des ventes ou le recouvrement des dettes est a envisager.`
         );
       } else if (expenseRatio >= 0.85) {
         insights.push(
@@ -1942,8 +2136,26 @@ export default function App() {
         insights.push(`Les ventes couvrent les depenses avec un excedent de ${formatCurrency(netBalance)} sur la periode.`);
       }
 
-      if (Number.isFinite(expenseRatio) && totalSalesAmount > 0) {
-        insights.push(`Les depenses representent environ ${(expenseRatio * 100).toFixed(1)}% du montant total vendu.`);
+      if (Number.isFinite(expenseRatio) && collectedAmount > 0) {
+        insights.push(`Les depenses representent environ ${(expenseRatio * 100).toFixed(1)}% de l'argent encaisse.`);
+      }
+
+      if (periodUnpaidAmount > 0) {
+        insights.push(
+          `Sur les ventes de la periode, ${formatCurrency(periodUnpaidAmount)} n'est pas encore paye par les clients (ventes a credit) et n'est pas compte dans le solde.`
+        );
+      }
+
+      if (repaymentsAmount > 0) {
+        insights.push(`Les clients ont rembourse ${formatCurrency(repaymentsAmount)} de dettes pendant la periode.`);
+      }
+
+      if (overdueLines.length > 0) {
+        insights.push(
+          `Attention : ${overdueLines.length} dette(s) client en retard pour ${formatCurrency(overdueDebtTotal)}. Relancez les clients concernes.`
+        );
+      } else if (debtLines.length > 0) {
+        insights.push(`Dettes clients en cours a ce jour : ${formatCurrency(totalOpenDebt)}, aucune en retard.`);
       }
 
       if (topProduct) {
@@ -2001,6 +2213,13 @@ export default function App() {
         periodLabel,
         totalSalesAmount,
         totalExpensesAmount,
+        collectedAmount,
+        periodUnpaidAmount,
+        repaymentsAmount,
+        outstandingDebtTotal: totalOpenDebt,
+        overdueDebtTotal,
+        overdueDebtCount: overdueLines.length,
+        debtLines,
         netBalance,
         expenseCount: filteredExpenses.length,
         expenseItems: filteredExpenses,
@@ -2281,6 +2500,13 @@ export default function App() {
         clientName: saleClientName,
         soldOn: saleDateDraft,
         paymentMethod: saleDraft.paymentMethod,
+        ...(saleDraft.paymentMethod === CREDIT_PAYMENT_METHOD
+          ? {
+              clientPhone: saleCreditDraft.phone,
+              creditAmountPaid: Number(saleCreditDraft.amountPaid || 0),
+              dueDate: saleCreditDraft.dueDate,
+            }
+          : {}),
         items: saleDraft.items.map((item) => ({
           productId: Number(item.productId),
           quantity: Number(item.quantity),
@@ -2292,6 +2518,7 @@ export default function App() {
       });
 
       setSaleClientName("");
+      setSaleCreditDraft({ phone: "", amountPaid: "", dueDate: "" });
       setSaleDateDraft(toLocalDay());
       setSaleDraft({
         clientId: null,
@@ -2830,7 +3057,18 @@ export default function App() {
       );
     })
     .reduce((sum, item) => sum + item.amount, 0);
-  const salesPeriodNetAmount = totalSalesAmount - salesPeriodExpensesTotal;
+  const isInSalesPeriod = (value: string) => {
+    if (!salesPeriodRangeStart || !salesPeriodRangeEnd) return true;
+    const day = parseSaleDate(value);
+    return day !== null && day.getTime() >= salesPeriodRangeStart.getTime() && day.getTime() <= salesPeriodRangeEnd.getTime();
+  };
+  // Money really received in the period: paid at the sale + debt repayments received in the period.
+  const salesPeriodCollected = roundMoney(
+    filteredSales.reduce((sum, sale) => sum + paidAtSale(sale), 0) +
+      debtPayments.filter((payment) => isInSalesPeriod(payment.paidOn)).reduce((sum, payment) => sum + payment.amount, 0)
+  );
+  const salesPeriodUnpaid = roundMoney(filteredSales.reduce((sum, sale) => sum + sale.balanceDue, 0));
+  const salesPeriodNetAmount = salesPeriodCollected - salesPeriodExpensesTotal;
 
   const salesTrendToday = startOfDay(new Date());
   let salesTrendRangeStart = addDays(salesTrendToday, -29);
@@ -3323,6 +3561,12 @@ export default function App() {
       periodLabel: expenseReport.periodLabel,
       totalSalesAmount: expenseReport.totalSalesAmount,
       totalExpensesAmount: expenseReport.totalExpensesAmount,
+      collectedAmount: expenseReport.collectedAmount,
+      periodUnpaidAmount: expenseReport.periodUnpaidAmount,
+      outstandingDebtTotal: expenseReport.outstandingDebtTotal,
+      overdueDebtTotal: expenseReport.overdueDebtTotal,
+      overdueDebtCount: expenseReport.overdueDebtCount,
+      debtLines: expenseReport.debtLines,
       netBalance: expenseReport.netBalance,
       conclusion: expenseReport.conclusion,
       conclusionTone: expenseReport.conclusionTone,
@@ -3785,6 +4029,9 @@ export default function App() {
                 onClick={() => setActiveTab(tab.id)}
               >
                 {tab.label}
+                {tab.id === "debts" && openDebts.length > 0 ? (
+                  <span className={`nav-tab-badge ${overdueDebts.length > 0 ? "danger" : ""}`}>{openDebts.length}</span>
+                ) : null}
               </button>
             ))}
           </nav>
@@ -3942,6 +4189,16 @@ export default function App() {
                 </div>
                 <div className="dashboard-alerts">
                   <span className="dashboard-alert-chip warning">{dashboardLowStockCount} stock(s) a surveiller</span>
+                  {openDebts.length > 0 ? (
+                    <button
+                      className={`dashboard-alert-chip ${overdueDebts.length > 0 ? "danger" : "warning"}`}
+                      type="button"
+                      onClick={() => setActiveTab("debts")}
+                    >
+                      {openDebts.length} dette(s) client : {formatCurrency(totalOpenDebt)}
+                      {overdueDebts.length > 0 ? ` (${overdueDebts.length} en retard)` : ""}
+                    </button>
+                  ) : null}
                   <span className="dashboard-alert-chip success">{metrics.dailySales} vente(s) aujourd'hui</span>
                   <span className="dashboard-alert-chip neutral">{users.length} utilisateur(s) disponibles</span>
                 </div>
@@ -4774,12 +5031,20 @@ export default function App() {
                 <span>Montant total</span>
                 <strong>{formatCurrency(totalSalesAmount)}</strong>
               </div>
+              <div className="sales-indicator success">
+                <span>Argent encaisse</span>
+                <strong>{formatCurrency(salesPeriodCollected)}</strong>
+              </div>
+              <div className={`sales-indicator ${salesPeriodUnpaid > 0 ? "warning" : "neutral"}`}>
+                <span>Ventes non payees (dettes)</span>
+                <strong>{formatCurrency(salesPeriodUnpaid)}</strong>
+              </div>
               <div className="sales-indicator warning">
                 <span>Depenses engagees</span>
                 <strong>{formatCurrency(salesPeriodExpensesTotal)}</strong>
               </div>
               <div className="sales-indicator success">
-                <span>Montant net</span>
+                <span>Montant net (encaisse - depenses)</span>
                 <strong>{formatCurrency(salesPeriodNetAmount)}</strong>
               </div>
               <div className="sales-indicator neutral">
@@ -4844,6 +5109,7 @@ export default function App() {
                     <th>Lignes</th>
                     <th>Paiement</th>
                     <th>Statut</th>
+                    <th>Dette</th>
                     <th>Consultation</th>
                   </tr>
                 </thead>
@@ -4855,12 +5121,13 @@ export default function App() {
                       <td>{sale.date}</td>
                       <td className="sales-amount-cell">{formatCurrency(sale.amount)}</td>
                       <td>{sale.itemsCount}</td>
-                      <td>{sale.paymentMethod}</td>
+                      <td>{sale.isCredit ? "Credit" : sale.paymentMethod}</td>
                       <td>
                         <span className={`sales-status ${sale.status === "Payee" ? "success" : "warning"}`}>
                           {sale.status}
                         </span>
                       </td>
+                      <td>{renderDebtStatus(sale)}</td>
                       <td>
                         <button className="ghost-btn muted" type="button" onClick={() => void handleSelectSale(sale.id)}>
                           Consulter
@@ -4871,6 +5138,144 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "debts" && (
+          <section className="panel-card">
+            <div className="panel-header">
+              <h2>Dettes clients</h2>
+            </div>
+            <div className="sales-summary">
+              <div className={`sales-indicator ${openDebts.length > 0 ? "warning" : "neutral"}`}>
+                <span>Dettes en cours</span>
+                <strong>{openDebts.length}</strong>
+              </div>
+              <div className={`sales-indicator ${totalOpenDebt > 0 ? "warning" : "neutral"}`}>
+                <span>Reste a encaisser</span>
+                <strong>{formatCurrency(totalOpenDebt)}</strong>
+              </div>
+              <div className={`sales-indicator ${overdueDebts.length > 0 ? "danger" : "neutral"}`}>
+                <span>En retard</span>
+                <strong>
+                  {overdueDebts.length} - {formatCurrency(totalOverdueDebt)}
+                </strong>
+              </div>
+              <div className="sales-indicator success">
+                <span>Deja rembourse (versements)</span>
+                <strong>{formatCurrency(totalRepaid)}</strong>
+              </div>
+            </div>
+            {overdueDebts.length > 0 ? (
+              <p className="debt-alert">
+                Attention : {overdueDebts.length} client(s) n'ont pas paye a la date prevue. Pensez a les appeler.
+              </p>
+            ) : null}
+            <div className="section-tools">
+              <input
+                className="table-search-input"
+                placeholder="Rechercher par client, telephone ou facture"
+                value={debtSearch}
+                onChange={(event) => setDebtSearch(event.target.value)}
+              />
+              <div className="stock-filters sales-filters">
+                <select value={debtFilter} onChange={(event) => setDebtFilter(event.target.value as typeof debtFilter)}>
+                  <option value="open">Dettes en cours</option>
+                  <option value="overdue">En retard</option>
+                  <option value="paid">Soldees</option>
+                  <option value="all">Toutes les ventes a credit</option>
+                </select>
+              </div>
+              <span className="section-count">{filteredDebts.length} resultat(s)</span>
+            </div>
+            {creditSales.length === 0 ? (
+              <EmptyState
+                title="Aucune vente a credit"
+                description="Les ventes faites avec le mode de paiement Credit apparaitront ici avec ce qui reste a payer."
+              />
+            ) : filteredDebts.length === 0 ? (
+              <EmptyState title="Aucune dette trouvee" description="Aucune vente a credit ne correspond a ce filtre." />
+            ) : (
+              <div className="table-wrap sales-table-wrap">
+                <table className="sales-table">
+                  <thead>
+                    <tr>
+                      <th>Client</th>
+                      <th>Telephone</th>
+                      <th>Facture</th>
+                      <th>Date</th>
+                      <th>A payer avant</th>
+                      <th>Total</th>
+                      <th>Deja paye</th>
+                      <th>Reste</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredDebts.map((sale) => (
+                      <tr key={sale.id} className={isDebtOverdue(sale.balanceDue, sale.dueDate, debtToday) ? "debt-row-overdue" : ""}>
+                        <td>{sale.clientName}</td>
+                        <td>{sale.clientPhone || "-"}</td>
+                        <td className="sales-reference-cell">{sale.reference}</td>
+                        <td>{sale.date}</td>
+                        <td>{formatDayFr(sale.dueDate)}</td>
+                        <td>{formatCurrency(sale.amount)}</td>
+                        <td>{formatCurrency(sale.amountPaid)}</td>
+                        <td>{renderDebtStatus(sale)}</td>
+                        <td>
+                          <div className="debt-actions">
+                            {sale.balanceDue > 0 ? (
+                              <button className="primary-btn" type="button" onClick={() => openDebtPayment(sale.id)}>
+                                Encaisser
+                              </button>
+                            ) : null}
+                            <button className="ghost-btn muted" type="button" onClick={() => void handleSelectSale(sale.id)}>
+                              Consulter
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <div className="panel-header debt-payments-header">
+              <h2>Versements recus</h2>
+            </div>
+            {debtPayments.length === 0 ? (
+              <EmptyState title="Aucun versement" description="Les remboursements des clients s'afficheront ici." />
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date et heure</th>
+                      <th>Client</th>
+                      <th>Facture</th>
+                      <th>Montant</th>
+                      <th>Mode</th>
+                      <th>Recu par</th>
+                      <th>Note</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {debtPayments.map((payment) => (
+                      <tr key={payment.id}>
+                        <td>{payment.date}</td>
+                        <td>{payment.clientName}</td>
+                        <td>{payment.saleReference}</td>
+                        <td>{formatCurrency(payment.amount)}</td>
+                        <td>{payment.paymentMethod}</td>
+                        <td>{payment.userName || "-"}</td>
+                        <td>{payment.note || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </section>
         )}
@@ -5648,22 +6053,39 @@ export default function App() {
                 <span>Montant total vendu</span>
                 <strong>{formatCurrency(expenseReport.totalSalesAmount)}</strong>
               </div>
+              <div className="sales-indicator success">
+                <span>Argent encaisse</span>
+                <strong>{formatCurrency(expenseReport.collectedAmount)}</strong>
+              </div>
+              <div className={`sales-indicator ${expenseReport.periodUnpaidAmount > 0 ? "warning" : "neutral"}`}>
+                <span>Ventes de la periode non payees</span>
+                <strong>{formatCurrency(expenseReport.periodUnpaidAmount)}</strong>
+              </div>
+              <div className={`sales-indicator ${expenseReport.overdueDebtCount > 0 ? "danger" : expenseReport.outstandingDebtTotal > 0 ? "warning" : "neutral"}`}>
+                <span>Dettes clients en cours</span>
+                <strong>{formatCurrency(expenseReport.outstandingDebtTotal)}</strong>
+              </div>
               <div className="sales-indicator warning">
                 <span>Total des depenses</span>
                 <strong>{formatCurrency(expenseReport.totalExpensesAmount)}</strong>
               </div>
               <div className="sales-indicator neutral">
-                <span>Solde apres depenses</span>
+                <span>Solde (encaisse - depenses)</span>
                 <strong>{formatCurrency(expenseReport.netBalance)}</strong>
               </div>
             </div>
+            {expenseReport.overdueDebtCount > 0 ? (
+              <p className="debt-alert">
+                Attention : {expenseReport.overdueDebtCount} dette(s) en retard pour {formatCurrency(expenseReport.overdueDebtTotal)}.
+              </p>
+            ) : null}
 
             <section className="expense-report-callout">
               <h4>Lecture rapide</h4>
               <p>
                 {expenseReport.netBalance >= 0
-                  ? `Les ventes couvrent actuellement les depenses avec un solde positif de ${formatCurrency(expenseReport.netBalance)}.`
-                  : `Les depenses depassent actuellement les ventes de ${formatCurrency(Math.abs(expenseReport.netBalance))}.`}
+                  ? `L'argent encaisse couvre les depenses avec un solde positif de ${formatCurrency(expenseReport.netBalance)}.`
+                  : `Les depenses depassent l'argent encaisse de ${formatCurrency(Math.abs(expenseReport.netBalance))}.`}
               </p>
               <div className="expense-report-highlights">
                 <div className="expense-report-highlight">
@@ -5694,6 +6116,45 @@ export default function App() {
                   </small>
                 </div>
               </div>
+            </section>
+
+            <section className="expense-report-section">
+              <div className="expense-report-section-header">
+                <h4>Dettes clients en cours</h4>
+                <p>Ventes a credit pas encore payees entierement, a la date du rapport.</p>
+              </div>
+              {expenseReport.debtLines.length === 0 ? (
+                <p className="hero-copy">Aucune dette client en cours.</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Client</th>
+                        <th>Telephone</th>
+                        <th>Facture</th>
+                        <th>Date</th>
+                        <th>A payer avant</th>
+                        <th>Reste a payer</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {expenseReport.debtLines.map((line) => (
+                        <tr key={line.reference} className={line.overdue ? "debt-row-overdue" : ""}>
+                          <td>{line.clientName}</td>
+                          <td>{line.clientPhone || "-"}</td>
+                          <td>{line.reference}</td>
+                          <td>{line.date}</td>
+                          <td>{formatDayFr(line.dueDate)}</td>
+                          <td>
+                            {renderDebtStatus({ isCredit: true, balanceDue: line.balanceDue, dueDate: line.dueDate })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
 
             <section className="expense-report-section">
@@ -5958,7 +6419,8 @@ export default function App() {
                 <input
                   value={saleClientName}
                   onChange={(event) => setSaleClientName(event.target.value)}
-                  placeholder="Client comptoir"
+                  placeholder={isCreditSaleDraft ? "Nom du client (obligatoire pour le credit)" : "Client comptoir"}
+                  required={isCreditSaleDraft}
                   list="sale-client-names"
                   maxLength={120}
                   autoComplete="off"
@@ -5990,8 +6452,53 @@ export default function App() {
                 <option>Especes</option>
                 <option>Mobile Money</option>
                 <option>Virement</option>
+                {canSellCredit ? <option value={CREDIT_PAYMENT_METHOD}>Credit (le client paie plus tard)</option> : null}
               </select>
             </label>
+
+            {isCreditSaleDraft ? (
+              <div className="sales-credit-box">
+                <p className="sales-modern-label">Vente a credit</p>
+                <div className="sales-form-row">
+                  <label>
+                    Telephone du client
+                    <input
+                      value={saleCreditDraft.phone}
+                      onChange={(event) => setSaleCreditDraft((current) => ({ ...current, phone: event.target.value }))}
+                      placeholder="+243 ..."
+                      inputMode="tel"
+                      maxLength={30}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Acompte paye maintenant (FC)
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={saleCreditDraft.amountPaid}
+                      onChange={(event) => setSaleCreditDraft((current) => ({ ...current, amountPaid: event.target.value }))}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label>
+                    A payer avant le
+                    <input
+                      type="date"
+                      min={toLocalDay()}
+                      value={saleCreditDraft.dueDate}
+                      onChange={(event) => setSaleCreditDraft((current) => ({ ...current, dueDate: event.target.value }))}
+                      required
+                    />
+                  </label>
+                </div>
+                <p className="sales-credit-summary">
+                  Reste a payer par le client :{" "}
+                  <strong>{formatCurrency(Math.max(0, roundMoney(salePreviewTotal - Number(saleCreditDraft.amountPaid || 0))))}</strong>
+                </p>
+              </div>
+            ) : null}
 
             <div className="sales-modern-products">
               <p className="sales-modern-label">Produits achetes</p>
@@ -6226,6 +6733,75 @@ export default function App() {
         </Modal>
       ) : null}
 
+      {activeModal === "debtPayment" && debtPaymentDraft && debtPaymentSale ? (
+        <Modal title={`Encaisser un versement - ${debtPaymentSale.reference}`} onClose={closeModal}>
+          <form className="sales-form-modern" onSubmit={(event) => void handleDebtPaymentSubmit(event)}>
+            <div className="sale-credit-detail">
+              <div className="sale-credit-detail-row">
+                <span>Client: {debtPaymentSale.clientName}</span>
+                <span>Telephone: {debtPaymentSale.clientPhone || "-"}</span>
+                <span>A payer avant le: {formatDayFr(debtPaymentSale.dueDate)}</span>
+              </div>
+              <div className="sale-credit-detail-row">
+                <span>Total: {formatCurrency(debtPaymentSale.amount)}</span>
+                <span>Deja paye: {formatCurrency(debtPaymentSale.amountPaid)}</span>
+                {renderDebtStatus(debtPaymentSale)}
+              </div>
+            </div>
+            <div className="sales-form-row">
+              <label>
+                Montant recu (FC)
+                <input
+                  type="number"
+                  min={0}
+                  step="any"
+                  max={debtPaymentSale.balanceDue}
+                  value={debtPaymentDraft.amount}
+                  onChange={(event) => setDebtPaymentDraft((current) => (current ? { ...current, amount: event.target.value } : current))}
+                  required
+                  autoFocus
+                />
+              </label>
+              <label>
+                Mode de paiement
+                <select
+                  value={debtPaymentDraft.paymentMethod}
+                  onChange={(event) => setDebtPaymentDraft((current) => (current ? { ...current, paymentMethod: event.target.value } : current))}
+                >
+                  <option>Especes</option>
+                  <option>Mobile Money</option>
+                  <option>Virement</option>
+                </select>
+              </label>
+            </div>
+            <button
+              className="ghost-btn"
+              type="button"
+              onClick={() => setDebtPaymentDraft((current) => (current ? { ...current, amount: String(debtPaymentSale.balanceDue) } : current))}
+            >
+              Le client paie tout le reste ({formatCurrency(debtPaymentSale.balanceDue)})
+            </button>
+            <label>
+              Note (facultatif)
+              <input
+                value={debtPaymentDraft.note}
+                onChange={(event) => setDebtPaymentDraft((current) => (current ? { ...current, note: event.target.value } : current))}
+                maxLength={200}
+              />
+            </label>
+            {debtPaymentError ? <p className="error-text">{debtPaymentError}</p> : null}
+            <div className="sales-modern-actions">
+              <button className="ghost-btn muted" type="button" onClick={closeModal}>
+                Annuler
+              </button>
+              <button className="primary-btn" type="submit">
+                Enregistrer le versement
+              </button>
+            </div>
+          </form>
+        </Modal>
+      ) : null}
+
       {activeModal === "saleDetail" && selectedSaleDetail ? (
         <Modal title={`Details de la facture ${selectedSaleDetail.reference}`} onClose={closeModal} size="large">
             <div className="sale-detail-card modal-detail-card">
@@ -6241,9 +6817,35 @@ export default function App() {
             <div className="sale-detail-meta">
               <span>Client: {selectedSaleDetail.clientName}</span>
               <span>Date: {selectedSaleDetail.date}</span>
-              <span>Paiement: {selectedSaleDetail.paymentMethod}</span>
+              <span>Paiement: {paymentMethodLabel(selectedSaleDetail.paymentMethod)}</span>
               <span>Total: {formatCurrency(selectedSaleDetail.amount)}</span>
             </div>
+            {selectedSaleDetail.isCredit ? (
+              <div className="sale-credit-detail">
+                <div className="sale-credit-detail-row">
+                  <span>Telephone: {selectedSaleDetail.clientPhone || "-"}</span>
+                  <span>Deja paye: {formatCurrency(selectedSaleDetail.amountPaid)}</span>
+                  <span>A payer avant le: {formatDayFr(selectedSaleDetail.dueDate)}</span>
+                  {renderDebtStatus(selectedSaleDetail)}
+                  {selectedSaleDetail.balanceDue > 0 ? (
+                    <button className="primary-btn" type="button" onClick={() => openDebtPayment(selectedSaleDetail.id)}>
+                      Encaisser un versement
+                    </button>
+                  ) : null}
+                </div>
+                {selectedSaleDetail.payments.length > 0 ? (
+                  <ul className="sale-credit-payments">
+                    {selectedSaleDetail.payments.map((payment) => (
+                      <li key={payment.id}>
+                        {payment.date} : {formatCurrency(payment.amount)} ({payment.paymentMethod})
+                        {payment.userName ? `, recu par ${payment.userName}` : ""}
+                        {payment.note ? ` - ${payment.note}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
             <div className="sales-actions-row invoice-actions-row">
               <button className="ghost-btn" type="button" onClick={() => void handlePrintInvoice()}>
                 Imprimer facture A4

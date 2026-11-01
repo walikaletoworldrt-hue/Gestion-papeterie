@@ -18,6 +18,7 @@ import type {
   ProductDetailsDraft,
   ProductDraft,
   SaleDraft,
+  DebtPaymentDraft,
   ServiceDraft,
   UserDraft,
   UserRole,
@@ -64,6 +65,8 @@ function registerIpc() {
   ipcMain.handle("sales:advance-series", () => database.advanceInvoiceSeries());
   ipcMain.handle("sales:set-device-code", (_event, code: string) => database.setDeviceCode(code));
   ipcMain.handle("sales:detail", (_event, saleId: number) => database.getSaleDetail(saleId));
+  ipcMain.handle("debts:payments", () => database.listDebtPayments());
+  ipcMain.handle("debts:pay", (_event, draft: DebtPaymentDraft) => database.createDebtPayment(draft));
   ipcMain.handle("sales:print", async (_event, saleId: number) => {
     try {
       const sale = database.getSaleDetail(saleId);

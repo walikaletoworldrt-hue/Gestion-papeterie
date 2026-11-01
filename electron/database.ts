@@ -25,11 +25,22 @@ import {
   normalizeProductDetails,
   validateInitialStockCorrection,
 } from "../src/lib/initial-stock";
-import { normalizeSaleClientName, resolveSaleDate } from "../src/lib/sale-client";
+import { normalizeSaleClientName, resolveSaleDate, toLocalDay } from "../src/lib/sale-client";
+import {
+  canSellOnCredit,
+  computeBalanceDue,
+  isCreditPaymentMethod,
+  roundMoney,
+  validateCreditTerms,
+  validateRepaymentAmount,
+  type CreditTerms,
+} from "../src/lib/credit";
 import { displayAuditPlatform, isOfflineAuditPlatform, OFFLINE_DESKTOP_PLATFORM } from "../src/lib/audit-source";
 import type {
   ActivityHistoryItem,
   AppUser,
+  DebtPayment,
+  DebtPaymentDraft,
   Client,
   ClientDraft,
   CybercafeSale,
@@ -205,7 +216,30 @@ type SaleRow = {
   total_amount: number;
   payment_method: string;
   items_count: number;
+  amount_paid: number | null;
+  due_date: string | null;
+  client_phone: string | null;
+  repaid: number;
 };
+
+type DebtPaymentRow = {
+  id: number;
+  sale_id: number;
+  reference: string;
+  client_name: string | null;
+  amount: number;
+  paid_at: string;
+  payment_method: string;
+  note: string | null;
+  user_name: string | null;
+};
+
+// Credit columns read with every sale: what was paid at the sale, the due day, the client's phone, later repayments.
+const SALE_CREDIT_COLUMNS_SQL = `
+          s.amount_paid,
+          s.due_date,
+          c.phone AS client_phone,
+          COALESCE((SELECT SUM(dp.amount) FROM debt_payments dp WHERE dp.sale_id = s.id), 0) AS repaid`;
 
 type SaleItemRow = {
   line_type: "product" | "service";
@@ -525,6 +559,7 @@ export class LocalDatabase {
     this.ensureCycleColumns();
     this.ensureReplenishmentLotColumns();
     this.ensureAuditLogColumns();
+    this.ensureCreditColumns();
     this.ensureInventoryCycleSeed();
     this.ensureInvoiceSequenceSettings();
     this.ensureSyncSettings();
@@ -652,6 +687,36 @@ export class LocalDatabase {
     if (!names.has("transport_total")) {
       this.db.exec("ALTER TABLE replenishments ADD COLUMN transport_total REAL NOT NULL DEFAULT 0");
     }
+  }
+
+  /** Credit sales: down payment and due day on the sale, repayments in their own table. */
+  private ensureCreditColumns() {
+    const names = new Set((this.db.prepare("PRAGMA table_info(sales)").all() as Array<{ name: string }>).map((column) => column.name));
+
+    // NULL amount_paid = paid in full (every sale made before credit existed).
+    if (!names.has("amount_paid")) {
+      this.db.exec("ALTER TABLE sales ADD COLUMN amount_paid REAL");
+    }
+
+    if (!names.has("due_date")) {
+      this.db.exec("ALTER TABLE sales ADD COLUMN due_date TEXT");
+    }
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS debt_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        paid_at TEXT NOT NULL,
+        payment_method TEXT NOT NULL DEFAULT 'Especes',
+        note TEXT,
+        user_id INTEGER,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_debt_payments_sale ON debt_payments(sale_id);
+    `);
   }
 
   private ensureAuditLogColumns() {
@@ -1285,7 +1350,7 @@ export class LocalDatabase {
             SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id
           ) + (
             SELECT COUNT(*) FROM sale_service_items ssi WHERE ssi.sale_id = s.id
-          ) AS items_count
+          ) AS items_count,${SALE_CREDIT_COLUMNS_SQL}
         FROM sales s
         LEFT JOIN clients c ON c.id = s.client_id
         ORDER BY s.id DESC
@@ -1299,9 +1364,94 @@ export class LocalDatabase {
       date: this.formatDate(row.sold_at),
       amount: row.total_amount,
       paymentMethod: row.payment_method,
-      status: "Payee",
       itemsCount: row.items_count,
+      ...this.mapSaleCredit(row),
     }));
+  }
+
+  /** Credit part of a sale: paid so far, still owed, status. */
+  private mapSaleCredit(row: SaleRow) {
+    const isCredit = isCreditPaymentMethod(row.payment_method);
+    const balanceDue = isCredit ? computeBalanceDue(row.total_amount, row.amount_paid ?? 0, Number(row.repaid ?? 0)) : 0;
+    return {
+      isCredit,
+      amountPaid: roundMoney(row.total_amount - balanceDue),
+      balanceDue,
+      dueDate: isCredit ? row.due_date : null,
+      clientPhone: row.client_phone ?? "",
+      soldOn: toLocalDay(new Date(row.sold_at)),
+      status: (balanceDue > 0 ? "En attente" : "Payee") as "Payee" | "En attente",
+    };
+  }
+
+  listDebtPayments(saleId?: number): DebtPayment[] {
+    this.requireAuthenticatedUser();
+    const rows = this.db
+      .prepare(`
+        SELECT dp.id, dp.sale_id, s.reference, c.name AS client_name, dp.amount, dp.paid_at, dp.payment_method, dp.note,
+               u.full_name AS user_name
+        FROM debt_payments dp
+        INNER JOIN sales s ON s.id = dp.sale_id
+        LEFT JOIN clients c ON c.id = s.client_id
+        LEFT JOIN users u ON u.id = dp.user_id
+        WHERE (? IS NULL OR dp.sale_id = ?)
+        ORDER BY datetime(dp.paid_at) DESC, dp.id DESC
+      `)
+      .all(saleId ?? null, saleId ?? null) as DebtPaymentRow[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      saleId: row.sale_id,
+      saleReference: row.reference,
+      clientName: row.client_name ?? "Client comptoir",
+      amount: row.amount,
+      paidAt: row.paid_at,
+      paidOn: toLocalDay(new Date(row.paid_at)),
+      date: this.formatDateTime(row.paid_at),
+      paymentMethod: row.payment_method,
+      note: row.note ?? "",
+      userName: row.user_name ?? "",
+    }));
+  }
+
+  /** A client pays all or part of a debt. Anyone who sells can receive it. */
+  createDebtPayment(draft: DebtPaymentDraft): DebtPayment[] {
+    this.requirePermission("manage_sales");
+    const sale = this.db
+      .prepare(`
+        SELECT s.id, s.reference, c.name AS client_name, s.sold_at, s.total_amount, s.payment_method, 0 AS items_count,${SALE_CREDIT_COLUMNS_SQL}
+        FROM sales s
+        LEFT JOIN clients c ON c.id = s.client_id
+        WHERE s.id = ?
+      `)
+      .get(draft.saleId) as SaleRow | undefined;
+
+    if (!sale) {
+      throw new Error("Vente introuvable.");
+    }
+
+    if (!isCreditPaymentMethod(sale.payment_method)) {
+      throw new Error("Cette vente n'a pas ete faite a credit.");
+    }
+
+    const balanceDue = computeBalanceDue(sale.total_amount, sale.amount_paid ?? 0, Number(sale.repaid ?? 0));
+    const amount = validateRepaymentAmount(draft.amount, balanceDue);
+    const userId = this.getActorUserId();
+    const paidAt = new Date().toISOString();
+    const result = this.db
+      .prepare("INSERT INTO debt_payments (sale_id, amount, paid_at, payment_method, note, user_id) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(sale.id, amount, paidAt, draft.paymentMethod?.trim() || "Especes", draft.note?.trim() || null, userId);
+    const remaining = roundMoney(balanceDue - amount);
+
+    this.logAction(
+      userId,
+      "create",
+      "debt_payments",
+      Number(result.lastInsertRowid),
+      `Versement de ${amount} FC sur la vente ${sale.reference} (${sale.client_name ?? "Client"}) : ${remaining > 0 ? `reste ${remaining} FC` : "dette soldee"}`
+    );
+
+    return this.listDebtPayments();
   }
 
   getInvoiceSeriesInfo(): InvoiceSeriesInfo {
@@ -1366,6 +1516,14 @@ export class LocalDatabase {
     // Cycle number from its label ("Cycle 3"): local ids differ between PCs once cycles are synced.
     const lastCycleNumber = Number(/(\d+)\s*$/.exec(lastCycle?.label ?? "")?.[1] ?? lastCycle?.id ?? 0);
     const nextCycleNumber = lastCycleNumber + 1;
+    // A new cycle deletes the sales: never lose what clients still owe.
+    const openDebts = this.listSales().filter((sale) => sale.balanceDue > 0);
+    if (openDebts.length > 0) {
+      const total = roundMoney(openDebts.reduce((sum, sale) => sum + sale.balanceDue, 0));
+      throw new Error(
+        `Impossible de demarrer un nouveau cycle : ${openDebts.length} dette(s) client ne sont pas soldees (${total} FC). Encaissez-les d'abord dans l'onglet Dettes.`
+      );
+    }
     const resetTransaction = this.db.transaction(() => {
       this.db.prepare("DELETE FROM sale_items").run();
       this.db.prepare("DELETE FROM sale_service_items").run();
@@ -1471,7 +1629,8 @@ export class LocalDatabase {
       cybercafeTariffs: this.db.prepare("SELECT id, name, unit_price, active, created_at, updated_at FROM cybercafe_tariffs ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       initialStocks: this.db.prepare("SELECT id, product_id, quantity, purchase_price, stock_date, cycle_id, NULL as user_id, note FROM initial_stocks ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       replenishments: this.db.prepare("SELECT id, product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, NULL as user_id, note FROM replenishments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
-      sales: this.db.prepare("SELECT id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, NULL as user_id FROM sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      sales: this.db.prepare("SELECT id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, NULL as user_id, amount_paid, due_date FROM sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      debtPayments: this.db.prepare("SELECT id, sale_id, amount, paid_at, payment_method, note, NULL as user_id FROM debt_payments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleServiceItems: this.db.prepare("SELECT id, sale_id, service_id, quantity, unit_price, line_total FROM sale_service_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       cybercafeSales: this.db.prepare("SELECT id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id FROM cybercafe_sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1507,6 +1666,7 @@ export class LocalDatabase {
     }));
 
     const replaceTransaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM debt_payments").run();
       this.db.prepare("DELETE FROM sale_items").run();
       this.db.prepare("DELETE FROM sale_service_items").run();
       this.db.prepare("DELETE FROM cybercafe_sales").run();
@@ -1558,8 +1718,12 @@ export class LocalDatabase {
         VALUES (@id, @product_id, @quantity, @purchase_price, @supplier, @lot_number, @transport_total, @replenished_at, @cycle_id, @user_id, @note)
       `);
       const insertSales = this.db.prepare(`
-        INSERT INTO sales (id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id)
-        VALUES (@id, @reference, @client_id, @sold_at, @total_amount, @payment_method, @cycle_id, @user_id)
+        INSERT INTO sales (id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id, amount_paid, due_date)
+        VALUES (@id, @reference, @client_id, @sold_at, @total_amount, @payment_method, @cycle_id, @user_id, @amount_paid, @due_date)
+      `);
+      const insertDebtPayments = this.db.prepare(`
+        INSERT INTO debt_payments (id, sale_id, amount, paid_at, payment_method, note, user_id)
+        VALUES (@id, @sale_id, @amount, @paid_at, @payment_method, @note, @user_id)
       `);
       const insertSaleItems = this.db.prepare(`
         INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price, line_total)
@@ -1605,6 +1769,7 @@ export class LocalDatabase {
       (snapshot.initialStocks ?? []).forEach((row) => insertInitialStocks.run(toSqliteParams(insertInitialStocks, row)));
       (snapshot.replenishments ?? []).forEach((row) => insertReplenishments.run(toSqliteParams(insertReplenishments, row)));
       (snapshot.sales ?? []).forEach((row) => insertSales.run(toSqliteParams(insertSales, row)));
+      (snapshot.debtPayments ?? []).forEach((row) => insertDebtPayments.run(toSqliteParams(insertDebtPayments, row)));
       (snapshot.saleItems ?? []).forEach((row) => insertSaleItems.run(toSqliteParams(insertSaleItems, row)));
       (snapshot.saleServiceItems ?? []).forEach((row) => insertSaleServiceItems.run(toSqliteParams(insertSaleServiceItems, row)));
       (snapshot.cybercafeSales ?? []).forEach((row) => insertCybercafeSales.run(toSqliteParams(insertCybercafeSales, row)));
@@ -1795,16 +1960,31 @@ export class LocalDatabase {
     `);
 
     const clientName = normalizeSaleClientName(draft.clientName);
+    let credit: CreditTerms | null = null;
+    if (isCreditPaymentMethod(draft.paymentMethod)) {
+      if (!canSellOnCredit(userId ? this.getUserRowById(userId)?.role : null)) {
+        throw new Error("Seuls les administrateurs peuvent vendre a credit.");
+      }
+      credit = validateCreditTerms(
+        { clientName, clientPhone: draft.clientPhone, amountPaid: draft.creditAmountPaid, dueDate: draft.dueDate },
+        totalAmount,
+        toLocalDay()
+      );
+    }
 
     const createSaleTransaction = this.db.transaction(() => {
       const clientId = draft.clientName !== undefined ? this.findOrCreateSaleClient(clientName, now) : draft.clientId;
+      if (credit && clientId) {
+        // Keep the client's phone to call them about the debt.
+        this.db.prepare("UPDATE clients SET phone = ? WHERE id = ? AND COALESCE(phone, '') <> ?").run(credit.phone, clientId, credit.phone);
+      }
       const reference = this.generateSaleReference();
       const saleResult = this.db
         .prepare(`
-          INSERT INTO sales (reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO sales (reference, client_id, sold_at, total_amount, payment_method, cycle_id, user_id, amount_paid, due_date)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
-        .run(reference, clientId, soldAt, totalAmount, draft.paymentMethod, cycleId, userId);
+        .run(reference, clientId, soldAt, totalAmount, draft.paymentMethod, cycleId, userId, credit?.amountPaid ?? null, credit?.dueDate ?? null);
 
       const saleId = Number(saleResult.lastInsertRowid);
 
@@ -1822,7 +2002,10 @@ export class LocalDatabase {
         "create",
         "sales",
         saleId,
-        `Vente ${reference} avec ${resolvedItems.length + resolvedServiceItems.length} ligne(s)`
+        `Vente ${reference} avec ${resolvedItems.length + resolvedServiceItems.length} ligne(s)` +
+          (credit
+            ? ` - a credit pour ${clientName} : acompte ${credit.amountPaid} FC, reste ${roundMoney(totalAmount - credit.amountPaid)} FC, a payer avant le ${credit.dueDate}`
+            : "")
       );
 
       return { saleId, reference };
@@ -2619,7 +2802,7 @@ export class LocalDatabase {
             SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id
           ) + (
             SELECT COUNT(*) FROM sale_service_items ssi WHERE ssi.sale_id = s.id
-          ) AS items_count
+          ) AS items_count,${SALE_CREDIT_COLUMNS_SQL}
         FROM sales s
         LEFT JOIN clients c ON c.id = s.client_id
         WHERE s.id = ?
@@ -2679,8 +2862,9 @@ export class LocalDatabase {
       date: this.formatDate(sale.sold_at),
       amount: sale.total_amount,
       paymentMethod: sale.payment_method,
-      status: "Payee",
       items: detailItems,
+      ...this.mapSaleCredit(sale),
+      payments: this.listDebtPayments(sale.id).reverse(),
     };
   }
 

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { SaleDetail } from "../src/types";
 import { COMPANY_ID_NAT, COMPANY_RCCM } from "../src/lib/company";
+import { creditDocumentLines, paymentMethodLabel } from "../src/lib/credit";
 
 type InvoiceFormat = "a4" | "receipt80mm";
 
@@ -89,7 +90,7 @@ function buildA4Markup(sale: SaleDetail, logoDataUri: string) {
         </div>
         <div class="card">
           <span>Paiement</span>
-          <strong>${escapeHtml(sale.paymentMethod)}</strong>
+          <strong>${escapeHtml(paymentMethodLabel(sale.paymentMethod))}</strong>
         </div>
       </div>
 
@@ -112,6 +113,15 @@ function buildA4Markup(sale: SaleDetail, logoDataUri: string) {
           <span>Total</span>
           <strong>${formatCurrency(sale.amount)}</strong>
         </div>
+        ${creditDocumentLines(sale)
+          .map(
+            (line) => `
+        <div class="total-row credit-row${line.strong ? " credit-due" : ""}">
+          <span>${escapeHtml(line.label)}</span>
+          <strong>${line.amount !== undefined ? formatCurrency(line.amount) : escapeHtml(line.text ?? "")}</strong>
+        </div>`
+          )
+          .join("")}
       </div>
 
       <div class="footer">
@@ -158,7 +168,7 @@ function buildReceiptMarkup(sale: SaleDetail, logoDataUri: string) {
         <div><span>Ticket</span><strong>${escapeHtml(sale.reference)}</strong></div>
         <div><span>Date</span><strong>${escapeHtml(sale.date)}</strong></div>
         <div><span>Client</span><strong>${escapeHtml(sale.clientName)}</strong></div>
-        <div><span>Paiement</span><strong>${escapeHtml(sale.paymentMethod)}</strong></div>
+        <div><span>Paiement</span><strong>${escapeHtml(paymentMethodLabel(sale.paymentMethod))}</strong></div>
       </div>
 
       <div class="receipt-separator"></div>
@@ -173,6 +183,15 @@ function buildReceiptMarkup(sale: SaleDetail, logoDataUri: string) {
         <span>TOTAL</span>
         <strong>${formatCurrency(sale.amount)}</strong>
       </div>
+      ${creditDocumentLines(sale)
+        .map(
+          (line) => `
+      <div class="receipt-credit${line.strong ? " receipt-credit-due" : ""}">
+        <span>${escapeHtml(line.label)}</span>
+        <strong>${line.amount !== undefined ? formatCurrency(line.amount) : escapeHtml(line.text ?? "")}</strong>
+      </div>`
+        )
+        .join("")}
 
       <div class="receipt-footer">
         <p>Merci pour votre achat.</p>
@@ -354,6 +373,19 @@ export function buildInvoiceHtml(
             color: #1783e5;
             font-size: 15px;
           }
+          .credit-row {
+            border-top: 1px solid #d6e4f5;
+            padding-top: 8px;
+            padding-bottom: 8px;
+          }
+          .credit-row strong {
+            color: #33475b;
+            font-size: 13px;
+          }
+          .credit-row.credit-due strong {
+            color: #b42318;
+            font-size: 15px;
+          }
           .footer {
             margin-top: 14px;
             padding-top: 10px;
@@ -439,6 +471,17 @@ export function buildInvoiceHtml(
             display: flex;
             justify-content: space-between;
             gap: 3mm;
+            font-size: 12px;
+            font-weight: 700;
+          }
+          .receipt-credit {
+            display: flex;
+            justify-content: space-between;
+            gap: 3mm;
+            margin-top: 1.5mm;
+            font-size: 10px;
+          }
+          .receipt-credit-due {
             font-size: 12px;
             font-weight: 700;
           }
