@@ -3664,3 +3664,145 @@ button.dashboard-alert-chip {
   font-size: 0.78rem;
   font-weight: 600;
 }
+
+/* Commandes (bons de commande aux fournisseurs) */
+.orders-help {
+  margin: 0 0 0.8rem;
+  color: #58708f;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.orders-table td {
+  vertical-align: top;
+}
+
+.orders-table td small,
+.orders-muted {
+  display: block;
+  color: #7a8ca6;
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.orders-row-off td {
+  opacity: 0.55;
+}
+
+.orders-qty-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.orders-qty-cell input {
+  width: 5.5rem;
+}
+
+.orders-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+
+.orders-actions .section-count {
+  margin-right: auto;
+}
+
+.orders-row-actions,
+.orders-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.orders-detail-actions {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #e3ecf6;
+}
+
+.orders-detail-head {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.orders-detail-head > div {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #dbe6f3;
+  border-radius: 0.7rem;
+  background: #fafcff;
+}
+
+.orders-detail-head span:first-child {
+  color: #7a8ca6;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.orders-editor-table select,
+.orders-editor-table input {
+  width: 100%;
+  min-width: 6rem;
+}
+
+.orders-free-item {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.order-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-height: 1.7rem;
+  padding: 0.1rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 0.74rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.order-status.neutral {
+  color: #58708f;
+}
+
+.order-status.warning {
+  color: #d97706;
+}
+
+.order-status.success {
+  color: #22a35a;
+}
+
+.order-status.muted {
+  color: #9aa8bb;
+}
+
+@media (max-width: 760px) {
+  .orders-actions {
+    justify-content: stretch;
+  }
+
+  .orders-actions button {
+    flex: 1 1 100%;
+  }
+
+  .orders-free-item {
+    grid-template-columns: 1fr;
+  }
+}

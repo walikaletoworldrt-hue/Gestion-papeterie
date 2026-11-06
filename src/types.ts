@@ -10,7 +10,8 @@ export type TabId =
   | "current-stock"
   | "utilisateurs"
   | "history"
-  | "debts";
+  | "debts"
+  | "orders";
 
 export type Product = {
   id: number;
@@ -322,6 +323,72 @@ export type DebtPaymentDraft = {
   note: string;
 };
 
+/** Purchase order life: draft (editable) -> sent -> partly received -> received; cancelled at any time before full receipt. */
+export type PurchaseOrderStatus = "brouillon" | "envoyee" | "partielle" | "recue" | "annulee";
+
+export type PurchaseOrderItem = {
+  id: number;
+  /** Null for an article not (yet) in the product list. */
+  productId: number | null;
+  productCode: string;
+  itemName: string;
+  unit: string;
+  /** Ordered by the pack (ream, box...): name and units per pack. Null = ordered by the unit. */
+  packLabel: string | null;
+  packSize: number | null;
+  /** Quantity ordered, in packs when packLabel is set, otherwise in units. */
+  quantity: number;
+  /** Quantity received so far, same unit as quantity. */
+  quantityReceived: number;
+  note: string;
+};
+
+export type PurchaseOrder = {
+  id: number;
+  reference: string;
+  supplier: string;
+  status: PurchaseOrderStatus;
+  note: string;
+  createdAt: string;
+  sentAt: string | null;
+  receivedAt: string | null;
+  /** Number of receptions already recorded (used to name the stock lots). */
+  receiptsCount: number;
+  userName: string;
+  items: PurchaseOrderItem[];
+};
+
+export type PurchaseOrderItemDraft = {
+  productId: number | null;
+  itemName: string;
+  unit: string;
+  packLabel: string | null;
+  packSize: number | null;
+  quantity: number;
+  note: string;
+};
+
+export type PurchaseOrderDraft = {
+  /** Set to update an existing draft order. */
+  id?: number;
+  supplier: string;
+  note: string;
+  items: PurchaseOrderItemDraft[];
+};
+
+export type PurchaseOrderReceiptLine = {
+  itemId: number;
+  /** Quantity received now, same unit as the ordered quantity (packs or units). */
+  quantity: number;
+  /** Purchase price of one ordered unit (one pack when ordered by the pack). Used by the super admin only. */
+  purchasePrice?: number;
+};
+
+export type PurchaseOrderReceiptDraft = {
+  orderId: number;
+  lines: PurchaseOrderReceiptLine[];
+};
+
 export type Client = {
   id: number;
   name: string;
@@ -454,6 +521,9 @@ export type SyncSnapshot = {
   inventoryCycles: Array<Record<string, unknown>>;
   /** Missing in backups made before credit sales existed. */
   debtPayments?: Array<Record<string, unknown>>;
+  /** Missing in backups made before purchase orders existed. */
+  purchaseOrders?: Array<Record<string, unknown>>;
+  purchaseOrderItems?: Array<Record<string, unknown>>;
 };
 
 export type DesktopApi = {
@@ -477,6 +547,11 @@ export type DesktopApi = {
   getSaleDetail: (saleId: number) => Promise<SaleDetail | null>;
   listDebtPayments: () => Promise<DebtPayment[]>;
   createDebtPayment: (draft: DebtPaymentDraft) => Promise<DebtPayment[]>;
+  listPurchaseOrders: () => Promise<PurchaseOrder[]>;
+  savePurchaseOrder: (draft: PurchaseOrderDraft) => Promise<PurchaseOrder[]>;
+  setPurchaseOrderStatus: (orderId: number, status: PurchaseOrderStatus) => Promise<PurchaseOrder[]>;
+  deletePurchaseOrder: (orderId: number) => Promise<PurchaseOrder[]>;
+  receivePurchaseOrder: (draft: PurchaseOrderReceiptDraft) => Promise<PurchaseOrder[]>;
   printSaleInvoice: (saleId: number) => Promise<boolean>;
   exportSalePdf: (saleId: number) => Promise<string | null>;
   printSaleReceipt: (saleId: number) => Promise<boolean>;

@@ -178,7 +178,7 @@ async function fetchSince<T>(client: SupabaseClient, table: string, columns: str
       .limit(PAGE_SIZE);
     if (result.error) {
       const hint = /does not exist|schema cache|could not find/i.test(result.error.message)
-        ? " Supabase n'est pas a jour : executez les migrations du dossier database (supabase-credit-migration.sql puis supabase-vente-en-gros-migration.sql) dans Supabase > SQL Editor."
+        ? " Supabase n'est pas a jour : executez les migrations du dossier database (supabase-credit-migration.sql, supabase-vente-en-gros-migration.sql puis supabase-commandes-migration.sql) dans Supabase > SQL Editor."
         : "";
       throw new Error(`Lecture de ${table} impossible : ${result.error.message}${hint}`);
     }
@@ -363,6 +363,7 @@ const REQUIRED_REFERENCES: Record<string, string[]> = {
   sale_items: ["sales", "products"],
   sale_service_items: ["sales", "services"],
   debt_payments: ["sales"],
+  purchase_order_items: ["purchase_orders"],
   cybercafe_sales: ["cybercafe_tariffs"],
   stock_movements: ["products"],
 };

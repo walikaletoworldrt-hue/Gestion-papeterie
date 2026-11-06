@@ -91,6 +91,17 @@ export const ROW_SYNC_SCHEMA: RowSyncTableSchema[] = [
     references: { sale_id: "sales", user_id: "users" },
   },
   {
+    table: "purchase_orders",
+    columns: ["reference", "supplier", "status", "note", "created_at", "sent_at", "received_at", "receipts_count"],
+    references: { user_id: "users" },
+    naturalKeys: ["reference"],
+  },
+  {
+    table: "purchase_order_items",
+    columns: ["item_name", "unit", "pack_label", "pack_size", "quantity", "quantity_received", "note"],
+    references: { order_id: "purchase_orders", product_id: "products" },
+  },
+  {
     table: "cybercafe_sales",
     columns: ["quantity", "unit_price", "total_amount", "sold_at", "payment_method", "note"],
     references: { tariff_id: "cybercafe_tariffs", user_id: "users" },

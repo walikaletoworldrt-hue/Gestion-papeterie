@@ -19,6 +19,9 @@ import type {
   ProductDraft,
   SaleDraft,
   DebtPaymentDraft,
+  PurchaseOrderDraft,
+  PurchaseOrderReceiptDraft,
+  PurchaseOrderStatus,
   ServiceDraft,
   UserDraft,
   UserRole,
@@ -67,6 +70,11 @@ function registerIpc() {
   ipcMain.handle("sales:detail", (_event, saleId: number) => database.getSaleDetail(saleId));
   ipcMain.handle("debts:payments", () => database.listDebtPayments());
   ipcMain.handle("debts:pay", (_event, draft: DebtPaymentDraft) => database.createDebtPayment(draft));
+  ipcMain.handle("orders:list", () => database.listPurchaseOrders());
+  ipcMain.handle("orders:save", (_event, draft: PurchaseOrderDraft) => database.savePurchaseOrder(draft));
+  ipcMain.handle("orders:status", (_event, orderId: number, status: PurchaseOrderStatus) => database.setPurchaseOrderStatus(orderId, status));
+  ipcMain.handle("orders:delete", (_event, orderId: number) => database.deletePurchaseOrder(orderId));
+  ipcMain.handle("orders:receive", (_event, draft: PurchaseOrderReceiptDraft) => database.receivePurchaseOrder(draft));
   ipcMain.handle("sales:print", async (_event, saleId: number) => {
     try {
       const sale = database.getSaleDetail(saleId);

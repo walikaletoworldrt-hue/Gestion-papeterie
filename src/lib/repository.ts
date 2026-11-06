@@ -22,9 +22,28 @@ import {
 import { mergeSaleLines, normalizePackSettings, resolveSaleLine, saleLineDisplay, unitsRequestedByProduct } from "./packaging";
 import { COMPANY_ID_NAT, COMPANY_LEGAL_LINE, COMPANY_RCCM } from "./company";
 import { displayAuditPlatform, isOfflineAuditPlatform } from "./audit-source";
+import {
+  buildPurchaseOrderReference,
+  canChangePurchaseOrderStatus,
+  canManagePurchaseOrders,
+  formatOrderQuantity,
+  isPurchaseOrderStatus,
+  nextPurchaseOrderNumber,
+  normalizePurchaseOrderDraft,
+  PURCHASE_ORDER_STATUS_LABELS,
+  purchaseOrderReferencePrefix,
+  receiptLotNumber,
+  roundQuantity,
+  statusAfterReceipt,
+  validatePurchaseOrderReceipt,
+} from "./purchase-orders";
 import type {
   DebtPayment,
   DebtPaymentDraft,
+  PurchaseOrder,
+  PurchaseOrderDraft,
+  PurchaseOrderReceiptDraft,
+  PurchaseOrderStatus,
   ActivityHistoryItem,
   AppUser,
   Client,
@@ -498,6 +517,98 @@ async function listSupabaseDebtPayments(saleId?: number): Promise<DebtPayment[]>
     throw new Error("Supabase n'est pas a jour pour les ventes a credit : executez database/supabase-credit-migration.sql.");
   }
   return (ensureData(result.data, result.error) as unknown as SupabaseDebtPaymentRow[]).map(mapSupabaseDebtPayment);
+}
+
+type SupabasePurchaseOrderItemRow = {
+  id: number;
+  product_id: number | null;
+  item_name: string;
+  unit: string;
+  pack_label: string | null;
+  pack_size: number | null;
+  quantity: number;
+  quantity_received: number | null;
+  note: string | null;
+  product?: { code: string | null } | Array<{ code: string | null }> | null;
+};
+
+type SupabasePurchaseOrderRow = {
+  id: number;
+  reference: string;
+  supplier: string;
+  status: string;
+  note: string | null;
+  created_at: string;
+  sent_at: string | null;
+  received_at: string | null;
+  receipts_count: number | null;
+  user?: { full_name: string | null } | Array<{ full_name: string | null }> | null;
+  items?: SupabasePurchaseOrderItemRow[] | null;
+};
+
+const SUPABASE_PURCHASE_ORDER_COLUMNS =
+  "id, reference, supplier, status, note, created_at, sent_at, received_at, receipts_count, user:users(full_name), " +
+  "items:purchase_order_items(id, product_id, item_name, unit, pack_label, pack_size, quantity, quantity_received, note, product:products(code))";
+
+const PURCHASE_ORDER_MIGRATION_HINT =
+  "Supabase n'est pas a jour pour les commandes : executez database/supabase-commandes-migration.sql dans Supabase > SQL Editor.";
+
+function mapSupabasePurchaseOrder(row: SupabasePurchaseOrderRow): PurchaseOrder {
+  return {
+    id: row.id,
+    reference: row.reference,
+    supplier: row.supplier,
+    status: isPurchaseOrderStatus(row.status) ? row.status : "brouillon",
+    note: row.note ?? "",
+    createdAt: row.created_at,
+    sentAt: row.sent_at,
+    receivedAt: row.received_at,
+    receiptsCount: Number(row.receipts_count ?? 0),
+    userName: relationFirst(row.user)?.full_name ?? "",
+    items: [...(row.items ?? [])]
+      .sort((left, right) => left.id - right.id)
+      .map((item) => ({
+        id: item.id,
+        productId: item.product_id,
+        productCode: relationFirst(item.product)?.code ?? "",
+        itemName: item.item_name,
+        unit: item.unit,
+        packLabel: item.pack_label,
+        packSize: item.pack_size,
+        quantity: Number(item.quantity),
+        quantityReceived: Number(item.quantity_received ?? 0),
+        note: item.note ?? "",
+      })),
+  };
+}
+
+async function listSupabasePurchaseOrders(): Promise<PurchaseOrder[]> {
+  const client = getSupabaseClient();
+  const result = await client
+    .from("purchase_orders")
+    .select(SUPABASE_PURCHASE_ORDER_COLUMNS)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false });
+  if (result.error && /does not exist|schema cache|could not find/i.test(result.error.message)) {
+    throw new Error(PURCHASE_ORDER_MIGRATION_HINT);
+  }
+  return (ensureData(result.data, result.error) as unknown as SupabasePurchaseOrderRow[]).map(mapSupabasePurchaseOrder);
+}
+
+async function getSupabasePurchaseOrder(orderId: number) {
+  const order = (await listSupabasePurchaseOrders()).find((entry) => entry.id === orderId);
+  if (!order) {
+    throw new Error("Bon de commande introuvable. Il a peut-etre ete supprime sur un autre poste.");
+  }
+  return order;
+}
+
+async function requireSupabasePurchaseOrderAccess() {
+  const profile = await getSupabaseSessionProfile();
+  if (!canManagePurchaseOrders(profile?.role)) {
+    throw new Error("Votre profil ne permet pas de gerer les commandes.");
+  }
+  return profile;
 }
 
 /** Sum of repayments per sale. */
@@ -1593,6 +1704,8 @@ const syncBucketDefinitions: Record<string, { label: string; tables: string[] }>
   initial_stocks: { label: "Stock initial", tables: ["initial_stocks"] },
   replenishments: { label: "Reapprovisionnements", tables: ["replenishments"] },
   sales: { label: "Ventes et mouvements", tables: ["sales", "sale_items", "sale_service_items", "stock_movements"] },
+  debts: { label: "Dettes", tables: ["debt_payments"] },
+  purchase_orders: { label: "Commandes", tables: ["purchase_orders", "purchase_order_items"] },
   users: { label: "Utilisateurs", tables: ["users"] },
   invoice_sequences: { label: "Facturation", tables: ["invoice_sequences"] },
   inventory_cycles: { label: "Inventaire", tables: ["inventory_cycles"] },
@@ -3903,6 +4016,251 @@ export const repository = {
     });
 
     return listSupabaseDebtPayments();
+  },
+
+  async listPurchaseOrders(): Promise<PurchaseOrder[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.listPurchaseOrders();
+    }
+
+    if (isSupabaseEnabled()) {
+      return listSupabasePurchaseOrders();
+    }
+
+    return [];
+  },
+
+  /** Creates a draft purchase order, or replaces the lines of a draft. */
+  async savePurchaseOrder(draft: PurchaseOrderDraft): Promise<PurchaseOrder[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.savePurchaseOrder(draft);
+    }
+
+    if (!isSupabaseEnabled()) {
+      throw new Error("Les commandes ne sont pas disponibles en mode demonstration.");
+    }
+
+    const client = getSupabaseClient();
+    const profile = await requireSupabasePurchaseOrderAccess();
+    const order = normalizePurchaseOrderDraft(draft, await this.listProducts());
+    let orderId: number;
+    let reference: string;
+
+    if (order.id) {
+      const existing = await getSupabasePurchaseOrder(order.id);
+      if (existing.status !== "brouillon") {
+        throw new Error("Seul un bon en brouillon peut etre modifie. Remettez-le d'abord en brouillon.");
+      }
+      orderId = existing.id;
+      reference = existing.reference;
+      const updateResult = await client.from("purchase_orders").update({ supplier: order.supplier, note: order.note || null }).eq("id", orderId);
+      ensureData(updateResult.data ?? [], updateResult.error);
+      const deleteResult = await client.from("purchase_order_items").delete().eq("order_id", orderId);
+      ensureData(deleteResult.data ?? [], deleteResult.error);
+    } else {
+      const year = new Date().getFullYear();
+      const prefix = purchaseOrderReferencePrefix(year, WEB_DEVICE_CODE);
+      const referencesResult = await client.from("purchase_orders").select("reference").like("reference", `${prefix}%`);
+      const references = (ensureData(referencesResult.data, referencesResult.error) as Array<{ reference: string }>).map((row) => row.reference);
+      reference = buildPurchaseOrderReference(year, WEB_DEVICE_CODE, nextPurchaseOrderNumber(references, prefix));
+      const insertResult = await client
+        .from("purchase_orders")
+        .insert({ reference, supplier: order.supplier, status: "brouillon", note: order.note || null, receipts_count: 0, user_id: profile?.id ?? null })
+        .select("id")
+        .single();
+      orderId = (ensureData(insertResult.data, insertResult.error) as { id: number }).id;
+    }
+
+    const itemsResult = await client.from("purchase_order_items").insert(
+      order.items.map((item) => ({
+        order_id: orderId,
+        product_id: item.productId,
+        item_name: item.itemName,
+        unit: item.unit,
+        pack_label: item.packLabel,
+        pack_size: item.packSize,
+        quantity: item.quantity,
+        quantity_received: 0,
+        note: item.note || null,
+      }))
+    );
+    ensureData(itemsResult.data ?? [], itemsResult.error);
+
+    await insertSupabaseAuditLog(client, {
+      action: order.id ? "update" : "create",
+      target_table: "purchase_orders",
+      target_id: orderId,
+      details: `${order.id ? "Modification" : "Creation"} du bon de commande ${reference} pour ${order.supplier} (${order.items.length} article(s))`,
+    });
+
+    return listSupabasePurchaseOrders();
+  },
+
+  async setPurchaseOrderStatus(orderId: number, status: PurchaseOrderStatus): Promise<PurchaseOrder[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.setPurchaseOrderStatus(orderId, status);
+    }
+
+    if (!isSupabaseEnabled()) {
+      throw new Error("Les commandes ne sont pas disponibles en mode demonstration.");
+    }
+
+    const client = getSupabaseClient();
+    await requireSupabasePurchaseOrderAccess();
+    const order = await getSupabasePurchaseOrder(orderId);
+    if (!canChangePurchaseOrderStatus(order.status, status, order.receiptsCount > 0)) {
+      throw new Error(
+        `Impossible de passer le bon ${order.reference} de "${PURCHASE_ORDER_STATUS_LABELS[order.status]}" a "${PURCHASE_ORDER_STATUS_LABELS[status] ?? status}".`
+      );
+    }
+    const now = new Date().toISOString();
+    const changes: Record<string, unknown> = { status };
+    if (status === "envoyee") changes.sent_at = now;
+    if (status === "brouillon") changes.sent_at = null;
+    if (status === "recue") changes.received_at = now;
+    const result = await client.from("purchase_orders").update(changes).eq("id", orderId);
+    ensureData(result.data ?? [], result.error);
+
+    await insertSupabaseAuditLog(client, {
+      action: "update",
+      target_table: "purchase_orders",
+      target_id: orderId,
+      details: `Bon de commande ${order.reference} (${order.supplier}) : ${PURCHASE_ORDER_STATUS_LABELS[status].toLowerCase()}`,
+    });
+
+    return listSupabasePurchaseOrders();
+  },
+
+  /** Only drafts and cancelled orders can be deleted: sent orders stay as a record. */
+  async deletePurchaseOrder(orderId: number): Promise<PurchaseOrder[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.deletePurchaseOrder(orderId);
+    }
+
+    if (!isSupabaseEnabled()) {
+      throw new Error("Les commandes ne sont pas disponibles en mode demonstration.");
+    }
+
+    const client = getSupabaseClient();
+    await requireSupabasePurchaseOrderAccess();
+    const order = await getSupabasePurchaseOrder(orderId);
+    if (order.status !== "brouillon" && order.status !== "annulee") {
+      throw new Error("Seuls les bons en brouillon ou annules peuvent etre supprimes.");
+    }
+    const itemsResult = await client.from("purchase_order_items").delete().eq("order_id", orderId);
+    ensureData(itemsResult.data ?? [], itemsResult.error);
+    const orderResult = await client.from("purchase_orders").delete().eq("id", orderId);
+    ensureData(orderResult.data ?? [], orderResult.error);
+
+    await insertSupabaseAuditLog(client, {
+      action: "delete",
+      target_table: "purchase_orders",
+      target_id: orderId,
+      details: `Suppression du bon de commande ${order.reference} (${order.supplier})`,
+    });
+
+    return listSupabasePurchaseOrders();
+  },
+
+  /** Goods arrived: each line received becomes a replenishment (stock lot named after the order). */
+  async receivePurchaseOrder(draft: PurchaseOrderReceiptDraft): Promise<PurchaseOrder[]> {
+    if (window.desktopApi) {
+      return window.desktopApi.receivePurchaseOrder(draft);
+    }
+
+    if (!isSupabaseEnabled()) {
+      throw new Error("Les commandes ne sont pas disponibles en mode demonstration.");
+    }
+
+    const client = getSupabaseClient();
+    const profile = await requireSupabasePurchaseOrderAccess();
+    const order = await getSupabasePurchaseOrder(draft.orderId);
+    const lines = validatePurchaseOrderReceipt(order, draft);
+    const cycleId = await getCurrentSupabaseInventoryCycleId();
+    const receiptIndex = order.receiptsCount + 1;
+    const lotNumber = receiptLotNumber(order.reference, receiptIndex);
+    const now = new Date().toISOString();
+
+    for (const line of lines) {
+      const productResult = await client.from("products").select("id, purchase_price, supplier").eq("id", line.item.productId).maybeSingle();
+      const product = ensureOptionalData(productResult.data, productResult.error) as { id: number; purchase_price: number; supplier: string } | null;
+      if (!product) {
+        throw new Error(`${line.item.itemName} n'existe plus dans la liste des produits.`);
+      }
+      // Only the super admin sets costs; the price typed is for one ordered unit (one pack when ordered by the pack).
+      let unitPrice = Number(product.purchase_price);
+      if (profile?.role === "Super admin" && line.purchasePrice !== undefined) {
+        unitPrice = roundMoney(line.purchasePrice / (line.item.packSize && line.item.packSize > 1 ? line.item.packSize : 1));
+        if (unitPrice !== Number(product.purchase_price)) {
+          const priceResult = await client.from("products").update({ purchase_price: unitPrice, updated_at: now }).eq("id", product.id);
+          ensureData(priceResult.data ?? [], priceResult.error);
+        }
+      }
+
+      const replenishmentResult = await client
+        .from("replenishments")
+        .insert({
+          product_id: product.id,
+          quantity: line.units,
+          purchase_price: unitPrice,
+          supplier: order.supplier || product.supplier,
+          lot_number: lotNumber,
+          cycle_id: cycleId,
+          user_id: profile?.id ?? null,
+          note: "Reapprovisionnement",
+        })
+        .select("id")
+        .single();
+      const replenishment = ensureData(replenishmentResult.data, replenishmentResult.error) as { id: number };
+
+      const movementResult = await client.from("stock_movements").insert({
+        product_id: product.id,
+        movement_type: "reapprovisionnement",
+        quantity: line.units,
+        source_table: "replenishments",
+        source_id: replenishment.id,
+        cycle_id: cycleId,
+        user_id: profile?.id ?? null,
+      });
+      ensureData(movementResult.data ?? [], movementResult.error);
+
+      const itemResult = await client
+        .from("purchase_order_items")
+        .update({ quantity_received: roundQuantity(line.item.quantityReceived + line.quantity) })
+        .eq("id", line.item.id);
+      ensureData(itemResult.data ?? [], itemResult.error);
+    }
+
+    const receivedNow = new Map(lines.map((line) => [line.item.id, line.quantity]));
+    const status = statusAfterReceipt(
+      order.items.map((item) => ({ quantity: item.quantity, quantityReceived: item.quantityReceived + (receivedNow.get(item.id) ?? 0) }))
+    );
+    const orderResult = await client
+      .from("purchase_orders")
+      .update({ status, receipts_count: receiptIndex, received_at: now })
+      .eq("id", order.id);
+    ensureData(orderResult.data ?? [], orderResult.error);
+
+    await insertSupabaseAuditLog(client, {
+      action: "update",
+      target_table: "purchase_orders",
+      target_id: order.id,
+      details:
+        `Reception ${lotNumber} du bon ${order.reference} (${order.supplier}) : ` +
+        lines.map((line) => `${line.item.itemName} ${formatOrderQuantity(line.item, line.quantity)}`).join(", ") +
+        (status === "recue" ? " - commande complete" : " - reste a recevoir"),
+    });
+
+    return listSupabasePurchaseOrders();
+  },
+
+  /** PDF of a purchase order in the Downloads folder (desktop only). */
+  async exportPurchaseOrderPdf(html: string, fileName: string): Promise<string | null> {
+    if (window.desktopApi) {
+      return window.desktopApi.exportExpenseReportPdf(html, fileName);
+    }
+
+    return null;
   },
 
   async getSupplyHistory(): Promise<SupplyHistoryItem[]> {

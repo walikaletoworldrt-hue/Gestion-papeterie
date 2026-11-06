@@ -37,11 +37,29 @@ import {
 } from "../src/lib/credit";
 import { mergeSaleLines, normalizePackSettings, resolveSaleLine, unitsRequestedByProduct } from "../src/lib/packaging";
 import { displayAuditPlatform, isOfflineAuditPlatform, OFFLINE_DESKTOP_PLATFORM } from "../src/lib/audit-source";
+import {
+  buildPurchaseOrderReference,
+  canChangePurchaseOrderStatus,
+  formatOrderQuantity,
+  isPurchaseOrderStatus,
+  nextPurchaseOrderNumber,
+  normalizePurchaseOrderDraft,
+  PURCHASE_ORDER_STATUS_LABELS,
+  purchaseOrderReferencePrefix,
+  receiptLotNumber,
+  roundQuantity,
+  statusAfterReceipt,
+  validatePurchaseOrderReceipt,
+} from "../src/lib/purchase-orders";
 import type {
   ActivityHistoryItem,
   AppUser,
   DebtPayment,
   DebtPaymentDraft,
+  PurchaseOrder,
+  PurchaseOrderDraft,
+  PurchaseOrderReceiptDraft,
+  PurchaseOrderStatus,
   Client,
   ClientDraft,
   CybercafeSale,
@@ -224,6 +242,33 @@ type SaleRow = {
   due_date: string | null;
   client_phone: string | null;
   repaid: number;
+};
+
+type PurchaseOrderRow = {
+  id: number;
+  reference: string;
+  supplier: string;
+  status: string;
+  note: string | null;
+  created_at: string;
+  sent_at: string | null;
+  received_at: string | null;
+  receipts_count: number | null;
+  user_name: string | null;
+};
+
+type PurchaseOrderItemRow = {
+  id: number;
+  order_id: number;
+  product_id: number | null;
+  product_code: string | null;
+  item_name: string;
+  unit: string;
+  pack_label: string | null;
+  pack_size: number | null;
+  quantity: number;
+  quantity_received: number | null;
+  note: string | null;
 };
 
 type DebtPaymentRow = {
@@ -568,6 +613,7 @@ export class LocalDatabase {
     this.ensureAuditLogColumns();
     this.ensureCreditColumns();
     this.ensurePackColumns();
+    this.ensurePurchaseOrderTables();
     this.ensureInventoryCycleSeed();
     this.ensureInvoiceSequenceSettings();
     this.ensureSyncSettings();
@@ -707,6 +753,43 @@ export class LocalDatabase {
     };
     addMissing("products", [["pack_label", "TEXT"], ["pack_size", "INTEGER"], ["pack_price", "REAL"]]);
     addMissing("sale_items", [["pack_label", "TEXT"], ["pack_count", "INTEGER"], ["pack_size", "INTEGER"]]);
+  }
+
+  /** Purchase orders to suppliers: the order, then one line per article. */
+  private ensurePurchaseOrderTables() {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS purchase_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reference TEXT NOT NULL,
+        supplier TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'brouillon',
+        note TEXT,
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        received_at TEXT,
+        receipts_count INTEGER NOT NULL DEFAULT 0,
+        user_id INTEGER,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS purchase_order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id INTEGER NOT NULL,
+        product_id INTEGER,
+        item_name TEXT NOT NULL,
+        unit TEXT NOT NULL DEFAULT 'piece',
+        pack_label TEXT,
+        pack_size INTEGER,
+        quantity REAL NOT NULL,
+        quantity_received REAL NOT NULL DEFAULT 0,
+        note TEXT,
+        FOREIGN KEY (order_id) REFERENCES purchase_orders(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_purchase_order_items_order ON purchase_order_items(order_id);
+      CREATE INDEX IF NOT EXISTS idx_purchase_order_items_product ON purchase_order_items(product_id);
+    `);
   }
 
   /** Credit sales: down payment and due day on the sale, repayments in their own table. */
@@ -1488,6 +1571,228 @@ export class LocalDatabase {
     return this.listDebtPayments();
   }
 
+  listPurchaseOrders(): PurchaseOrder[] {
+    this.requireAuthenticatedUser();
+    const orders = this.db
+      .prepare(`
+        SELECT po.id, po.reference, po.supplier, po.status, po.note, po.created_at, po.sent_at, po.received_at,
+               po.receipts_count, u.full_name AS user_name
+        FROM purchase_orders po
+        LEFT JOIN users u ON u.id = po.user_id
+        ORDER BY datetime(po.created_at) DESC, po.id DESC
+      `)
+      .all() as PurchaseOrderRow[];
+    const items = this.db
+      .prepare(`
+        SELECT poi.id, poi.order_id, poi.product_id, p.code AS product_code, poi.item_name, poi.unit, poi.pack_label,
+               poi.pack_size, poi.quantity, poi.quantity_received, poi.note
+        FROM purchase_order_items poi
+        LEFT JOIN products p ON p.id = poi.product_id
+        ORDER BY poi.id ASC
+      `)
+      .all() as PurchaseOrderItemRow[];
+
+    const itemsByOrder = new Map<number, PurchaseOrderItemRow[]>();
+    items.forEach((item) => itemsByOrder.set(item.order_id, [...(itemsByOrder.get(item.order_id) ?? []), item]));
+
+    return orders.map((order) => ({
+      id: order.id,
+      reference: order.reference,
+      supplier: order.supplier,
+      status: isPurchaseOrderStatus(order.status) ? order.status : "brouillon",
+      note: order.note ?? "",
+      createdAt: order.created_at,
+      sentAt: order.sent_at,
+      receivedAt: order.received_at,
+      receiptsCount: Number(order.receipts_count ?? 0),
+      userName: order.user_name ?? "",
+      items: (itemsByOrder.get(order.id) ?? []).map((item) => ({
+        id: item.id,
+        productId: item.product_id,
+        productCode: item.product_code ?? "",
+        itemName: item.item_name,
+        unit: item.unit,
+        packLabel: item.pack_label,
+        packSize: item.pack_size,
+        quantity: Number(item.quantity),
+        quantityReceived: Number(item.quantity_received ?? 0),
+        note: item.note ?? "",
+      })),
+    }));
+  }
+
+  private getPurchaseOrder(orderId: number) {
+    const order = this.listPurchaseOrders().find((entry) => entry.id === orderId);
+    if (!order) {
+      throw new Error("Bon de commande introuvable. Il a peut-etre ete supprime sur un autre poste.");
+    }
+    return order;
+  }
+
+  /** Creates a draft order, or replaces the lines of a draft. */
+  savePurchaseOrder(draft: PurchaseOrderDraft): PurchaseOrder[] {
+    this.requirePermission("manage_inventory");
+    const products = this.db.prepare("SELECT id, name, unit FROM products").all() as Array<{ id: number; name: string; unit: string }>;
+    const order = normalizePurchaseOrderDraft(draft, products);
+    const userId = this.getActorUserId();
+    const now = new Date().toISOString();
+
+    const saveTransaction = this.db.transaction(() => {
+      let orderId: number;
+      let reference: string;
+      if (order.id) {
+        const existing = this.getPurchaseOrder(order.id);
+        if (existing.status !== "brouillon") {
+          throw new Error("Seul un bon en brouillon peut etre modifie. Remettez-le d'abord en brouillon.");
+        }
+        orderId = existing.id;
+        reference = existing.reference;
+        this.db.prepare("UPDATE purchase_orders SET supplier = ?, note = ? WHERE id = ?").run(order.supplier, order.note || null, orderId);
+        this.db.prepare("DELETE FROM purchase_order_items WHERE order_id = ?").run(orderId);
+      } else {
+        reference = this.generatePurchaseOrderReference();
+        const result = this.db
+          .prepare("INSERT INTO purchase_orders (reference, supplier, status, note, created_at, receipts_count, user_id) VALUES (?, ?, 'brouillon', ?, ?, 0, ?)")
+          .run(reference, order.supplier, order.note || null, now, userId);
+        orderId = Number(result.lastInsertRowid);
+      }
+
+      const insertItem = this.db.prepare(`
+        INSERT INTO purchase_order_items (order_id, product_id, item_name, unit, pack_label, pack_size, quantity, quantity_received, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+      `);
+      order.items.forEach((item) =>
+        insertItem.run(orderId, item.productId, item.itemName, item.unit, item.packLabel, item.packSize, item.quantity, item.note || null)
+      );
+
+      this.logAction(
+        userId,
+        order.id ? "update" : "create",
+        "purchase_orders",
+        orderId,
+        `${order.id ? "Modification" : "Creation"} du bon de commande ${reference} pour ${order.supplier} (${order.items.length} article(s))`
+      );
+    });
+    saveTransaction();
+
+    return this.listPurchaseOrders();
+  }
+
+  setPurchaseOrderStatus(orderId: number, status: PurchaseOrderStatus): PurchaseOrder[] {
+    this.requirePermission("manage_inventory");
+    const order = this.getPurchaseOrder(orderId);
+    if (!canChangePurchaseOrderStatus(order.status, status, order.receiptsCount > 0)) {
+      throw new Error(
+        `Impossible de passer le bon ${order.reference} de "${PURCHASE_ORDER_STATUS_LABELS[order.status]}" a "${PURCHASE_ORDER_STATUS_LABELS[status] ?? status}".`
+      );
+    }
+    const now = new Date().toISOString();
+    this.db
+      .prepare(`
+        UPDATE purchase_orders
+        SET status = @status,
+            sent_at = CASE WHEN @status = 'envoyee' THEN @now WHEN @status = 'brouillon' THEN NULL ELSE sent_at END,
+            received_at = CASE WHEN @status = 'recue' THEN @now ELSE received_at END
+        WHERE id = @id
+      `)
+      .run({ status, now, id: orderId });
+    this.logAction(
+      this.getActorUserId(),
+      "update",
+      "purchase_orders",
+      orderId,
+      `Bon de commande ${order.reference} (${order.supplier}) : ${PURCHASE_ORDER_STATUS_LABELS[status].toLowerCase()}`
+    );
+    return this.listPurchaseOrders();
+  }
+
+  /** Only drafts and cancelled orders can be deleted: sent orders stay as a record. */
+  deletePurchaseOrder(orderId: number): PurchaseOrder[] {
+    this.requirePermission("manage_inventory");
+    const order = this.getPurchaseOrder(orderId);
+    if (order.status !== "brouillon" && order.status !== "annulee") {
+      throw new Error("Seuls les bons en brouillon ou annules peuvent etre supprimes.");
+    }
+    const deleteTransaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM purchase_order_items WHERE order_id = ?").run(orderId);
+      this.db.prepare("DELETE FROM purchase_orders WHERE id = ?").run(orderId);
+    });
+    deleteTransaction();
+    this.logAction(this.getActorUserId(), "delete", "purchase_orders", orderId, `Suppression du bon de commande ${order.reference} (${order.supplier})`);
+    return this.listPurchaseOrders();
+  }
+
+  /** Goods arrived: each line received becomes a replenishment (stock lot named after the order). */
+  receivePurchaseOrder(draft: PurchaseOrderReceiptDraft): PurchaseOrder[] {
+    this.requirePermission("manage_inventory");
+    const actor = this.requireAuthenticatedUser();
+    const order = this.getPurchaseOrder(draft.orderId);
+    const lines = validatePurchaseOrderReceipt(order, draft);
+    const userId = this.getActorUserId();
+    const now = new Date().toISOString();
+    const receiptIndex = order.receiptsCount + 1;
+    const lotNumber = receiptLotNumber(order.reference, receiptIndex);
+
+    const receiveTransaction = this.db.transaction(() => {
+      lines.forEach((line) => {
+        const product = this.db
+          .prepare("SELECT id, name, purchase_price, supplier FROM products WHERE id = ?")
+          .get(line.item.productId) as { id: number; name: string; purchase_price: number; supplier: string } | undefined;
+        if (!product) {
+          throw new Error(`${line.item.itemName} n'existe plus dans la liste des produits.`);
+        }
+        // Only the super admin sets costs; the price typed is for one ordered unit (one pack when ordered by the pack).
+        let unitPrice = Number(product.purchase_price);
+        if (actor.role === "Super admin" && line.purchasePrice !== undefined) {
+          unitPrice = roundMoney(line.purchasePrice / (line.item.packSize && line.item.packSize > 1 ? line.item.packSize : 1));
+          if (unitPrice !== Number(product.purchase_price)) {
+            this.db.prepare("UPDATE products SET purchase_price = ?, updated_at = ? WHERE id = ?").run(unitPrice, now, product.id);
+          }
+        }
+        this.recordReplenishment(product.id, line.units, unitPrice, order.supplier || product.supplier, userId, lotNumber);
+        this.db
+          .prepare("UPDATE purchase_order_items SET quantity_received = ? WHERE id = ?")
+          .run(roundQuantity(line.item.quantityReceived + line.quantity), line.item.id);
+      });
+
+      const receivedNow = new Map(lines.map((line) => [line.item.id, line.quantity]));
+      const status = statusAfterReceipt(
+        order.items.map((item) => ({ quantity: item.quantity, quantityReceived: item.quantityReceived + (receivedNow.get(item.id) ?? 0) }))
+      );
+      this.db
+        .prepare("UPDATE purchase_orders SET status = ?, receipts_count = ?, received_at = ? WHERE id = ?")
+        .run(status, receiptIndex, now, order.id);
+
+      this.logAction(
+        userId,
+        "update",
+        "purchase_orders",
+        order.id,
+        `Reception ${lotNumber} du bon ${order.reference} (${order.supplier}) : ` +
+          lines.map((line) => `${line.item.itemName} ${formatOrderQuantity(line.item, line.quantity)}`).join(", ") +
+          (status === "recue" ? " - commande complete" : " - reste a recevoir")
+      );
+    });
+    receiveTransaction();
+
+    return this.listPurchaseOrders();
+  }
+
+  private generatePurchaseOrderReference() {
+    const deviceCode = this.getDeviceCode();
+    if (!deviceCode) {
+      throw new Error(
+        "Ce poste n'a pas encore de code (P1, P2...). Le super administrateur doit le definir dans Stock initial > Code poste avant le premier bon de commande."
+      );
+    }
+    const year = new Date().getFullYear();
+    const prefix = purchaseOrderReferencePrefix(year, deviceCode);
+    const references = (this.db.prepare("SELECT reference FROM purchase_orders WHERE reference LIKE ?").all(`${prefix}%`) as Array<{ reference: string }>).map(
+      (row) => row.reference
+    );
+    return buildPurchaseOrderReference(year, deviceCode, nextPurchaseOrderNumber(references, prefix));
+  }
+
   getInvoiceSeriesInfo(): InvoiceSeriesInfo {
     const sequence = this.getCurrentInvoiceSequence();
     const seriesLabel = this.getInvoiceSeriesLabel(sequence.series_index);
@@ -1665,6 +1970,8 @@ export class LocalDatabase {
       replenishments: this.db.prepare("SELECT id, product_id, quantity, purchase_price, supplier, lot_number, transport_total, replenished_at, cycle_id, NULL as user_id, note FROM replenishments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       sales: this.db.prepare("SELECT id, reference, client_id, sold_at, total_amount, payment_method, cycle_id, NULL as user_id, amount_paid, due_date FROM sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       debtPayments: this.db.prepare("SELECT id, sale_id, amount, paid_at, payment_method, note, NULL as user_id FROM debt_payments ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      purchaseOrders: this.db.prepare("SELECT id, reference, supplier, status, note, created_at, sent_at, received_at, receipts_count, NULL as user_id FROM purchase_orders ORDER BY id ASC").all() as Array<Record<string, unknown>>,
+      purchaseOrderItems: this.db.prepare("SELECT id, order_id, product_id, item_name, unit, pack_label, pack_size, quantity, quantity_received, note FROM purchase_order_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleItems: this.db.prepare("SELECT id, sale_id, product_id, quantity, unit_price, line_total, pack_label, pack_count, pack_size FROM sale_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       saleServiceItems: this.db.prepare("SELECT id, sale_id, service_id, quantity, unit_price, line_total FROM sale_service_items ORDER BY id ASC").all() as Array<Record<string, unknown>>,
       cybercafeSales: this.db.prepare("SELECT id, tariff_id, quantity, unit_price, total_amount, sold_at, payment_method, note, user_id FROM cybercafe_sales ORDER BY id ASC").all() as Array<Record<string, unknown>>,
@@ -1700,6 +2007,8 @@ export class LocalDatabase {
     }));
 
     const replaceTransaction = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM purchase_order_items").run();
+      this.db.prepare("DELETE FROM purchase_orders").run();
       this.db.prepare("DELETE FROM debt_payments").run();
       this.db.prepare("DELETE FROM sale_items").run();
       this.db.prepare("DELETE FROM sale_service_items").run();
@@ -1759,6 +2068,14 @@ export class LocalDatabase {
         INSERT INTO debt_payments (id, sale_id, amount, paid_at, payment_method, note, user_id)
         VALUES (@id, @sale_id, @amount, @paid_at, @payment_method, @note, @user_id)
       `);
+      const insertPurchaseOrders = this.db.prepare(`
+        INSERT INTO purchase_orders (id, reference, supplier, status, note, created_at, sent_at, received_at, receipts_count, user_id)
+        VALUES (@id, @reference, @supplier, @status, @note, @created_at, @sent_at, @received_at, @receipts_count, @user_id)
+      `);
+      const insertPurchaseOrderItems = this.db.prepare(`
+        INSERT INTO purchase_order_items (id, order_id, product_id, item_name, unit, pack_label, pack_size, quantity, quantity_received, note)
+        VALUES (@id, @order_id, @product_id, @item_name, @unit, @pack_label, @pack_size, @quantity, @quantity_received, @note)
+      `);
       const insertSaleItems = this.db.prepare(`
         INSERT INTO sale_items (id, sale_id, product_id, quantity, unit_price, line_total, pack_label, pack_count, pack_size)
         VALUES (@id, @sale_id, @product_id, @quantity, @unit_price, @line_total, @pack_label, @pack_count, @pack_size)
@@ -1809,6 +2126,8 @@ export class LocalDatabase {
       (snapshot.cybercafeSales ?? []).forEach((row) => insertCybercafeSales.run(toSqliteParams(insertCybercafeSales, row)));
       (snapshot.mikhmonSales ?? []).forEach((row) => insertMikhmonSales.run(toSqliteParams(insertMikhmonSales, row)));
       (snapshot.stockMovements ?? []).forEach((row) => insertStockMovements.run(toSqliteParams(insertStockMovements, row)));
+      (snapshot.purchaseOrders ?? []).forEach((row) => insertPurchaseOrders.run(toSqliteParams(insertPurchaseOrders, row)));
+      (snapshot.purchaseOrderItems ?? []).forEach((row) => insertPurchaseOrderItems.run(toSqliteParams(insertPurchaseOrderItems, row)));
       const importedAt = new Date().toISOString();
       (snapshot.auditLogs ?? []).forEach((row) => insertAuditLogs.run(toSqliteParams(insertAuditLogs, { ...row, synced_at: importedAt })));
     });
@@ -3324,6 +3643,8 @@ export class LocalDatabase {
       expenses: "Depense",
       initial_stocks: "Stock initial",
       replenishments: "Reapprovisionnement",
+      debt_payments: "Versement",
+      purchase_orders: "Bon de commande",
     };
 
     const label = labelMap[targetTable] ?? targetTable;

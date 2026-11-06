@@ -1,4 +1,7 @@
-import { ChangeEvent, FormEvent, ReactNode, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { EmptyState, Modal } from "./components/ui";
+import { PurchaseOrdersTab } from "./components/PurchaseOrdersTab";
+import { pendingUnitsByProduct, suggestOrderQuantity } from "./lib/purchase-orders";
 import brandLogo from "../img/logo-walikale1.png";
 // Same logo without the white margins, so it reads well at small sizes on screen.
 import brandLogoCropped from "../img/logo-walikale-recadre.png";
@@ -23,6 +26,7 @@ import type {
   Product,
   InitialStockItem,
   ProductDraft,
+  PurchaseOrder,
   SaleDetail,
   SaleItemDraft,
   SaleServiceItemDraft,
@@ -46,6 +50,7 @@ const tabs: { id: TabId; label: string }[] = [
   { id: "expenses", label: "Depenses" },
   { id: "initial-stock", label: "Stock initial" },
   { id: "replenishments", label: "Reapprovisionnement" },
+  { id: "orders", label: "Commandes" },
   { id: "sales", label: "Ventes" },
   { id: "debts", label: "Dettes" },
   { id: "cybercafe", label: "Cybercafe" },
@@ -1018,58 +1023,6 @@ function buildNextSupplyLotNumber(history: SupplyHistoryItem[]) {
 
 const sessionStorageKey = "walikale-active-user-id";
 
-function Modal({
-  title,
-  children,
-  onClose,
-  size = "default",
-  backdropClassName = "",
-}: {
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-  size?: "default" | "large";
-  backdropClassName?: string;
-}) {
-  return (
-    <div className={`modal-backdrop ${backdropClassName}`.trim()} role="presentation" onClick={onClose}>
-      <div
-        className={`modal-card ${size === "large" ? "large" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="modal-header">
-          <h2>{title}</h2>
-          <button className="modal-close-btn" type="button" onClick={onClose} aria-label="Fermer la fenetre">
-            ×
-          </button>
-        </div>
-        <div className="modal-body">{children}</div>
-      </div>
-    </div>
-  );
-}
-
-function EmptyState({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="empty-state">
-      <div className="empty-state-icon" aria-hidden="true">
-        ...
-      </div>
-      <h3>{title}</h3>
-      <p>{description}</p>
-    </div>
-  );
-}
-
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>("replenishments");
   const [products, setProducts] = useState<Product[]>([]);
@@ -1079,6 +1032,7 @@ export default function App() {
   const [users, setUsers] = useState<AppUser[]>([]);
   const [sales, setSales] = useState<SaleRecord[]>([]);
   const [debtPayments, setDebtPayments] = useState<DebtPayment[]>([]);
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [saleCreditDraft, setSaleCreditDraft] = useState({ phone: "", amountPaid: "", dueDate: "" });
   const [debtPaymentDraft, setDebtPaymentDraft] = useState<{ saleId: number; amount: string; paymentMethod: string; note: string } | null>(null);
   const [debtPaymentError, setDebtPaymentError] = useState("");
@@ -1311,7 +1265,7 @@ export default function App() {
       return !["utilisateurs", "history"].includes(tab.id);
     }
 
-    return !["initial-stock", "replenishments", "utilisateurs", "history"].includes(tab.id);
+    return !["initial-stock", "replenishments", "orders", "utilisateurs", "history"].includes(tab.id);
   });
 
   useEffect(() => {
@@ -1390,6 +1344,7 @@ export default function App() {
       repository.listMikhmonSales(),
       repository.listInitialStocks(),
       repository.listDebtPayments(),
+      repository.listPurchaseOrders(),
     ]);
 
     const errors = settled
@@ -1418,6 +1373,7 @@ export default function App() {
     const nextMikhmonSales = settled[13].status === "fulfilled" ? settled[13].value : [];
     const nextInitialStocks = settled[14].status === "fulfilled" ? settled[14].value : [];
     const nextDebtPayments = settled[15].status === "fulfilled" ? settled[15].value : [];
+    const nextPurchaseOrders = settled[16].status === "fulfilled" ? settled[16].value : [];
 
     setProducts(nextProducts);
     setServices(nextServices);
@@ -1428,6 +1384,7 @@ export default function App() {
     setSupplyHistory(nextHistory);
     setInitialStocks(nextInitialStocks);
     setDebtPayments(nextDebtPayments);
+    setPurchaseOrders(nextPurchaseOrders);
     setActivityHistory(nextActivityHistory);
     setMetrics(nextMetrics);
     setCurrentStock(nextCurrentStock);
@@ -3723,6 +3680,11 @@ export default function App() {
   const replenishmentHistoryUnits = filteredReplenishmentHistory.reduce((sum, item) => sum + item.quantity, 0);
   const replenishmentHistoryAmount = filteredReplenishmentHistory.reduce((sum, item) => sum + item.amount, 0);
   const dashboardLowStockCount = currentStock.filter((item) => item.currentStock <= item.alertThreshold).length;
+  // Products in rupture or low stock that no open order covers yet.
+  const pendingOrderUnits = pendingUnitsByProduct(purchaseOrders);
+  const productsToOrderCount = products.filter(
+    (product) => product.quantity <= product.alertThreshold && suggestOrderQuantity(product, pendingOrderUnits.get(product.id) ?? 0).quantity > 0
+  ).length;
   const dashboardCounterSalesCount = sales.filter((sale) => sale.clientName === "Client comptoir").length;
   const expenseReportTopProduct = expenseReport?.productLines[0] ?? null;
   const expenseReportTopCategory = expenseReport?.serviceLines[0] ?? null;
@@ -4043,6 +4005,7 @@ export default function App() {
                 {tab.id === "debts" && openDebts.length > 0 ? (
                   <span className={`nav-tab-badge ${overdueDebts.length > 0 ? "danger" : ""}`}>{openDebts.length}</span>
                 ) : null}
+                {tab.id === "orders" && productsToOrderCount > 0 ? <span className="nav-tab-badge">{productsToOrderCount}</span> : null}
               </button>
             ))}
           </nav>
@@ -4199,7 +4162,13 @@ export default function App() {
                   <h2>Points d'attention</h2>
                 </div>
                 <div className="dashboard-alerts">
-                  <span className="dashboard-alert-chip warning">{dashboardLowStockCount} stock(s) a surveiller</span>
+                  {canCreateInventory && productsToOrderCount > 0 ? (
+                    <button className="dashboard-alert-chip warning" type="button" onClick={() => setActiveTab("orders")}>
+                      {dashboardLowStockCount} stock(s) a surveiller : {productsToOrderCount} produit(s) a commander
+                    </button>
+                  ) : (
+                    <span className="dashboard-alert-chip warning">{dashboardLowStockCount} stock(s) a surveiller</span>
+                  )}
                   {openDebts.length > 0 ? (
                     <button
                       className={`dashboard-alert-chip ${overdueDebts.length > 0 ? "danger" : "warning"}`}
@@ -5158,6 +5127,20 @@ export default function App() {
             </div>
             )}
           </section>
+        )}
+
+        {activeTab === "orders" && canCreateInventory && (
+          <PurchaseOrdersTab
+            products={products}
+            orders={purchaseOrders}
+            isSuperAdmin={isSuperAdmin}
+            currentUserName={currentUser?.fullName ?? ""}
+            logoSrc={new URL(brandLogo, window.location.href).href}
+            onOrdersChange={setPurchaseOrders}
+            onStockChange={loadData}
+            showToast={showToast}
+            askConfirmation={askConfirmation}
+          />
         )}
 
         {activeTab === "debts" && (
