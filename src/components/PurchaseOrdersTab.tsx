@@ -108,6 +108,7 @@ export function PurchaseOrdersTab({
   const [receipt, setReceipt] = useState<ReceiptState | null>(null);
   const [receiptError, setReceiptError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const productsById = useMemo(() => new Map(products.map((product) => [product.id, product])), [products]);
   const pendingUnits = useMemo(() => pendingUnitsByProduct(orders), [orders]);
@@ -410,18 +411,43 @@ export function PurchaseOrdersTab({
       printOrder(order);
       return;
     }
-    const path = await run(
-      () => repository.exportPurchaseOrderPdf(orderHtml(order, false), `bon-de-commande-${order.reference}`),
-      "Impossible de creer le PDF."
-    );
-    showToast(path ? "success" : "info", path ? `PDF enregistre : ${path}` : "Export PDF annule ou impossible.");
+    // Own flag: a slow PDF must not lock the other buttons of the order.
+    setPdfBusy(true);
+    try {
+      const path = await repository.exportPurchaseOrderPdf(orderHtml(order, false), `bon-de-commande-${order.reference}`);
+      showToast(path ? "success" : "error", path ? `PDF enregistre : ${path}` : "Impossible de creer le PDF.");
+    } catch (error) {
+      showToast("error", errorMessage(error, "Impossible de creer le PDF."));
+    } finally {
+      setPdfBusy(false);
+    }
   }
 
   async function copyOrderText(order: PurchaseOrder) {
+    const text = buildPurchaseOrderText(order);
+    let copied = false;
     try {
-      await navigator.clipboard.writeText(buildPurchaseOrderText(order));
-      showToast("success", "Texte de la commande copie. Collez-le dans WhatsApp ou dans un e-mail.");
+      await navigator.clipboard.writeText(text);
+      copied = true;
     } catch {
+      // Fallback when the clipboard API is refused: copy from a hidden text field.
+      const field = document.createElement("textarea");
+      field.value = text;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.appendChild(field);
+      field.select();
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
+      field.remove();
+    }
+    if (copied) {
+      showToast("success", "Texte de la commande copie. Collez-le dans WhatsApp ou dans un e-mail.");
+    } else {
       showToast("error", "Impossible de copier le texte. Utilisez plutot le PDF.");
     }
   }
@@ -771,8 +797,8 @@ export function PurchaseOrdersTab({
             <button className="ghost-btn" type="button" onClick={() => printOrder(detailOrder)}>
               Imprimer
             </button>
-            <button className="ghost-btn" type="button" disabled={busy} onClick={() => void exportOrderPdf(detailOrder)}>
-              Enregistrer en PDF
+            <button className="ghost-btn" type="button" disabled={pdfBusy} onClick={() => void exportOrderPdf(detailOrder)}>
+              {pdfBusy ? "Creation du PDF..." : "Enregistrer en PDF"}
             </button>
             <button className="ghost-btn" type="button" onClick={() => void copyOrderText(detailOrder)}>
               Copier pour WhatsApp

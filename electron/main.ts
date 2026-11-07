@@ -128,7 +128,8 @@ function registerIpc() {
         await waitForWindowReady(win);
         const pdf = await win.webContents.printToPDF({
           printBackground: true,
-          margins: { top: 20, bottom: 20, left: 20, right: 20 },
+          // Electron reads PDF margins in inches (0.2 in = about 20 px).
+          margins: { top: 0.2, bottom: 0.2, left: 0.2, right: 0.2 },
           pageSize: "A4",
         });
         await fs.writeFile(filePath, pdf);
@@ -199,7 +200,8 @@ function registerIpc() {
         await waitForWindowReady(win);
         const pdf = await win.webContents.printToPDF({
           printBackground: true,
-          margins: { top: 16, bottom: 16, left: 16, right: 16 },
+          // Electron reads PDF margins in inches (0.17 in = about 16 px).
+          margins: { top: 0.17, bottom: 0.17, left: 0.17, right: 0.17 },
           pageSize: "A4",
           preferCSSPageSize: true,
         });
@@ -577,9 +579,17 @@ async function createDocumentWindow(
 }
 
 async function waitForWindowReady(win: BrowserWindow) {
+  // loadFile has already resolved, so "did-finish-load" may never fire again even if
+  // isLoading() is still true. Wait for the end of loading, but never more than 5 s.
   if (win.webContents.isLoading()) {
     await new Promise<void>((resolve) => {
-      win.webContents.once("did-finish-load", () => resolve());
+      const done = () => {
+        clearTimeout(timer);
+        win.webContents.removeListener("did-stop-loading", done);
+        resolve();
+      };
+      const timer = setTimeout(done, 5000);
+      win.webContents.once("did-stop-loading", done);
     });
   }
 
