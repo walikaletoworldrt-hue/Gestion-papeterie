@@ -349,15 +349,21 @@ export function applyRemoteChanges(
           if (schema.table === "users" && !values.password_hash) delete values.password_hash;
 
           let local = findLocalRow(db, schema, remote);
+          let mergedByNaturalKey = false;
           if (local && local.uid !== remote.uid && schema.table !== "users") {
             // Same record created separately on two devices: keep one, with the cloud uid.
             db.prepare(`UPDATE ${schema.table} SET uid = ? WHERE id = ?`).run(remote.uid, local.id);
             refs.remember(schema.table, local.id, remote.uid);
             local = { ...local, uid: remote.uid };
+            mergedByNaturalKey = true;
             result.merged += 1;
           }
 
-          if (local && localWins(local, remote.modified_at)) {
+          // A new PC creates its own "Cycle 1" started now. Merged with the cloud's "Cycle 1", the cloud date must win:
+          // otherwise that old cycle looks like the newest one and every PC shows its (empty) stock.
+          const cloudAlwaysWins = mergedByNaturalKey && schema.table === "inventory_cycles";
+
+          if (local && !cloudAlwaysWins && localWins(local, remote.modified_at)) {
             result.keptLocal += 1;
             return;
           }
